@@ -72,8 +72,10 @@ export default function UserManagement({ onClose }: UserManagementProps) {
 
         <div className="mb-5">
           <h3 className="mb-2 text-sm font-semibold text-[#bbb]">Existing Users</h3>
-          {users.length === 0 ? (
+          {loading ? (
             <p className="text-sm text-[#666]">Loading...</p>
+          ) : users.length === 0 ? (
+            <p className="text-sm text-[#666]">No users</p>
           ) : (
             <ul className="space-y-1">
               {users.map((u) => (
