@@ -1,0 +1,46 @@
+services:
+  renamer-backend:
+    image: bosscock/media-renamer:backend
+    container_name: media-renamer_backend
+    command: []
+    environment:
+      - BASE_PATH=/media
+      - TVSHOW_FOLDER_NAME=TV Shows
+      - MUSIC_FOLDER_NAME=Music
+      - TMDB_API_KEY=YOUR_TMDB_API_KEY_HERE
+      - VALID_VIDEO_EXT={'.mp4', '.mkv', '.mov', '.avi'}
+      - VALID_MUSIC_EXT={'.flac', '.wav', '.mp3'}
+    ports:
+      - target: 3332
+        published: 3332
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - /path/to/your/media:/media:rw
+    networks:
+      - renamer-network
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  renamer-frontend:
+    image: bosscock/media-renamer:frontend
+    container_name: media-renamer_frontend
+    command: []
+    depends_on:
+      - renamer-backend
+    ports:
+      - target: 3000
+        published: 3333
+        protocol: tcp
+        mode: host
+    restart: unless-stopped
+    networks:
+      - renamer-network
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+networks:
+  renamer-network:
+    driver: bridge
