@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, Form, Depends
+from fastapi import FastAPI, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -11,8 +11,6 @@ from watchdog.events import FileSystemEventHandler
 from rename_episodes import rename_episodes
 from rename_music import rename_music
 from get_dirs import _get_all_dirs_cached, _get_music_dirs_cached
-from auth import get_current_user
-from auth_routes import router as auth_router
 
 load_dotenv("dependencies/.env")
 
@@ -54,7 +52,6 @@ async def lifespan(app: FastAPI):
     global _observer
 
     # Startup
-    os.makedirs("/app/data", exist_ok=True)
     handler = DirChangeHandler()
     if os.path.isdir(BASE_PATH):
         _observer = Observer()
@@ -75,7 +72,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-app.include_router(auth_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -90,7 +86,6 @@ app.add_middleware(
 def list_directories(
     series: str | None = Query(None, description="Series filter"),
     season: int | None = Query(None, description="Season number"),
-    current_user: dict = Depends(get_current_user),
 ):
     all_dirs = _get_all_dirs_cached()
 
@@ -113,7 +108,6 @@ def list_directories(
 def list_music_directories(
     artist: str | None = Query(None, description="Artist filter"),
     album: str | None = Query(None, description="Album filter"),
-    current_user: dict = Depends(get_current_user),
 ):
     all_dirs = _get_music_dirs_cached()
 
@@ -137,7 +131,7 @@ def list_music_directories(
 
 
 @app.post("/directories/refresh")
-def refresh_directories(current_user: dict = Depends(get_current_user)):
+def refresh_directories():
     _get_all_dirs_cached.cache_clear()
     _get_music_dirs_cached.cache_clear()
     return {"status": "ok"}
@@ -152,7 +146,6 @@ async def rename(
     assign_seq: bool = Form(...),
     threshold: float = Form(...),
     lang: str = Form(...),
-    current_user: dict = Depends(get_current_user),
 ):
     path = os.path.join(BASE_PATH, TVSHOW_FOLDER_NAME, directory)
     if not os.path.isdir(path):
@@ -182,11 +175,7 @@ async def rename(
 
 
 @app.post("/rename/music")
-async def rename_music_route(
-    directory: str = Form(...),
-    dry_run: bool = Form(...),
-    current_user: dict = Depends(get_current_user),
-):
+async def rename_music_route(directory: str = Form(...), dry_run: bool = Form(...)):
     path = os.path.join(BASE_PATH, MUSIC_FOLDER_NAME, directory)
     if not os.path.isdir(path):
         return {
