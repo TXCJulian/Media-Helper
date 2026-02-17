@@ -430,4 +430,3 @@ backend/*.vscode
 TODO.txt
 /.claude
 nul
-*.db

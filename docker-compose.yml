@@ -13,16 +13,11 @@ services:
       - TMDB_API_KEY=YOUR_TMDB_API_KEY_HERE
       - VALID_VIDEO_EXT={'.mp4', '.mkv', '.mov', '.avi'}
       - VALID_MUSIC_EXT={'.flac', '.wav', '.mp3'}
-      - JWT_SECRET=change-me-to-a-random-secret
-      - AUTH_DB_PATH=/app/data/auth.db
-      # - INIT_USERNAME=admin
-      # - INIT_PASSWORD=admin
     ports:
       - "3332:3332"
     volumes:
       - ./dependencies/.env:/app/dependencies/.env:ro
       - /path/to/your/media:/media:rw
-      - auth-data:/app/data
     networks:
       - renamer-network
 
@@ -39,9 +34,6 @@ services:
       - renamer-backend
     networks:
       - renamer-network
-
-volumes:
-  auth-data:
 
 networks:
   renamer-network:

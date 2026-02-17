@@ -25,22 +25,3 @@ export interface RenameResponse {
   log?: string[]
   directories?: string[]
 }
-
-export interface AuthStatus {
-  setup_required: boolean
-}
-
-export interface AuthResponse {
-  token: string
-  username: string
-}
-
-export interface User {
-  id: number
-  username: string
-  created_at: string
-}
-
-export interface UsersResponse {
-  users: User[]
-}

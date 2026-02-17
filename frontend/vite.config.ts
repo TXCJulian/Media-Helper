@@ -12,17 +12,12 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      // Leite alle API-Requests an das lokale Backend weiter
-      "/directories": {
-        target: "http://localhost:8000",
+      '/directories': {
+        target: 'http://localhost:8000',
         changeOrigin: true,
       },
-      "/rename": {
-        target: "http://localhost:8000",
-        changeOrigin: true,
-      },
-      "/auth": {
-        target: "http://localhost:8000",
+      '/rename': {
+        target: 'http://localhost:8000',
         changeOrigin: true,
       },
     },
