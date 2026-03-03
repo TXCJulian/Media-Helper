@@ -84,3 +84,42 @@ class TestCleanFilename:
 
     def test_strips_whitespace(self):
         assert clean_filename("  name  ") == "name"
+
+
+from app.rename_episodes import extract_episode_number
+
+
+class TestExtractEpisodeNumber:
+    def test_sxxexx_standard(self):
+        assert extract_episode_number("S01E05.mkv") == 5
+        assert extract_episode_number("S03E28.mkv") == 28
+
+    def test_sxxexx_lowercase(self):
+        assert extract_episode_number("s01e05.mkv") == 5
+
+    def test_sxxexx_short(self):
+        assert extract_episode_number("s1e3.mkv") == 3
+
+    def test_exx_pattern(self):
+        assert extract_episode_number("E05.mkv") == 5
+        assert extract_episode_number("e5.mkv") == 5
+
+    def test_plain_number(self):
+        assert extract_episode_number("03.mkv") == 3
+        assert extract_episode_number("3.mkv") == 3
+
+    def test_no_pattern(self):
+        assert extract_episode_number("My Episode Title.mkv") is None
+        assert extract_episode_number("Some Random Name.mkv") is None
+
+    def test_sxxexx_with_text(self):
+        """SxxExx embedded in text still extracts the number."""
+        assert extract_episode_number("My.Show.S01E05.Episode.Title.mkv") == 5
+
+    def test_exx_with_text(self):
+        assert extract_episode_number("Show E05 Title.mkv") == 5
+
+    def test_plain_number_not_extracted_from_text(self):
+        """Plain numbers should NOT be extracted if other text is present."""
+        assert extract_episode_number("The 100.mkv") is None
+        assert extract_episode_number("Episode 5 Title.mkv") is None

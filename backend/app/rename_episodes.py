@@ -41,6 +41,32 @@ def clean_filename(name: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "", name).strip()
 
 
+def extract_episode_number(filename: str) -> int | None:
+    """Extract episode number from filename using SxxExx, Exx, or plain number patterns.
+
+    Returns the episode number if found, None otherwise.
+    Plain numbers only match when they are the entire base filename.
+    """
+    base = os.path.splitext(filename)[0]
+
+    # Pattern 1: SxxExx anywhere in filename
+    m = re.search(r"[Ss]\d{1,2}[Ee](\d{1,3})", base)
+    if m:
+        return int(m.group(1))
+
+    # Pattern 2: Exx anywhere in filename (but not preceded by alphanumeric)
+    m = re.search(r"(?<![a-zA-Z0-9])[Ee](\d{1,3})(?![a-zA-Z0-9])", base)
+    if m:
+        return int(m.group(1))
+
+    # Pattern 3: Plain number — only if it IS the entire base name
+    m = re.fullmatch(r"(\d{1,3})", base.strip())
+    if m:
+        return int(m.group(1))
+
+    return None
+
+
 def tmdb_search_show(series_name: str, language: str) -> int:
     url = f"https://api.themoviedb.org/3/search/tv?api_key={API_KEY}&query={urllib.parse.quote(series_name)}&language={language}"
     r = requests.get(url, timeout=30)
