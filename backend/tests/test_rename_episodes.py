@@ -123,3 +123,32 @@ class TestExtractEpisodeNumber:
         """Plain numbers should NOT be extracted if other text is present."""
         assert extract_episode_number("The 100.mkv") is None
         assert extract_episode_number("Episode 5 Title.mkv") is None
+
+
+from app.rename_episodes import is_pattern_only
+
+
+class TestIsPatternOnly:
+    def test_sxxexx_only(self):
+        assert is_pattern_only("S03E28.mkv") is True
+        assert is_pattern_only("s1e3.mkv") is True
+
+    def test_exx_only(self):
+        assert is_pattern_only("E05.mkv") is True
+        assert is_pattern_only("e5.mkv") is True
+
+    def test_plain_number_only(self):
+        assert is_pattern_only("03.mkv") is True
+        assert is_pattern_only("3.mkv") is True
+
+    def test_sxxexx_with_text(self):
+        assert is_pattern_only("S03E28 Some Title.mkv") is False
+        assert is_pattern_only("My Episode S01E03.mkv") is False
+
+    def test_no_pattern(self):
+        assert is_pattern_only("My Episode Title.mkv") is False
+
+    def test_sxxexx_with_dashes_dots(self):
+        """Separators without text are still pattern-only."""
+        assert is_pattern_only("S03E28 - .mkv") is True
+        assert is_pattern_only("S03E28..mkv") is True

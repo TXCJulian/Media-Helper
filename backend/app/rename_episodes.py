@@ -67,6 +67,18 @@ def extract_episode_number(filename: str) -> int | None:
     return None
 
 
+def is_pattern_only(filename: str) -> bool:
+    """Check if filename contains only an episode pattern with no meaningful text."""
+    base = os.path.splitext(filename)[0]
+    # Strip all recognized patterns
+    stripped = re.sub(r"[Ss]\d{1,2}[Ee]\d{1,3}", "", base)
+    stripped = re.sub(r"(?<![a-zA-Z0-9])[Ee]\d{1,3}(?![a-zA-Z0-9])", "", stripped)
+    stripped = re.sub(r"\d+", "", stripped)
+    # Strip non-alphanumeric
+    stripped = re.sub(r"[^a-zA-Z]", "", stripped)
+    return len(stripped) == 0
+
+
 def tmdb_search_show(series_name: str, language: str) -> int:
     url = f"https://api.themoviedb.org/3/search/tv?api_key={API_KEY}&query={urllib.parse.quote(series_name)}&language={language}"
     r = requests.get(url, timeout=30)
