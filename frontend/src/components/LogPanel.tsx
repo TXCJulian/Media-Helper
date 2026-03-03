@@ -47,9 +47,9 @@ export default function LogPanel({
           Output
         </span>
       </div>
-      <div ref={bodyRef} className="max-h-[180px] overflow-y-auto bg-[rgba(0,0,0,0.25)] px-5 py-4">
+      <div ref={bodyRef} className="max-h-[180px] overflow-auto bg-[rgba(0,0,0,0.25)] px-5 py-4">
         <pre
-          className={`font-[JetBrains_Mono,monospace] text-[0.78rem] leading-[1.7] whitespace-pre-wrap break-all ${
+          className={`font-[JetBrains_Mono,monospace] text-[0.78rem] leading-[1.7] whitespace-pre ${
             error
               ? 'text-[var(--error)]'
               : isIdle

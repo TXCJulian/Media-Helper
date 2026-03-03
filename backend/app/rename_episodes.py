@@ -218,7 +218,7 @@ def rename_episodes(
         for i, (f, num, title, score) in enumerate(assignments):
             if num is None and leftovers:
                 ep = leftovers.pop(0)
-                assignments[i] = (f, ep["num"], ep["title"], score)
+                assignments[i] = (f, ep["num"], ep["title"], -3.0)  # -3.0 signals sequential
 
     renamed_count = 0
     already_correct_count = 0
@@ -241,6 +241,8 @@ def rename_episodes(
             match_info = "(pattern-match)"
         elif score == -2.0:
             match_info = "(fallback-pattern)"
+        elif score == -3.0:
+            match_info = "(sequential)"
         else:
             match_info = f"(match={score:.2f})"
 
