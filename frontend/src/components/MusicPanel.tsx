@@ -2,13 +2,29 @@ import { useCallback, useEffect, useState } from 'react'
 import { fetchJson, postForm, postRefresh } from '@/lib/api'
 import { useDebounce } from '@/hooks/useDebounce'
 import type { DirectoriesResponse, MusicForm, RenameResponse } from '@/types'
+import PanelLayout from '@/components/PanelLayout'
+import LogPanel from '@/components/LogPanel'
+import FormSection from '@/components/ui/FormSection'
+import DirectorySelect from '@/components/ui/DirectorySelect'
+import ToggleSwitch from '@/components/ui/ToggleSwitch'
 
 interface MusicPanelProps {
   onLog: (log: string[]) => void
   onError: (error: string) => void
+  onBack: () => void
+  log: string[]
+  error: string
+  hasStarted: boolean
 }
 
-export default function MusicPanel({ onLog, onError }: MusicPanelProps) {
+export default function MusicPanel({
+  onLog,
+  onError,
+  onBack,
+  log,
+  error,
+  hasStarted,
+}: MusicPanelProps) {
   const [form, setForm] = useState<MusicForm>({
     artist: '',
     album: '',
@@ -39,17 +55,13 @@ export default function MusicPanel({ onLog, onError }: MusicPanelProps) {
             dirs.length > 0 ? (dirs.includes(prev.directory) ? prev.directory : dirs[0]!) : '',
         }))
       } catch (err) {
-        onError(`Fehler beim Laden der Verzeichnisse: ${err instanceof Error ? err.message : String(err)}`)
+        onError(`Error loading directories: ${err instanceof Error ? err.message : String(err)}`)
       } finally {
         setIsLoadingDirs(false)
       }
     },
     [onError],
   )
-
-  useEffect(() => {
-    void fetchDirs('', '')
-  }, [fetchDirs])
 
   useEffect(() => {
     void fetchDirs(debouncedArtist, debouncedAlbum)
@@ -61,7 +73,7 @@ export default function MusicPanel({ onLog, onError }: MusicPanelProps) {
     try {
       await postRefresh()
     } catch (err) {
-      onError(`Fehler beim Aktualisieren: ${err instanceof Error ? err.message : String(err)}`)
+      onError(`Error refreshing: ${err instanceof Error ? err.message : String(err)}`)
     }
     await fetchDirs(form.artist, form.album)
   }
@@ -81,7 +93,7 @@ export default function MusicPanel({ onLog, onError }: MusicPanelProps) {
       onLog(data.log ?? [])
       if (data.directories) setDirectories(data.directories)
     } catch (err) {
-      onError(`Fehler beim Umbenennen: ${err instanceof Error ? err.message : String(err)}`)
+      onError(`Error renaming: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setIsRenaming(false)
     }
@@ -93,87 +105,67 @@ export default function MusicPanel({ onLog, onError }: MusicPanelProps) {
   const busy = isLoadingDirs || isRenaming
 
   return (
-    <div className="flex flex-col">
-      <h2 className="mb-3 text-center text-xl font-semibold">Music Renamer</h2>
-      <form
-        onSubmit={(e) => void handleSubmit(e)}
-        className="flex flex-1 flex-col rounded-lg bg-[#1e1e1e] p-5 shadow-md"
-      >
-        <div className="mb-2">
-          <label className="block font-semibold text-[#bbb]">Künstler:</label>
-          <input
-            type="text"
-            value={form.artist}
-            onChange={(e) => update('artist', e.target.value)}
-            placeholder="Name des Künstlers"
-            className="mt-1 h-10 w-full rounded border border-[#333] bg-[#2a2a2a] px-2 text-[#e0e0e0]"
-          />
-        </div>
+    <PanelLayout title="Music Renamer" onBack={onBack}>
+      <form onSubmit={(e) => void handleSubmit(e)}>
+        <FormSection label="Search">
+          <div className="flex gap-3">
+            <div className="mb-3 flex-1">
+              <label className="field-label">Artist</label>
+              <input
+                type="text"
+                value={form.artist}
+                onChange={(e) => update('artist', e.target.value)}
+                placeholder="Artist name"
+                className="input-field input-indigo"
+              />
+            </div>
+            <div className="mb-3 flex-1">
+              <label className="field-label">Album</label>
+              <input
+                type="text"
+                value={form.album}
+                onChange={(e) => update('album', e.target.value)}
+                placeholder="Album name"
+                className="input-field input-indigo"
+              />
+            </div>
+          </div>
+        </FormSection>
 
-        <div className="mb-2">
-          <label className="mt-4 block font-semibold text-[#bbb]">Album:</label>
-          <input
-            type="text"
-            value={form.album}
-            onChange={(e) => update('album', e.target.value)}
-            placeholder="Name des Albums"
-            className="mt-1 h-10 w-full rounded border border-[#333] bg-[#2a2a2a] px-2 text-[#e0e0e0]"
-          />
-        </div>
-
-        <div className="mb-2">
-          <label className="mt-4 block font-semibold text-[#bbb]">Verzeichnis:</label>
-          <select
+        <FormSection label="Directory">
+          <DirectorySelect
+            directories={directories}
             value={form.directory}
-            onChange={(e) => update('directory', e.target.value)}
+            onChange={(v) => update('directory', v)}
+            onRefresh={() => void handleRefresh()}
+            isLoading={isLoadingDirs}
             disabled={busy}
-            required
-            className="mt-1 h-10 w-full rounded border border-[#333] bg-[#2a2a2a] px-2 text-[#e0e0e0]"
-          >
-            {directories.length > 0 ? (
-              directories.map((dir) => (
-                <option key={dir} value={dir}>
-                  {dir}
-                </option>
-              ))
-            ) : (
-              <option disabled value="">
-                Keine Ordner gefunden
-              </option>
-            )}
-          </select>
-          <button
-            type="button"
-            onClick={() => void handleRefresh()}
-            disabled={busy}
-            className="relative mt-5 inline-flex h-10 w-full items-center justify-center rounded bg-blue-600 px-4 text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
-          >
-            {isLoadingDirs ? <span className="spinner-sm" /> : 'Verzeichnisse neu laden'}
-          </button>
-        </div>
-
-        <div className="mt-4 flex items-center gap-2">
-          <input
-            type="checkbox"
-            id="dry_run_mu"
-            checked={form.dry_run}
-            onChange={(e) => update('dry_run', e.target.checked)}
+            color="indigo"
           />
-          <label htmlFor="dry_run_mu" className="m-0 inline whitespace-nowrap">
-            --dry-run
-          </label>
-        </div>
+        </FormSection>
 
-        <div className="mt-auto">
-          <button
-            type="submit"
+        <FormSection label="Options">
+          <ToggleSwitch
+            checked={form.dry_run}
+            onChange={(v) => update('dry_run', v)}
             disabled={busy}
-            className="relative mt-5 inline-flex h-10 w-full items-center justify-center rounded bg-blue-600 px-4 text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
-          >
-            {isRenaming ? <span className="spinner-md" /> : 'Umbenennen'}
-          </button>
-        </div>
+            color="indigo"
+            label="Dry Run"
+          />
+        </FormSection>
+
+        <button type="submit" disabled={busy} className="btn-submit btn-indigo">
+          {isRenaming ? <span className="spinner-md" /> : 'Rename'}
+        </button>
+
+        <LogPanel
+          log={log}
+          error={error}
+          hasStarted={hasStarted}
+          color="indigo"
+          idleMessage="Ready for renaming..."
+        />
       </form>
-    </div>
+    </PanelLayout>
   )
 }
