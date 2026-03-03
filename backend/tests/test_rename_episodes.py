@@ -152,3 +152,76 @@ class TestIsPatternOnly:
         """Separators without text are still pattern-only."""
         assert is_pattern_only("S03E28 - .mkv") is True
         assert is_pattern_only("S03E28..mkv") is True
+
+
+from unittest.mock import patch
+
+MOCK_SEASON_EPISODES = [
+    {"episode_number": 1, "name": "Episode One"},
+    {"episode_number": 2, "name": "Episode Two"},
+    {"episode_number": 3, "name": "Episode Three"},
+]
+
+
+class TestRenameEpisodesPatternFallback:
+    """Integration tests for the SxxExx pattern fallback matching."""
+
+    @patch("app.rename_episodes.tmdb_get_season", return_value=MOCK_SEASON_EPISODES)
+    @patch("app.rename_episodes.tmdb_search_show", return_value=12345)
+    def test_pattern_only_files_match_by_number(
+        self, mock_search, mock_season, tmp_tvshow_pattern_dir
+    ):
+        from app.rename_episodes import rename_episodes
+
+        logs, error = rename_episodes(
+            series="PatternShow",
+            season=1,
+            directory=str(tmp_tvshow_pattern_dir),
+            dry_run=True,
+        )
+        assert error is None
+        # All 3 files should be matched (renamed or already correct)
+        rename_or_ok = [l for l in logs if "[DRYRUN]" in l or "[  OK  ]" in l]
+        assert len(rename_or_ok) == 3
+        # Should contain pattern-match indicator
+        pattern_matches = [l for l in logs if "pattern" in l.lower()]
+        assert len(pattern_matches) >= 1
+
+    @patch("app.rename_episodes.tmdb_get_season", return_value=MOCK_SEASON_EPISODES)
+    @patch("app.rename_episodes.tmdb_search_show", return_value=12345)
+    def test_mixed_files_fuzzy_first_then_fallback(
+        self, mock_search, mock_season, tmp_tvshow_mixed_dir
+    ):
+        from app.rename_episodes import rename_episodes
+
+        logs, error = rename_episodes(
+            series="MixedShow",
+            season=1,
+            directory=str(tmp_tvshow_mixed_dir),
+            dry_run=True,
+        )
+        assert error is None
+        # All 3 should match — no skips
+        skips = [l for l in logs if "[ SKIP ]" in l]
+        assert len(skips) == 0
+
+    @patch("app.rename_episodes.tmdb_get_season", return_value=MOCK_SEASON_EPISODES)
+    @patch("app.rename_episodes.tmdb_search_show", return_value=12345)
+    def test_pattern_only_nonexistent_episode_skipped(
+        self, mock_search, mock_season, tmp_media_dir
+    ):
+        from app.rename_episodes import rename_episodes
+
+        show_dir = tmp_media_dir / "TV Shows" / "SkipShow" / "Season 01"
+        show_dir.mkdir(parents=True)
+        (show_dir / "S01E99.mkv").write_bytes(b"\x00" * 100)
+
+        logs, error = rename_episodes(
+            series="SkipShow",
+            season=1,
+            directory=str(show_dir),
+            dry_run=True,
+        )
+        assert error is None
+        skips = [l for l in logs if "[ SKIP ]" in l]
+        assert len(skips) == 1
