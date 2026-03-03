@@ -41,6 +41,44 @@ def clean_filename(name: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "", name).strip()
 
 
+def extract_episode_number(filename: str) -> int | None:
+    """Extract episode number from filename using SxxExx, Exx, or plain number patterns.
+
+    Returns the episode number if found, None otherwise.
+    Plain numbers only match when they are the entire base filename.
+    """
+    base = os.path.splitext(filename)[0]
+
+    # Pattern 1: SxxExx anywhere in filename
+    m = re.search(r"[Ss]\d{1,2}[Ee](\d{1,3})", base)
+    if m:
+        return int(m.group(1))
+
+    # Pattern 2: Exx anywhere in filename (but not preceded by alphanumeric)
+    m = re.search(r"(?<![a-zA-Z0-9])[Ee](\d{1,3})(?![a-zA-Z0-9])", base)
+    if m:
+        return int(m.group(1))
+
+    # Pattern 3: Plain number — only if it IS the entire base name
+    m = re.fullmatch(r"(\d{1,3})", base.strip())
+    if m:
+        return int(m.group(1))
+
+    return None
+
+
+def is_pattern_only(filename: str) -> bool:
+    """Check if filename contains only an episode pattern with no meaningful text."""
+    base = os.path.splitext(filename)[0]
+    # Strip all recognized patterns
+    stripped = re.sub(r"[Ss]\d{1,2}[Ee]\d{1,3}", "", base)
+    stripped = re.sub(r"(?<![a-zA-Z0-9])[Ee]\d{1,3}(?![a-zA-Z0-9])", "", stripped)
+    stripped = re.sub(r"\d+", "", stripped)
+    # Strip non-alphanumeric
+    stripped = re.sub(r"[^a-zA-Z]", "", stripped)
+    return len(stripped) == 0
+
+
 def tmdb_search_show(series_name: str, language: str) -> int:
     url = f"https://api.themoviedb.org/3/search/tv?api_key={API_KEY}&query={urllib.parse.quote(series_name)}&language={language}"
     r = requests.get(url, timeout=30)
@@ -127,20 +165,56 @@ def rename_episodes(
     ]
     files.sort()
 
-    assignments = []
-    unused = remaining[:]
+    # Build episode lookup by number for direct pattern matching
+    ep_by_num = {e["num"]: e for e in remaining}
 
+    assignments = []
+    used_nums = set()
+
+    # Phase 1: Handle pattern-only files with direct episode number mapping
+    pattern_only_files = []
+    text_files = []
     for f in files:
+        if is_pattern_only(f):
+            pattern_only_files.append(f)
+        else:
+            text_files.append(f)
+
+    for f in pattern_only_files:
+        ep_num = extract_episode_number(f)
+        if ep_num is not None and ep_num in ep_by_num and ep_num not in used_nums:
+            ep = ep_by_num[ep_num]
+            used_nums.add(ep_num)
+            assignments.append((f, ep["num"], ep["title"], -1.0))  # -1.0 signals pattern-match
+        else:
+            assignments.append((f, None, None, 0.0))
+
+    # Remove used episodes from the fuzzy matching pool
+    unused = [e for e in remaining if e["num"] not in used_nums]
+
+    # Phase 2: Fuzzy match text files, with pattern fallback
+    for f in text_files:
         n = normalize_string(f)
         best_idx, best_score = best_match(n, [e["title_norm"] for e in unused])
         if best_idx >= 0 and best_score >= threshold:
             ep = unused.pop(best_idx)
+            used_nums.add(ep["num"])
             assignments.append((f, ep["num"], ep["title"], best_score))
         else:
-            assignments.append((f, None, None, best_score))
+            # Fallback: try extracting episode number from filename
+            ep_num = extract_episode_number(f)
+            if ep_num is not None and ep_num in ep_by_num and ep_num not in used_nums:
+                ep = ep_by_num[ep_num]
+                used_nums.add(ep_num)
+                # Remove from unused pool too
+                unused = [e for e in unused if e["num"] != ep_num]
+                assignments.append((f, ep["num"], ep["title"], -2.0))  # -2.0 signals fallback-pattern
+            else:
+                assignments.append((f, None, None, best_score))
 
+    # Assign sequence for remaining unmatched files (existing behavior)
     if assign_seq:
-        leftovers = [e for e in unused]
+        leftovers = [e for e in remaining if e["num"] not in used_nums]
         for i, (f, num, title, score) in enumerate(assignments):
             if num is None and leftovers:
                 ep = leftovers.pop(0)
@@ -162,6 +236,14 @@ def rename_episodes(
         src = os.path.join(directory, f)
         dst = os.path.join(directory, new_name)
 
+        # Determine match type label for logging
+        if score == -1.0:
+            match_info = "(pattern-match)"
+        elif score == -2.0:
+            match_info = "(fallback-pattern)"
+        else:
+            match_info = f"(match={score:.2f})"
+
         if os.path.abspath(src) == os.path.abspath(dst):
             logs.append(f"[  OK  ]\t'{f}' already correct")
             already_correct_count += 1
@@ -170,7 +252,7 @@ def rename_episodes(
             dst = collision_safe_path(dst)
             if not dry_run:
                 logs.append(
-                    f"[RENAME]\t'{f}' -> {os.path.basename(dst)}  (match={score:.2f})"
+                    f"[RENAME]\t'{f}' -> {os.path.basename(dst)}  {match_info}"
                 )
                 renamed_count += 1
                 os.rename(src, dst)
@@ -182,7 +264,7 @@ def rename_episodes(
                         logs.append(f"\t[!] .nfo deletion failed: {e}")
             else:
                 logs.append(
-                    f"[DRYRUN]\tWould rename '{f}' -> {os.path.basename(dst)}  (match={score:.2f})"
+                    f"[DRYRUN]\tWould rename '{f}' -> {os.path.basename(dst)}  {match_info}"
                 )
                 renamed_count += 1
                 old_nfo = os.path.splitext(src)[0] + ".nfo"

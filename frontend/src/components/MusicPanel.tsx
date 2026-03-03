@@ -55,19 +55,13 @@ export default function MusicPanel({
             dirs.length > 0 ? (dirs.includes(prev.directory) ? prev.directory : dirs[0]!) : '',
         }))
       } catch (err) {
-        onError(
-          `Fehler beim Laden der Verzeichnisse: ${err instanceof Error ? err.message : String(err)}`,
-        )
+        onError(`Error loading directories: ${err instanceof Error ? err.message : String(err)}`)
       } finally {
         setIsLoadingDirs(false)
       }
     },
     [onError],
   )
-
-  useEffect(() => {
-    void fetchDirs('', '')
-  }, [fetchDirs])
 
   useEffect(() => {
     void fetchDirs(debouncedArtist, debouncedAlbum)
@@ -79,7 +73,7 @@ export default function MusicPanel({
     try {
       await postRefresh()
     } catch (err) {
-      onError(`Fehler beim Aktualisieren: ${err instanceof Error ? err.message : String(err)}`)
+      onError(`Error refreshing: ${err instanceof Error ? err.message : String(err)}`)
     }
     await fetchDirs(form.artist, form.album)
   }
@@ -99,7 +93,7 @@ export default function MusicPanel({
       onLog(data.log ?? [])
       if (data.directories) setDirectories(data.directories)
     } catch (err) {
-      onError(`Fehler beim Umbenennen: ${err instanceof Error ? err.message : String(err)}`)
+      onError(`Error renaming: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setIsRenaming(false)
     }
@@ -116,12 +110,12 @@ export default function MusicPanel({
         <FormSection label="Search">
           <div className="flex gap-3">
             <div className="mb-3 flex-1">
-              <label className="field-label">Künstler</label>
+              <label className="field-label">Artist</label>
               <input
                 type="text"
                 value={form.artist}
                 onChange={(e) => update('artist', e.target.value)}
-                placeholder="Name des Künstlers"
+                placeholder="Artist name"
                 className="input-field input-indigo"
               />
             </div>
@@ -131,7 +125,7 @@ export default function MusicPanel({
                 type="text"
                 value={form.album}
                 onChange={(e) => update('album', e.target.value)}
-                placeholder="Name des Albums"
+                placeholder="Album name"
                 className="input-field input-indigo"
               />
             </div>
@@ -161,7 +155,7 @@ export default function MusicPanel({
         </FormSection>
 
         <button type="submit" disabled={busy} className="btn-submit btn-indigo">
-          {isRenaming ? <span className="spinner-md" /> : 'Umbenennen'}
+          {isRenaming ? <span className="spinner-md" /> : 'Rename'}
         </button>
 
         <LogPanel

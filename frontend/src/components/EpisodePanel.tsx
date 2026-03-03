@@ -6,8 +6,8 @@ import PanelLayout from '@/components/PanelLayout'
 import LogPanel from '@/components/LogPanel'
 import FormSection from '@/components/ui/FormSection'
 import DirectorySelect from '@/components/ui/DirectorySelect'
-import ToggleSwitch from '@/components/ui/ToggleSwitch'
 import SegmentedControl from '@/components/ui/SegmentedControl'
+import ToggleSwitch from '@/components/ui/ToggleSwitch'
 
 interface EpisodePanelProps {
   onLog: (log: string[]) => void
@@ -38,6 +38,7 @@ export default function EpisodePanel({
   const [directories, setDirectories] = useState<string[]>([])
   const [isLoadingDirs, setIsLoadingDirs] = useState(false)
   const [isRenaming, setIsRenaming] = useState(false)
+  const [touched, setTouched] = useState(false)
 
   const debouncedSeries = useDebounce(form.series, 500)
   const debouncedSeason = useDebounce(form.season, 500)
@@ -59,19 +60,13 @@ export default function EpisodePanel({
             dirs.length > 0 ? (dirs.includes(prev.directory) ? prev.directory : dirs[0]!) : '',
         }))
       } catch (err) {
-        onError(
-          `Fehler beim Laden der Verzeichnisse: ${err instanceof Error ? err.message : String(err)}`,
-        )
+        onError(`Error loading directories: ${err instanceof Error ? err.message : String(err)}`)
       } finally {
         setIsLoadingDirs(false)
       }
     },
     [onError],
   )
-
-  useEffect(() => {
-    void fetchDirs('', 0)
-  }, [fetchDirs])
 
   useEffect(() => {
     void fetchDirs(debouncedSeries, debouncedSeason)
@@ -83,13 +78,15 @@ export default function EpisodePanel({
     try {
       await postRefresh()
     } catch (err) {
-      onError(`Fehler beim Aktualisieren: ${err instanceof Error ? err.message : String(err)}`)
+      onError(`Error refreshing: ${err instanceof Error ? err.message : String(err)}`)
     }
     await fetchDirs(form.series, form.season)
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    setTouched(true)
+    if (!form.series.trim() || !form.season) return
     setIsRenaming(true)
     onError('')
     onLog([])
@@ -108,7 +105,7 @@ export default function EpisodePanel({
       onLog(data.log ?? [])
       if (data.directories) setDirectories(data.directories)
     } catch (err) {
-      onError(`Fehler beim Umbenennen: ${err instanceof Error ? err.message : String(err)}`)
+      onError(`Error renaming: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setIsRenaming(false)
     }
@@ -118,33 +115,43 @@ export default function EpisodePanel({
     setForm((prev) => ({ ...prev, [key]: value }))
 
   const busy = isLoadingDirs || isRenaming
+  const showSeriesError = touched && !form.series.trim()
+  const showSeasonError = touched && !form.season
 
   return (
     <PanelLayout title="Episode Renamer" onBack={onBack}>
-      <form onSubmit={(e) => void handleSubmit(e)}>
+      <form noValidate onSubmit={(e) => void handleSubmit(e)}>
         <FormSection label="Search">
           <div className="flex gap-3">
             <div className="mb-3 flex-1">
-              <label className="field-label">Serie</label>
+              <label className="field-label">Series</label>
               <input
                 type="text"
                 value={form.series}
                 onChange={(e) => update('series', e.target.value)}
-                placeholder="Name der Serie"
-                required
-                className="input-field input-blue"
+                placeholder="Series name"
+                className={`input-field input-blue ${showSeriesError ? 'input-error' : ''}`}
               />
+              {showSeriesError && (
+                <span className="mt-[0.3rem] block text-[0.7rem] text-[var(--error)]">
+                  Series name is required
+                </span>
+              )}
             </div>
-            <div className="mb-3 w-28">
-              <label className="field-label">Staffel</label>
+            <div className="mb-3 max-w-[110px]">
+              <label className="field-label">Season</label>
               <input
                 type="number"
                 value={form.season}
                 onChange={(e) => update('season', Number(e.target.value))}
                 min={1}
-                required
-                className="input-field input-blue"
+                className={`input-field input-blue ${showSeasonError ? 'input-error' : ''}`}
               />
+              {showSeasonError && (
+                <span className="mt-[0.3rem] block text-[0.7rem] text-[var(--error)]">
+                  Required
+                </span>
+              )}
             </div>
           </div>
         </FormSection>
@@ -163,11 +170,11 @@ export default function EpisodePanel({
 
         <FormSection label="Options">
           <div className="mb-3">
-            <label className="field-label">Sprache</label>
+            <label className="field-label">Language</label>
             <SegmentedControl
               options={[
-                { label: 'Deutsch', value: 'de' },
-                { label: 'English', value: 'en' },
+                { label: 'DE', value: 'de' },
+                { label: 'EN', value: 'en' },
               ]}
               value={form.lang}
               onChange={(v) => update('lang', v)}
@@ -176,20 +183,7 @@ export default function EpisodePanel({
             />
           </div>
 
-          <div className="mb-3">
-            <label className="field-label">Match Threshold</label>
-            <input
-              type="number"
-              value={form.threshold}
-              onChange={(e) => update('threshold', Number(e.target.value))}
-              step={0.05}
-              min={0}
-              max={1}
-              className="input-field input-blue !w-28"
-            />
-          </div>
-
-          <div className="mt-2">
+          <div className="mt-[0.35rem] flex flex-col gap-2">
             <ToggleSwitch
               checked={form.dry_run}
               onChange={(v) => update('dry_run', v)}
@@ -197,20 +191,36 @@ export default function EpisodePanel({
               color="blue"
               label="Dry Run"
             />
-          </div>
-          <div className="mt-[0.4rem]">
             <ToggleSwitch
               checked={form.assign_seq}
               onChange={(v) => update('assign_seq', v)}
               disabled={busy}
               color="blue"
-              label="Assign Sequential (SxxExx fallback)"
+              label="Assign Sequence"
             />
+          </div>
+
+          <div className="mt-[0.85rem]">
+            <label className="field-label">Match Threshold</label>
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={form.threshold}
+                onChange={(e) => update('threshold', Number(e.target.value))}
+                className="h-1 flex-1 cursor-pointer appearance-none rounded-sm bg-[rgba(255,255,255,0.07)] outline-none [&::-webkit-slider-thumb]:h-[18px] [&::-webkit-slider-thumb]:w-[18px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[var(--accent)] [&::-webkit-slider-thumb]:shadow-[0_0_14px_var(--accent-glow-strong)] [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:duration-150 hover:[&::-webkit-slider-thumb]:scale-115"
+              />
+              <span className="min-w-[2.5rem] text-right font-[JetBrains_Mono,monospace] text-[0.8rem] text-[var(--accent-light)]">
+                {form.threshold}
+              </span>
+            </div>
           </div>
         </FormSection>
 
         <button type="submit" disabled={busy} className="btn-submit btn-blue">
-          {isRenaming ? <span className="spinner-md" /> : 'Umbenennen'}
+          {isRenaming ? <span className="spinner-md" /> : 'Rename'}
         </button>
 
         <LogPanel
