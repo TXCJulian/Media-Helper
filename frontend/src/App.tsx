@@ -1,44 +1,101 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import Landing from '@/components/Landing'
+import type { PanelName } from '@/components/Landing'
 import EpisodePanel from '@/components/EpisodePanel'
 import MusicPanel from '@/components/MusicPanel'
-import LogDisplay from '@/components/LogDisplay'
+import LyricsPanel from '@/components/LyricsPanel'
+import { fetchConfig } from '@/lib/api'
 
 export default function App() {
+  const [activeView, setActiveView] = useState<'home' | PanelName>('home')
+  const [enabledFeatures, setEnabledFeatures] = useState<PanelName[]>([])
+
+  useEffect(() => {
+    fetchConfig()
+      .then((cfg) => setEnabledFeatures(cfg.features as PanelName[]))
+      .catch(() => setEnabledFeatures(['episodes', 'music']))
+  }, [])
+
+  // Per-panel log + error state
   const [episodeLog, setEpisodeLog] = useState<string[]>([])
+  const [episodeError, setEpisodeError] = useState('')
+  const [episodeStarted, setEpisodeStarted] = useState(false)
+
   const [musicLog, setMusicLog] = useState<string[]>([])
-  const [error, setError] = useState('')
-  const [hasStartedRename, setHasStartedRename] = useState(false)
+  const [musicError, setMusicError] = useState('')
+  const [musicStarted, setMusicStarted] = useState(false)
+
+  const [lyricsLog, setLyricsLog] = useState<string[]>([])
+  const [lyricsError, setLyricsError] = useState('')
+  const [lyricsStarted, setLyricsStarted] = useState(false)
 
   const handleEpisodeLog = useCallback((log: string[]) => {
-    setHasStartedRename(true)
+    setEpisodeStarted(true)
     setEpisodeLog(log)
-    setMusicLog([])
   }, [])
 
   const handleMusicLog = useCallback((log: string[]) => {
-    setHasStartedRename(true)
+    setMusicStarted(true)
     setMusicLog(log)
-    setEpisodeLog([])
   }, [])
 
-  const handleError = useCallback((err: string) => {
-    setError(err)
+  const handleLyricsLog = useCallback((log: string[]) => {
+    setLyricsStarted(true)
+    setLyricsLog(log)
   }, [])
+
+  const handleEpisodeError = useCallback((err: string) => setEpisodeError(err), [])
+  const handleMusicError = useCallback((err: string) => setMusicError(err), [])
+  const handleLyricsError = useCallback((err: string) => setLyricsError(err), [])
+
+  const goHome = useCallback(() => {
+    setActiveView('home')
+    window.scrollTo(0, 0)
+  }, [])
+
+  const showPanel = useCallback((panel: PanelName) => {
+    setActiveView(panel)
+    window.scrollTo(0, 0)
+  }, [])
+
+  if (activeView === 'home') {
+    return <Landing onNavigate={showPanel} enabledFeatures={enabledFeatures} />
+  }
+
+  if (activeView === 'episodes') {
+    return (
+      <EpisodePanel
+        onLog={handleEpisodeLog}
+        onError={handleEpisodeError}
+        onBack={goHome}
+        log={episodeLog}
+        error={episodeError}
+        hasStarted={episodeStarted}
+      />
+    )
+  }
+
+  if (activeView === 'music') {
+    return (
+      <MusicPanel
+        onLog={handleMusicLog}
+        onError={handleMusicError}
+        onBack={goHome}
+        log={musicLog}
+        error={musicError}
+        hasStarted={musicStarted}
+      />
+    )
+  }
 
   return (
-    <div className="mx-auto w-full max-w-[1000px]">
-      <h1 className="mb-12 mt-0 text-center text-3xl font-bold text-white">Media Renamer</h1>
-
-      <div className="grid grid-cols-1 items-stretch gap-6 md:grid-cols-2">
-        <EpisodePanel onLog={handleEpisodeLog} onError={handleError} />
-        <MusicPanel onLog={handleMusicLog} onError={handleError} />
-        <LogDisplay
-          episodeLog={episodeLog}
-          musicLog={musicLog}
-          error={error}
-          hasStartedRename={hasStartedRename}
-        />
-      </div>
-    </div>
+    <LyricsPanel
+      onLog={handleLyricsLog}
+      onError={handleLyricsError}
+      onBack={goHome}
+      log={lyricsLog}
+      error={lyricsError}
+      hasStarted={lyricsStarted}
+    />
   )
 }

@@ -1,0 +1,86 @@
+"""Tests for episode renaming logic."""
+import pytest
+from app.rename_episodes import normalize_string, strip_accents, de_translit, best_match, clean_filename
+
+
+class TestNormalizeString:
+    def test_removes_episode_pattern(self):
+        result = normalize_string("My.Show.S01E05.Episode.Title.mkv")
+        assert "s01e05" not in result
+        assert "mkv" not in result
+
+    def test_lowercases(self):
+        result = normalize_string("HELLO WORLD")
+        assert result == "hello world"
+
+    def test_removes_special_chars(self):
+        result = normalize_string("hello-world_test!")
+        assert result == "hello world test"
+
+    def test_strips_extension(self):
+        result = normalize_string("video.mp4")
+        assert "mp4" not in result
+
+    def test_normalizes_whitespace(self):
+        result = normalize_string("too   many   spaces")
+        assert "  " not in result
+
+
+class TestStripAccents:
+    def test_removes_accents(self):
+        assert strip_accents("café") == "cafe"
+        assert strip_accents("naïve") == "naive"
+
+    def test_no_accents_unchanged(self):
+        assert strip_accents("hello") == "hello"
+
+
+class TestDeTranslit:
+    def test_german_umlauts(self):
+        assert de_translit("ä") == "ae"
+        assert de_translit("ö") == "oe"
+        assert de_translit("ü") == "ue"
+        assert de_translit("ß") == "ss"
+
+    def test_uppercase_umlauts(self):
+        assert de_translit("Ä") == "Ae"
+        assert de_translit("Ö") == "Oe"
+        assert de_translit("Ü") == "Ue"
+
+    def test_no_umlauts_unchanged(self):
+        assert de_translit("hello") == "hello"
+
+
+class TestBestMatch:
+    def test_exact_match(self):
+        candidates = ["episode one", "episode two", "episode three"]
+        idx, score = best_match("episode one", candidates)
+        assert idx == 0
+        assert score == 1.0
+
+    def test_closest_match(self):
+        candidates = ["the beginning", "the middle", "the end"]
+        idx, score = best_match("the beginning of time", candidates)
+        assert idx == 0
+        assert score > 0.5
+
+    def test_no_good_match(self):
+        candidates = ["completely different", "also different"]
+        idx, score = best_match("xyz abc", candidates)
+        assert score < 0.5
+
+    def test_empty_candidates(self):
+        idx, score = best_match("test", [])
+        assert idx == -1
+        assert score == 0.0
+
+
+class TestCleanFilename:
+    def test_removes_illegal_chars(self):
+        assert clean_filename('file:name?test*') == "filenametest"
+
+    def test_preserves_valid_chars(self):
+        assert clean_filename("valid name (1)") == "valid name (1)"
+
+    def test_strips_whitespace(self):
+        assert clean_filename("  name  ") == "name"

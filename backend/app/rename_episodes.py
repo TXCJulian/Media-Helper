@@ -1,24 +1,15 @@
 import os
 import re
+import logging
 import unicodedata
 import requests
 import urllib.parse
-import ast
 from difflib import SequenceMatcher
-from dotenv import load_dotenv
+from typing import Optional
+from app.config import TMDB_API_KEY as API_KEY, VALID_VIDEO_EXT
+from app.fs_utils import flush_directory, collision_safe_path
 
-load_dotenv("dependencies/.env")
-
-API_KEY = os.getenv("TMDB_API_KEY") or "YOUR_TMDB_API_KEY"
-
-env_ext = os.getenv("VALID_VIDEO_EXT")
-if env_ext:
-    try:
-        VALID_VIDEO_EXT = ast.literal_eval(env_ext)
-    except (ValueError, SyntaxError):
-        VALID_VIDEO_EXT = {".mp4", ".mkv", ".mov", ".avi"}
-else:
-    VALID_VIDEO_EXT = {".mp4", ".mkv", ".mov", ".avi"}
+logger = logging.getLogger(__name__)
 
 
 def strip_accents(s: str) -> str:
@@ -50,7 +41,7 @@ def clean_filename(name: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "", name).strip()
 
 
-def tmdb_search_show(series_name: str, language: str):
+def tmdb_search_show(series_name: str, language: str) -> int:
     url = f"https://api.themoviedb.org/3/search/tv?api_key={API_KEY}&query={urllib.parse.quote(series_name)}&language={language}"
     r = requests.get(url, timeout=30)
     r.raise_for_status()
@@ -60,7 +51,7 @@ def tmdb_search_show(series_name: str, language: str):
     return data["results"][0]["id"]
 
 
-def tmdb_get_season(show_id: int, season: int, language: str):
+def tmdb_get_season(show_id: int, season: int, language: str) -> list[dict]:
     url = f"https://api.themoviedb.org/3/tv/{show_id}/season/{season}?api_key={API_KEY}&language={language}"
     r = requests.get(url, timeout=30)
     r.raise_for_status()
@@ -81,7 +72,7 @@ def tmdb_get_season(show_id: int, season: int, language: str):
     return episodes
 
 
-def best_match(name_norm: str, candidates_norm: list):
+def best_match(name_norm: str, candidates_norm: list[str]) -> tuple[int, float]:
     best_i, best_score = -1, 0.0
     for i, c in enumerate(candidates_norm):
         score = SequenceMatcher(None, name_norm, c).ratio()
@@ -98,9 +89,9 @@ def rename_episodes(
     dry_run: bool = False,
     threshold: float = 0.6,
     assign_seq: bool = False,
-):
+) -> tuple[list[str], Optional[str]]:
 
-    logs = []
+    logs: list[str] = []
 
     if not API_KEY or API_KEY.startswith("DEIN_"):
         return logs, "Please set the TMDB API_KEY in the script."
@@ -176,15 +167,7 @@ def rename_episodes(
             already_correct_count += 1
             continue
         else:
-            if os.path.exists(dst):
-                base, ext2 = os.path.splitext(dst)
-                k = 1
-                while True:
-                    cand = f"{base} ({k}){ext2}"
-                    if not os.path.exists(cand):
-                        dst = cand
-                        break
-                    k += 1
+            dst = collision_safe_path(dst)
             if not dry_run:
                 logs.append(
                     f"[RENAME]\t'{f}' -> {os.path.basename(dst)}  (match={score:.2f})"
@@ -197,26 +180,6 @@ def rename_episodes(
                         os.remove(old_nfo)
                     except Exception as e:
                         logs.append(f"\t[!] .nfo deletion failed: {e}")
-                # try to flush directory metadata so mount clients (SMB/CIFS) notice the change
-                try:
-                    if hasattr(os, "O_DIRECTORY"):
-                        dir_flag = getattr(os, "O_DIRECTORY", 0)
-                        dir_fd = os.open(directory, dir_flag | os.O_RDONLY)
-                        try:
-                            os.fsync(dir_fd)
-                        finally:
-                            os.close(dir_fd)
-                    else:
-                        sync_fn = getattr(os, "sync", None)
-                        if sync_fn:
-                            sync_fn()
-                except Exception:
-                    try:
-                        sync_fn = getattr(os, "sync", None)
-                        if sync_fn:
-                            sync_fn()
-                    except Exception:
-                        pass
             else:
                 logs.append(
                     f"[DRYRUN]\tWould rename '{f}' -> {os.path.basename(dst)}  (match={score:.2f})"
@@ -227,6 +190,9 @@ def rename_episodes(
                     logs.append(
                         f"[DELETE]\tWould remove .nfo file: {os.path.basename(old_nfo)}"
                     )
+
+    if not dry_run and renamed_count > 0:
+        flush_directory(directory)
 
     if dry_run:
         logs.append(

@@ -1,18 +1,12 @@
 import os
-import ast
-from dotenv import load_dotenv
 from functools import lru_cache
 
-load_dotenv("dependencies/.env")
-
-BASE_PATH = os.getenv("BASE_PATH") or "/media"
-TVSHOW_FOLDER_NAME = os.getenv("TVSHOW_FOLDER_NAME") or "TV Shows"
-MUSIC_FOLDER_NAME = os.getenv("MUSIC_FOLDER_NAME") or "Music"
-VALID_VIDEO_EXT = set(
-    ast.literal_eval(os.getenv("VALID_VIDEO_EXT", "{'.mp4', '.mkv', '.mov', '.avi'}"))
-)
-VALID_MUSIC_EXT = set(
-    ast.literal_eval(os.getenv("VALID_MUSIC_EXT", "{'.mp3', '.flac', '.m4a', '.wav'}"))
+from app.config import (
+    BASE_PATH,
+    TVSHOW_FOLDER_NAME,
+    MUSIC_FOLDER_NAME,
+    VALID_VIDEO_EXT,
+    VALID_MUSIC_EXT,
 )
 
 
