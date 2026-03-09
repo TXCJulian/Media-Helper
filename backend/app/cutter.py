@@ -1,4 +1,5 @@
 import base64
+import functools
 import json
 import logging
 import os
@@ -7,12 +8,13 @@ import struct
 import subprocess
 from typing import Callable, Optional
 
+from app.config import CUTTER_UPLOAD_DIR
 from app.fs_utils import collision_safe_path
 
 logger = logging.getLogger(__name__)
 
-# Waveform cache keyed on (filepath, mtime)
-_waveform_cache: dict[tuple[str, float], list[float]] = {}
+# Ensure upload directory exists
+os.makedirs(CUTTER_UPLOAD_DIR, exist_ok=True)
 
 # Codecs that need transcoding for browser preview playback
 _TRANSCODE_CODECS = {"ac3", "eac3", "dts", "dts_hd", "truehd", "flac"}
@@ -31,11 +33,56 @@ _CODEC_TO_ENCODER = {
 }
 
 
+@functools.lru_cache(maxsize=50)
+def _waveform_cached(filepath: str, mtime: float, num_peaks: int) -> list[float]:
+    """Internal cached waveform generator. Keyed on (filepath, mtime, num_peaks)."""
+    cmd = [
+        "ffmpeg",
+        "-loglevel", "warning",
+        "-t", "3600",
+        "-i", filepath,
+        "-ac", "1",
+        "-ar", "8000",
+        "-f", "f32le",
+        "pipe:1",
+    ]
+    result = subprocess.run(
+        cmd, capture_output=True, timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg waveform extraction failed: {result.stderr.decode(errors='replace')}")
+
+    raw = result.stdout
+    num_samples = len(raw) // 4
+    if num_samples == 0:
+        return [0.0] * num_peaks
+
+    samples = struct.unpack(f"<{num_samples}f", raw[:num_samples * 4])
+
+    bucket_size = max(1, num_samples // num_peaks)
+    peaks: list[float] = []
+    for i in range(num_peaks):
+        start = i * bucket_size
+        end = min(start + bucket_size, num_samples)
+        if start >= num_samples:
+            peaks.append(0.0)
+        else:
+            peak = max(abs(s) for s in samples[start:end])
+            peaks.append(peak)
+
+    # Normalize to 0.0-1.0
+    max_peak = max(peaks) if peaks else 1.0
+    if max_peak > 0:
+        peaks = [p / max_peak for p in peaks]
+
+    return peaks
+
+
 def probe_file(filepath: str) -> dict:
     """Run ffprobe and return parsed media info."""
     cmd = [
         "ffprobe",
-        "-v", "quiet",
+        "-loglevel", "warning",
         "-print_format", "json",
         "-show_format",
         "-show_streams",
@@ -72,54 +119,13 @@ def probe_file(filepath: str) -> dict:
 def generate_waveform(filepath: str, num_peaks: int = 2000) -> list[float]:
     """Generate a normalized waveform peak list from an audio/video file.
 
-    Uses ffmpeg to extract mono PCM f32le audio at 8kHz, then buckets samples
-    and takes the max absolute value per bucket. Results are cached by
-    (filepath, mtime) to avoid regeneration.
+    Uses ffmpeg to extract mono PCM f32le audio at 8kHz (capped at 1 hour),
+    then buckets samples and takes the max absolute value per bucket. Results
+    are cached (bounded LRU, max 50 entries) by (filepath, mtime) to avoid
+    regeneration.
     """
     mtime = os.path.getmtime(filepath)
-    cache_key = (filepath, mtime)
-    if cache_key in _waveform_cache:
-        return _waveform_cache[cache_key]
-
-    cmd = [
-        "ffmpeg",
-        "-i", filepath,
-        "-ac", "1",
-        "-ar", "8000",
-        "-f", "f32le",
-        "pipe:1",
-    ]
-    result = subprocess.run(
-        cmd, capture_output=True, timeout=120,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg waveform extraction failed: {result.stderr.decode(errors='replace')}")
-
-    raw = result.stdout
-    num_samples = len(raw) // 4
-    if num_samples == 0:
-        return [0.0] * num_peaks
-
-    samples = struct.unpack(f"<{num_samples}f", raw[:num_samples * 4])
-
-    bucket_size = max(1, num_samples // num_peaks)
-    peaks: list[float] = []
-    for i in range(num_peaks):
-        start = i * bucket_size
-        end = min(start + bucket_size, num_samples)
-        if start >= num_samples:
-            peaks.append(0.0)
-        else:
-            peak = max(abs(s) for s in samples[start:end])
-            peaks.append(peak)
-
-    # Normalize to 0.0-1.0
-    max_peak = max(peaks) if peaks else 1.0
-    if max_peak > 0:
-        peaks = [p / max_peak for p in peaks]
-
-    _waveform_cache[cache_key] = peaks
-    return peaks
+    return _waveform_cached(filepath, mtime, num_peaks)
 
 
 def needs_transcoding(audio_codec: str) -> bool:
@@ -143,7 +149,7 @@ def transcode_for_preview(filepath: str) -> subprocess.Popen:
     probe_info = probe_file(filepath)
     has_video = probe_info["video_codec"] is not None
 
-    cmd = ["ffmpeg", "-i", filepath]
+    cmd = ["ffmpeg", "-loglevel", "warning", "-i", filepath]
     if has_video:
         cmd += ["-c:v", "copy"]
     cmd += [
@@ -157,7 +163,7 @@ def transcode_for_preview(filepath: str) -> subprocess.Popen:
     return subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -187,11 +193,13 @@ def cut_file(
         The final output file path (may differ from output_path if collision).
     """
     output_path = collision_safe_path(output_path)
+    duration = out_point - in_point
 
     cmd = [
         "ffmpeg",
+        "-loglevel", "warning",
         "-ss", str(in_point),
-        "-to", str(out_point),
+        "-t", str(duration),
         "-i", filepath,
     ]
 
@@ -201,6 +209,9 @@ def cut_file(
         if codec:
             encoder = _CODEC_TO_ENCODER.get(codec, codec)
             cmd += ["-c:a", encoder]
+
+    if container:
+        cmd += ["-f", container]
 
     cmd += ["-y", output_path]
 
@@ -243,7 +254,12 @@ def encode_file_id(source: str, path: str) -> str:
 
 
 def decode_file_id(file_id: str) -> tuple[str, str]:
-    """Decode a file_id back to (source, path). Raises ValueError on invalid input."""
+    """Decode a file_id back to (source, path). Raises ValueError on invalid input.
+
+    Security note: This function performs NO path validation. Callers MUST
+    validate the returned path against allowed base directories before use
+    (e.g., via ``validate_path()``) to prevent directory traversal attacks.
+    """
     try:
         decoded = base64.urlsafe_b64decode(file_id.encode("ascii")).decode("utf-8")
     except Exception as e:
