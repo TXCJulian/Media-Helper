@@ -4,7 +4,7 @@ interface LogPanelProps {
   log: string[]
   error: string
   hasStarted: boolean
-  color?: 'blue' | 'indigo' | 'rose'
+  color?: 'blue' | 'indigo' | 'rose' | 'emerald'
   idleMessage?: string
 }
 
@@ -12,12 +12,14 @@ const iconColorClass = {
   blue: 'text-[var(--accent)]',
   indigo: 'text-[var(--accent-2)]',
   rose: 'text-[var(--accent-3)]',
+  emerald: 'text-[var(--accent-4)]',
 }
 
 const activeTextClass = {
   blue: 'text-[var(--accent-light)]',
   indigo: 'text-[var(--accent-2)]',
   rose: 'text-[var(--accent-3)]',
+  emerald: 'text-[var(--accent-4)]',
 }
 
 export default function LogPanel({
