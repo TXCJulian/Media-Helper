@@ -689,6 +689,11 @@ async def cutter_upload(file: UploadFile):
                         status_code=413, detail="File exceeds 2 GB size limit"
                     )
                 f.write(chunk)
+    except HTTPException:
+        # Clean up partial file on failure, re-raise HTTP exceptions as-is
+        if os.path.exists(dest):
+            os.remove(dest)
+        raise
     except Exception as e:
         # Clean up partial file on failure
         if os.path.exists(dest):

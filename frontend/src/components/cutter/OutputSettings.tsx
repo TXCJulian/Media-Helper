@@ -47,7 +47,7 @@ export default function OutputSettings({
           className="input-field input-emerald"
           value={outputName}
           onChange={(e) => onOutputNameChange(e.target.value)}
-          placeholder="Same as original (overwrite)"
+          placeholder="Same as original"
         />
       </FormSection>
 

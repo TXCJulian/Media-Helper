@@ -198,6 +198,7 @@ def cut_file(
     cmd = [
         "ffmpeg",
         "-loglevel", "warning",
+        "-stats",
         "-ss", str(in_point),
         "-t", str(duration),
         "-i", filepath,

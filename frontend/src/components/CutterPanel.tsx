@@ -53,7 +53,8 @@ export default function CutterPanel({
   const [isLoadingFiles, setIsLoadingFiles] = useState(false)
   const [probe, setProbe] = useState<ProbeResult | null>(null)
   const [peaks, setPeaks] = useState<number[]>([])
-  const [fileId, setFileId] = useState('')
+  const [filePath, setFilePath] = useState('') // raw relative path for API calls
+  const [fileId, setFileId] = useState('') // base64-encoded ID for stream URL
   const [isCutting, setIsCutting] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(-1) // -1 = not uploading
   const [isDragOver, setIsDragOver] = useState(false)
@@ -65,6 +66,10 @@ export default function CutterPanel({
 
   const update = <K extends keyof CutterForm>(key: K, value: CutterForm[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }))
+
+  function encodeFileId(source: string, path: string): string {
+    return btoa(`${source}:${path}`)
+  }
 
   // ── Fetch directories on mount ────────────────────────────────
   const fetchDirs = useCallback(async () => {
@@ -119,7 +124,7 @@ export default function CutterPanel({
       try {
         const [probeData, waveData] = await Promise.all([
           fetchProbe(path, source),
-          fetchWaveform(path, source, 200),
+          fetchWaveform(path, source, 800),
         ])
         setProbe(probeData)
         setPeaks(waveData.peaks)
@@ -140,7 +145,8 @@ export default function CutterPanel({
     (file: CutterFileInfo) => {
       const path = `${form.directory}/${file.name}`
       setForm((prev) => ({ ...prev, filename: file.name }))
-      setFileId(path)
+      setFilePath(path)
+      setFileId(encodeFileId('server', path))
       void loadFileData(path, 'server')
     },
     [form.directory, loadFileData],
@@ -152,6 +158,7 @@ export default function CutterPanel({
     update('filename', '')
     setProbe(null)
     setPeaks([])
+    setFilePath('')
     setFileId('')
   }
 
@@ -162,10 +169,12 @@ export default function CutterPanel({
       onError('')
       setProbe(null)
       setPeaks([])
+      setFilePath('')
       setFileId('')
       try {
         const result = await uploadFile(file, setUploadProgress)
         setProbe(result.probe)
+        setFilePath(result.filename)
         setFileId(result.file_id)
         setForm((prev) => ({
           ...prev,
@@ -174,7 +183,7 @@ export default function CutterPanel({
           outPoint: result.probe.duration,
         }))
         // Fetch waveform for uploaded file
-        const waveData = await fetchWaveform(result.file_id, 'upload', 200)
+        const waveData = await fetchWaveform(result.filename, 'upload', 800)
         setPeaks(waveData.peaks)
       } catch (err) {
         onError(`Upload failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -208,7 +217,7 @@ export default function CutterPanel({
   // ── Cut execution ─────────────────────────────────────────────
   const handleCut = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!fileId || !probe || isCutting) return
+    if (!filePath || !probe || isCutting) return
 
     setIsCutting(true)
     onError('')
@@ -217,7 +226,7 @@ export default function CutterPanel({
     const logs: string[] = []
 
     const params: Record<string, string> = {
-      file_id: fileId,
+      path: filePath,
       source: form.source,
       in_point: String(form.inPoint),
       out_point: String(form.outPoint),
@@ -263,6 +272,7 @@ export default function CutterPanel({
     update('filename', '')
     setProbe(null)
     setPeaks([])
+    setFilePath('')
     setFileId('')
     setFiles([])
     setUploadProgress(-1)
@@ -270,7 +280,7 @@ export default function CutterPanel({
 
   const busy = isLoadingDirs || isCutting
   const isVideo = probe?.video_codec != null
-  const hasFile = !!probe && !!fileId
+  const hasFile = !!probe && !!filePath
 
   return (
     <PanelLayout title="Media Cutter" onBack={onBack}>

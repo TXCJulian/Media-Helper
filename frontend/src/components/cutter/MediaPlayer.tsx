@@ -112,6 +112,7 @@ export default function MediaPlayer({
   const controls = (
     <div className="flex items-center gap-3 px-1 py-2">
       <button
+        type="button"
         onClick={togglePlay}
         className="flex h-9 w-9 items-center justify-center rounded-lg
                    border border-[var(--glass-border)] bg-[var(--glass-bg)]
