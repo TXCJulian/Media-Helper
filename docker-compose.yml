@@ -40,7 +40,7 @@ services:
   lyric-transcriber:
     profiles: ["gpu"]
     build:
-      context: ../lyric-transcriber
+      context: ../Whisper_Lyric_Transcriber
       dockerfile: Dockerfile
     image: lyric-transcriber:latest
     container_name: lyric-transcriber

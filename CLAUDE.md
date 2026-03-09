@@ -10,7 +10,7 @@ Full-stack microservices app for renaming TV show episodes (via TMDB) and music 
 
 ### Frontend (from `frontend/`)
 ```bash
-npm run dev          # Vite dev server (proxies API to localhost:8000)
+npm run dev          # Vite dev server (proxies API to backend on localhost:8000)
 npm run build        # tsc + vite build
 npm run test         # Vitest single run
 npm run test:watch   # Vitest watch mode
@@ -20,7 +20,7 @@ npm run format       # Prettier
 ### Backend (from `backend/`)
 ```bash
 pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 3332
+uvicorn app.main:app --reload   # Runs on :8000 (matches Vite proxy); Docker uses :3332
 pytest               # Run backend tests
 ```
 
@@ -49,6 +49,8 @@ docker compose -f deploy.yml up -d     # Production (pre-built images)
 - **`src/lib/api.ts`** — HTTP utilities (`fetchJson`, `postForm`) with timeout and error extraction.
 - **`src/lib/sse.ts`** — Manual SSE parser using fetch + AbortController (not EventSource, because POST bodies are needed). Events: `progress`, `error_msg`, `done`.
 - **`src/components/PanelLayout.tsx`** — Shared layout wrapper for all panels (back button, title, glassmorphism).
+- **`src/components/`** — Panel views: `EpisodePanel`, `MusicPanel`, `LyricsPanel`, `Landing`, plus `LogPanel` (streaming log display) and `ErrorBoundary`.
+- **`src/types.ts`** — Shared TypeScript interfaces for all form state and API types.
 - **`src/components/ui/`** — Reusable form components: `DirectorySelect` (keyboard-navigable dropdown), `ToggleSwitch`, `SegmentedControl`, `FormSection`.
 - **`src/hooks/useDebounce.ts`** — 500ms debounce for search inputs to reduce API calls.
 
@@ -59,6 +61,11 @@ State management is simple prop drilling from App.tsx — no external state libr
 - **Nginx** (`frontend/nginx-app.conf`) — Reverse proxy routes `/rename/`, `/directories/`, `/config`, `/health`, `/transcribe/` to backend. SSE routes have buffering disabled and 1800s timeout.
 - **Docker Compose** — Bridge network `renamer-network` connects frontend and backend. Media directory mounted as `/media:rw` volume.
 - **`deploy.yml`** — Production variant pulling pre-built images from Docker Hub (`bosscock/media-renamer:backend`/`:frontend`).
+
+## Tests
+
+- **Backend**: `backend/tests/` — pytest with fixtures in `conftest.py`. Covers main routes, directory scanning, path validation, episode renaming, music renaming.
+- **Frontend**: `frontend/src/__tests__/` — Vitest with jsdom. Covers API utilities and hooks.
 
 ## Environment Variables
 
@@ -77,6 +84,7 @@ Backend reads from `backend/dependencies/.env` (see `.env.example`):
 - **Path security**: All user paths validated against base directories to prevent traversal.
 - **Encoding resilience**: Music renaming handles mojibake, multi-codec byte decoding (UTF-8, cp1252, latin-1), and umlaut transliteration.
 - **Feature guards**: Each module can be independently disabled. Backend returns 404 for disabled features; frontend hides disabled panels.
+- **Path alias**: `@` maps to `src/` (configured in `vite.config.ts` and `tsconfig.app.json`).
 
 ## Styling
 
