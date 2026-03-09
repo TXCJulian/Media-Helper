@@ -69,3 +69,72 @@ export async function fetchMusicFiles(
 export async function fetchConfig(): Promise<{ features: string[] }> {
   return fetchJson('/config')
 }
+
+export function uploadFile(
+  file: File,
+  onProgress?: (pct: number) => void,
+): Promise<{ file_id: string; filename: string; probe: import('@/types').ProbeResult }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', new URL('/cutter/upload', API_BASE).href)
+
+    if (onProgress) {
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          onProgress(Math.round((e.loaded / e.total) * 100))
+        }
+      })
+    }
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText))
+        } catch {
+          reject(new Error('Invalid JSON response'))
+        }
+      } else {
+        try {
+          const body = JSON.parse(xhr.responseText)
+          reject(new Error(body.detail ?? body.error ?? `HTTP ${xhr.status}`))
+        } catch {
+          reject(new Error(`HTTP ${xhr.status}: ${xhr.statusText}`))
+        }
+      }
+    })
+
+    xhr.addEventListener('error', () => reject(new Error('Upload failed')))
+    xhr.addEventListener('abort', () => reject(new Error('Upload aborted')))
+
+    const formData = new FormData()
+    formData.append('file', file)
+    xhr.send(formData)
+  })
+}
+
+export function fetchProbe(
+  path: string,
+  source: string,
+): Promise<import('@/types').ProbeResult> {
+  return fetchJson<import('@/types').ProbeResult>('/cutter/probe', { path, source })
+}
+
+export function fetchWaveform(
+  path: string,
+  source: string,
+  peaks?: number,
+): Promise<{ peaks: number[] }> {
+  const params: Record<string, string> = { path, source }
+  if (peaks) params.peaks = String(peaks)
+  return fetchJson<{ peaks: number[] }>('/cutter/waveform', params)
+}
+
+export function fetchCutterFiles(
+  directory: string,
+): Promise<{ files: import('@/types').CutterFileInfo[] }> {
+  return fetchJson<{ files: import('@/types').CutterFileInfo[] }>('/cutter/files', { directory })
+}
+
+export function getStreamUrl(fileId: string): string {
+  return `/cutter/stream/${encodeURIComponent(fileId)}`
+}

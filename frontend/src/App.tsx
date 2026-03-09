@@ -4,6 +4,7 @@ import type { PanelName } from '@/components/Landing'
 import EpisodePanel from '@/components/EpisodePanel'
 import MusicPanel from '@/components/MusicPanel'
 import LyricsPanel from '@/components/LyricsPanel'
+import CutterPanel from '@/components/CutterPanel'
 import { fetchConfig } from '@/lib/api'
 
 export default function App() {
@@ -29,6 +30,10 @@ export default function App() {
   const [lyricsError, setLyricsError] = useState('')
   const [lyricsStarted, setLyricsStarted] = useState(false)
 
+  const [cutterLog, setCutterLog] = useState<string[]>([])
+  const [cutterError, setCutterError] = useState('')
+  const [cutterStarted, setCutterStarted] = useState(false)
+
   const handleEpisodeLog = useCallback((log: string[]) => {
     setEpisodeStarted(true)
     setEpisodeLog(log)
@@ -44,9 +49,15 @@ export default function App() {
     setLyricsLog(log)
   }, [])
 
+  const handleCutterLog = useCallback((log: string[]) => {
+    setCutterStarted(true)
+    setCutterLog(log)
+  }, [])
+
   const handleEpisodeError = useCallback((err: string) => setEpisodeError(err), [])
   const handleMusicError = useCallback((err: string) => setMusicError(err), [])
   const handleLyricsError = useCallback((err: string) => setLyricsError(err), [])
+  const handleCutterError = useCallback((err: string) => setCutterError(err), [])
 
   const goHome = useCallback(() => {
     setActiveView('home')
@@ -88,14 +99,27 @@ export default function App() {
     )
   }
 
+  if (activeView === 'lyrics') {
+    return (
+      <LyricsPanel
+        onLog={handleLyricsLog}
+        onError={handleLyricsError}
+        onBack={goHome}
+        log={lyricsLog}
+        error={lyricsError}
+        hasStarted={lyricsStarted}
+      />
+    )
+  }
+
   return (
-    <LyricsPanel
-      onLog={handleLyricsLog}
-      onError={handleLyricsError}
+    <CutterPanel
+      onLog={handleCutterLog}
+      onError={handleCutterError}
       onBack={goHome}
-      log={lyricsLog}
-      error={lyricsError}
-      hasStarted={lyricsStarted}
+      log={cutterLog}
+      error={cutterError}
+      hasStarted={cutterStarted}
     />
   )
 }

@@ -1,4 +1,4 @@
-export type PanelName = 'episodes' | 'music' | 'lyrics'
+export type PanelName = 'episodes' | 'music' | 'lyrics' | 'cutter'
 
 interface LandingProps {
   onNavigate: (panel: PanelName) => void
@@ -37,6 +37,14 @@ const cards: {
     colorClass: 'card-lyrics',
     iconClass: 'bg-[var(--accent-3-glow)] text-[var(--accent-3)]',
   },
+  {
+    id: 'cutter',
+    icon: '✂',
+    title: 'Media Cutter',
+    desc: 'Trim audio and video files with waveform preview. Supports all major codecs with live transcoding.',
+    colorClass: 'card-cutter',
+    iconClass: 'bg-[var(--accent-4-glow)] text-[var(--accent-4)]',
+  },
 ]
 
 export default function Landing({ onNavigate, enabledFeatures }: LandingProps) {
@@ -55,12 +63,14 @@ export default function Landing({ onNavigate, enabledFeatures }: LandingProps) {
       </p>
 
       <div
-        className={`grid w-full max-w-[880px] grid-cols-1 gap-5 ${
-          visibleCards.length >= 3
-            ? 'md:grid-cols-3'
-            : visibleCards.length === 2
-              ? 'md:grid-cols-2'
-              : ''
+        className={`grid w-full max-w-[1100px] grid-cols-1 gap-5 ${
+          visibleCards.length >= 4
+            ? 'md:grid-cols-2 lg:grid-cols-4'
+            : visibleCards.length === 3
+              ? 'md:grid-cols-3'
+              : visibleCards.length === 2
+                ? 'md:grid-cols-2'
+                : ''
         }`}
       >
         {visibleCards.map((card, i) => (
@@ -80,7 +90,9 @@ export default function Landing({ onNavigate, enabledFeatures }: LandingProps) {
                     ? 'radial-gradient(ellipse at 30% 80%, var(--accent-glow) 0%, transparent 65%)'
                     : card.id === 'music'
                       ? 'radial-gradient(ellipse at 30% 80%, var(--accent-2-glow) 0%, transparent 65%)'
-                      : 'radial-gradient(ellipse at 30% 80%, var(--accent-3-glow) 0%, transparent 65%)',
+                      : card.id === 'cutter'
+                        ? 'radial-gradient(ellipse at 30% 80%, var(--accent-4-glow) 0%, transparent 65%)'
+                        : 'radial-gradient(ellipse at 30% 80%, var(--accent-3-glow) 0%, transparent 65%)',
               }}
             />
 

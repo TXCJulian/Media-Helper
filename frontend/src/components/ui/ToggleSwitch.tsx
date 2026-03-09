@@ -4,7 +4,7 @@ interface ToggleSwitchProps {
   checked: boolean
   onChange: (checked: boolean) => void
   disabled?: boolean
-  color?: 'blue' | 'indigo' | 'rose'
+  color?: 'blue' | 'indigo' | 'rose' | 'emerald'
   label: string
 }
 
@@ -12,6 +12,7 @@ const colorClasses = {
   blue: 'bg-[var(--accent)] border-[var(--accent)] shadow-[0_0_14px_var(--accent-glow)]',
   indigo: 'bg-[var(--accent-2)] border-[var(--accent-2)] shadow-[0_0_14px_var(--accent-2-glow)]',
   rose: 'bg-[var(--accent-3)] border-[var(--accent-3)] shadow-[0_0_14px_var(--accent-3-glow)]',
+  emerald: 'bg-[var(--accent-4)] border-[var(--accent-4)] shadow-[0_0_14px_var(--accent-4-glow)]',
 }
 
 export default function ToggleSwitch({

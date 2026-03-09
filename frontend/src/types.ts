@@ -55,3 +55,32 @@ export interface MusicFilesResponse {
   files: MusicFileInfo[]
   error?: string
 }
+
+export interface CutterForm {
+  source: 'server' | 'upload'
+  directory: string
+  filename: string
+  inPoint: number
+  outPoint: number
+  outputName: string
+  streamCopy: boolean
+  codec: string
+  container: string
+}
+
+export interface ProbeResult {
+  duration: number
+  video_codec: string | null
+  audio_codec: string
+  container: string
+  bitrate: number
+  width: number | null
+  height: number | null
+  sample_rate: number
+}
+
+export interface CutterFileInfo {
+  name: string
+  size: number
+  extension: string
+}
