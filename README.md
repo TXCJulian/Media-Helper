@@ -4,7 +4,17 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/React-61DAFB?style=flat&logo=react&logoColor=black)](https://react.dev/)
 
-*An automatic renaming tool for TV shows and music files with a user-friendly web interface.*
+*A media management tool for renaming TV shows, music files, and transcribing lyrics — with a modern web interface.*
+
+## Screenshots
+
+| Landing Page | Episode Renamer |
+|:---:|:---:|
+| ![Landing Page](docs/screenshots/landing.png) | ![Episode Panel](docs/screenshots/episode-panel.png) |
+
+| Music Renamer | Lyrics Transcriber |
+|:---:|:---:|
+| ![Music Panel](docs/screenshots/music-panel.png) | ![Lyrics Panel](docs/screenshots/lyrics-panel.png) |
 
 ## Table of Contents
 
@@ -21,31 +31,50 @@
 
 ## Overview
 
-Jellyfin Media-Renamer is a dockerized tool that automatically renames TV show episodes and music files according to a standardized schema. It uses the TMDB API for TV series metadata and Mutagen for music tags. The application consists of a FastAPI backend (Python) and a React frontend (Vite, Nginx), which communicate over a Docker network.
+Jellyfin Media-Renamer is a dockerized tool with three modules:
+
+1. **Episode Renamer** — Renames TV show episodes using TMDB metadata
+2. **Music Renamer** — Renames music files based on ID3/audio tags
+3. **Lyrics Transcriber** — Transcribes lyrics from audio files using AI (HDemucs + Whisper + Genius)
+
+The application consists of a FastAPI backend (Python 3.12), a React frontend (Vite + Tailwind CSS), and an optional GPU-powered lyrics transcription service. All services communicate over a Docker bridge network behind an Nginx reverse proxy.
 
 ## Features
 
 ### TV Shows
-- 🔍 **Automatic series search** via TMDB API (multi-language)
-- 📺 **Episode renaming** according to the schema: `S01E01 - Episode title.ext`
-- 🎯 **Intelligent matching** of filenames to TMDB episodes
-- 🌐 **Multi-language support** (German, English, French, etc.)
-- 📁 **Batch processing** of entire seasons at once
-- ✅ **Preview** before renaming
+- Automatic series search via TMDB API (multi-language: DE, EN, FR, etc.)
+- Episode renaming: `S01E01 - Episode title.ext`
+- Intelligent filename-to-episode matching with configurable threshold
+- Sequence assignment mode for unmatched files
+- Batch processing of entire seasons
+- Dry-run preview before renaming
 
 ### Music
-- 🎵 **Metadata-based renaming** from ID3 tags, FLAC tags, etc.
-- 🎼 **Supported formats**: FLAC, WAV, MP3, OGG Vorbis, OGG Opus, AIFF, ASF, Musepack
-- 🔤 **Umlaut normalization** for compatibility
-- 📋 **Schema**: `Tracknr - Artist - Title.ext`
-- 🎹 **Artist and album filters** in the user interface
+- Metadata-based renaming from ID3, FLAC, Vorbis, Opus, AIFF, ASF, Musepack tags
+- Supported formats: FLAC, WAV, MP3, OGG Vorbis, OGG Opus, AIFF, ASF, Musepack
+- Umlaut normalization for filesystem compatibility
+- Schema: `Tracknr - Artist - Title.ext`
+- Artist and album directory filters
+
+### Lyrics Transcription
+- AI-powered lyrics transcription from audio files
+- Three-stage pipeline: Vocal separation (HDemucs) → Speech-to-text (faster-whisper) → Lyrics correction (Genius API)
+- Output formats: LRC (timestamped), TXT (plain text), or both
+- Real-time progress streaming via Server-Sent Events (SSE)
+- GPU health indicator showing connected GPU model
+- Skip existing lyrics option
+- Advanced options: language override, skip vocal separation, skip Genius correction
+- Requires optional GPU service ([Whisper_Lyric-Transcriber](https://github.com/TXCJulian/Whisper_Lyric-Transcriber))
 
 ### General
-- 🖥️ **Modern web interface** with React
-- 🐳 **Fully dockerized** with Docker Compose
-- 🔄 **Real-time updates** of directory list
-- 🚀 **Reverse proxy** with Nginx (no CORS issues)
-- 📊 **File system monitoring** with Watchdog
+- Modern dark-themed web interface with glassmorphism design
+- Feature toggle system — enable/disable modules via environment variable
+- Landing page with module navigation
+- Real-time output logs per module
+- Fully dockerized with Docker Compose
+- Nginx reverse proxy (no CORS issues)
+- Path traversal protection on all directory endpoints
+- Filesystem monitoring with Watchdog
 
 ## Architecture
 
@@ -55,27 +84,60 @@ Jellyfin Media-Renamer is a dockerized tool that automatically renames TV show e
 - Python 3.12 (LTS)
 - FastAPI + Uvicorn
 - TMDB API (The Movie Database)
-- Mutagen (Audio-Metadata-Handling)
-- Watchdog (Filesystem-Monitoring)
-- python-dotenv
+- Mutagen (audio metadata)
+- Watchdog (filesystem monitoring)
 
 **Frontend:**
-- React (Functional Components + Hooks)
-- Vite (Build-Tool)
-- Nginx (Reverse Proxy + Static File Serving)
-- Node 20 LTS
+- React 19 (Functional Components + Hooks)
+- Vite 7 (build tool + HMR)
+- Tailwind CSS 4
+- TypeScript 5
+- Vitest (testing)
 
 **Infrastructure:**
 - Docker + Docker Compose
-- Multi-stage Docker Builds
-- Bridge Network for service communication
+- Multi-stage Docker builds
+- Nginx reverse proxy
+- Bridge network for service communication
+- Optional: NVIDIA GPU service for lyrics transcription
+
+### Request Flow
+
+```
+Browser                    Frontend Container               Backend Container
+  |                             (Nginx)                          (FastAPI)
+  |                               |                                  |
+  |--[1] GET :3333/-------------->|                                  |
+  |    (static assets)            |                                  |
+  |                               |                                  |
+  |--[2] GET :3333/directories--->|                                  |
+  |                               |--[3] proxy_pass----------------->|
+  |                               |    http://renamer-backend:3332   |
+  |                               |<---[4] JSON response-------------|
+  |<--[5] JSON response-----------|                                  |
+  |                               |                                  |
+  |--[6] GET :3333/transcribe/--->|                                  |
+  |    (SSE stream)               |--[7] proxy_pass (no buffering)-->|
+  |                               |    http://renamer-backend:3332   |
+  |                               |                                  |---> lyric-transcriber:3334
+  |<--[8] SSE events-------------|<---[9] SSE stream----------------|     (GPU service)
+```
+
+### Benefits
+
+- **No CORS issues**: all requests are same-origin from the browser's perspective
+- **Single entry point**: only port 3333 needs to be exposed
+- **Backend stays private**: port 3332 doesn't have to be published
+- **SSE support**: Nginx configured with disabled buffering for real-time streaming
+- **Feature isolation**: each module can be independently enabled/disabled
 
 ## Prerequisites
 
-- **Docker** (Version 20.10 or higher)
-- **Docker Compose** (Version 2.0 or higher)
-- **TMDB API Key** ([free at](https://www.themoviedb.org/settings/api))
-- **Media directory** with appropriate permissions
+- **Docker** (Version 20.10+)
+- **Docker Compose** (Version 2.0+)
+- **TMDB API Key** ([free at themoviedb.org](https://www.themoviedb.org/settings/api))
+- **Media directory** with read/write permissions
+- **Optional**: NVIDIA GPU + CUDA drivers (for lyrics transcription)
 
 ## Installation
 
@@ -99,15 +161,20 @@ Edit the `docker-compose.yml` and adjust the following values:
 
 ```yaml
 environment:
-  - TMDB_API_KEY=YOUR_TMDB_API_KEY_HERE  # Your API Key
+  - TMDB_API_KEY=YOUR_TMDB_API_KEY_HERE
+  - ENABLED_FEATURES=episodes,music,lyrics  # Toggle modules
 volumes:
-  - /path/to/your/media:/media:rw  # Your media path
+  - /path/to/your/media:/media:rw
 ```
 
 ### Step 4: Start Containers
 
-```powershell
+```bash
+# Without lyrics transcription (CPU only)
 docker compose up --build
+
+# With lyrics transcription (requires NVIDIA GPU)
+docker compose --profile gpu up --build
 ```
 
 ### Step 5: Open Application
@@ -120,14 +187,17 @@ docker compose up --build
 
 ### Backend Environment Variables
 
-| Variable | Description | Default | Example |
-|----------|-------------|---------|---------|
-| `BASE_PATH` | Base path to media in container | `/media` | `/media` |
-| `TVSHOW_FOLDER_NAME` | Name of TV shows folder | `TV Shows` | `TV Shows` |
-| `MUSIC_FOLDER_NAME` | Name of music folder | `Music` | `Music` |
-| `TMDB_API_KEY` | TMDB API key (required) | - | `abc123...` |
-| `VALID_VIDEO_EXT` | Valid video file extensions | `{'.mp4', '.mkv', '.mov', '.avi'}` | - |
-| `VALID_MUSIC_EXT` | Valid music file extensions | `{'.flac', '.wav', '.mp3'}` | - |
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `BASE_PATH` | Base path to media in container | `/media` |
+| `TVSHOW_FOLDER_NAME` | Name of TV shows folder | `TV Shows` |
+| `MUSIC_FOLDER_NAME` | Name of music folder | `Music` |
+| `TMDB_API_KEY` | TMDB API key (**required**) | - |
+| `VALID_VIDEO_EXT` | Video file extensions (CSV) | `.mp4,.mkv,.mov,.avi` |
+| `VALID_MUSIC_EXT` | Music file extensions (CSV) | `.flac,.wav,.mp3` |
+| `TRANSCRIBER_URL` | Lyrics transcriber service URL | `http://lyric-transcriber:3334` |
+| `ENABLED_FEATURES` | Active modules (CSV) | `episodes,music,lyrics` |
+| `ALLOWED_ORIGINS` | CORS allowed origins | `http://localhost:3333` |
 
 ### Directory Structure
 
@@ -139,16 +209,13 @@ The application expects the following structure in your media directory:
 │   ├── Breaking Bad/
 │   │   ├── Season 01/
 │   │   │   ├── episode1.mkv
-│   │   │   ├── episode2.mkv
 │   │   │   └── ...
 │   │   └── Season 02/
-│   │       └── ...
 │   └── ...
 └── Music/
     ├── Artist Name/
     │   ├── Album Name/
     │   │   ├── 01-track.flac
-    │   │   ├── 02-track.flac
     │   │   └── ...
     │   └── ...
     └── ...
@@ -156,180 +223,47 @@ The application expects the following structure in your media directory:
 
 ## API Endpoints
 
+### Configuration
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/config` | Returns enabled features |
+| `GET` | `/health` | Backend health check |
+
 ### TV Shows
 
-#### `GET /directories/tvshows`
-List all TV show directories
-
-**Query Parameters:**
-- `series` (optional): Filter by series name
-- `season` (optional): Filter by season number
-
-**Example:**
-```bash
-curl "http://localhost:3332/directories/tvshows?series=Breaking%20Bad&season=1"
-```
-
-**Response:**
-```json
-{
-  "directories": [
-    "/media/TV Shows/Breaking Bad/Season 01"
-  ]
-}
-```
-
-#### `POST /rename/episodes`
-Rename episodes in a directory
-
-**Form Data:**
-- `directory`: Path to season directory
-- `series`: Series name
-- `season`: Season number (1-99)
-- `language`: Language for TMDB (de-DE, en-US, etc.)
-- `preview` (optional): "true" for preview without renaming
-
-**Example:**
-```bash
-curl -X POST "http://localhost:3332/rename/episodes" \
-  -F "directory=/media/TV Shows/Breaking Bad/Season 01" \
-  -F "series=Breaking Bad" \
-  -F "season=1" \
-  -F "language=de-DE" \
-  -F "preview=false"
-```
-
-**Response:**
-```json
-{
-  "renamed": [
-    {
-      "old": "ep1.mkv",
-      "new": "S01E01 - Pilot.mkv"
-    }
-  ]
-}
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/directories/tvshows` | List TV show directories (query: `series`, `season`) |
+| `POST` | `/directories/refresh` | Force refresh directory cache |
+| `POST` | `/rename/episodes` | Rename episodes (form: `directory`, `series`, `season`, `language`, `dry_run`, `assign_seq`, `threshold`) |
 
 ### Music
 
-#### `GET /directories/music`
-List all music directories
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/directories/music` | List music directories (query: `artist`, `album`) |
+| `POST` | `/rename/music` | Rename music files (form: `directory`, `dry_run`) |
 
-**Query Parameters:**
-- `artist` (optional): Filter by artist
-- `album` (optional): Filter by album
+### Lyrics Transcription
 
-**Example:**
-```bash
-curl "http://localhost:3332/directories/music?artist=Pink%20Floyd"
-```
-
-#### `POST /rename/music`
-Rename music files
-
-**Form Data:**
-- `directory`: Path to album directory
-- `preview` (optional): "true" for preview without renaming
-
-**Example:**
-```bash
-curl -X POST "http://localhost:3332/rename/music" \
-  -F "directory=/media/Music/Pink Floyd/The Wall" \
-  -F "preview=false"
-```
-
-## Architecture
-
-### Overview
-
-The project uses an Nginx reverse proxy in the frontend container to transparently forward backend API requests. The browser communicates only with one port (3333), and Nginx routes the requests internally to the backend.
-
-### Request Flow
-
-```
-Browser                    Frontend Container               Backend Container
-  |                             (Nginx)                          (FastAPI)
-  |                               |                                  |
-  |--[1] GET :3333/directories--->|                                  |
-  |    (HTTP Request)             |                                  |
-  |                               |--[2] proxy_pass----------------->|
-  |                               |    http://helper-backend:3332    |
-  |                               |    (Docker network)              |
-  |                               |                                  |
-  |                               |<---[3] JSON response-------------|
-  |<--[4] JSON response-----------|                                  |
-```
-
-**Step by Step:**
-
-1. Browser → Frontend (port 3333)  
-  The browser loads the React app from `http://your-server:3333` and makes API calls like:
-   ```javascript
-   fetch('/directories/tvshows')  // same-origin request
-   ```
-
-2. Nginx proxy routing  
-   `nginx-app.conf` defines the proxy rules:
-   ```nginx
-   location /directories/ {
-       proxy_pass http://renamer-backend:3332/directories/;
-   }
-   location /rename/ {
-       proxy_pass http://renamer-backend:3332/rename/;
-   }
-   ```
-
-3. Docker network (`renamer-network`)  
-   Nginx can resolve `renamer-backend` via the service name (Docker network DNS).  
-   The backend container listens internally on port 3332.
-
-4. Response back to the browser  
-   FastAPI responds → Nginx forwards it → the browser receives JSON.
-
-### Benefits of this architecture
-
-✅ No CORS issues: from the browser's perspective, all requests are same-origin  
-✅ Single entry point: only port 3333 needs to be exposed  
-✅ Backend can stay private: port 3332 doesn't have to be published  
-✅ Simple SSL termination: HTTPS only at Nginx  
-✅ Standard production pattern: API gateway in front of microservices
-
-### Important Notes
-
-- The browser does not communicate directly with the backend — only with port 3333
-- `helper-backend` is only resolvable within the Docker network
-- The frontend `.env` is empty (`VITE_API_BASE_URL=""`), the app uses `window.location.origin` as the base URL
-
-> **⚠️ Warning:**  
-> If you change service names in `docker-compose.yml` or `deploy.yml` (e.g., `helper-backend` → `my-backend`), you must also adjust them in the Nginx configuration (`frontend/nginx-app.conf`) in the `proxy_pass` lines!
-
-### Important Files
-
-| File | Description |
-|------|-------------|
-| `docker-compose.yml` | Local setup, build contexts, network |
-| `deploy.yml` | Deployment template with pre-built images |
-| `frontend/nginx-app.conf` | Nginx reverse proxy configuration (API routing) |
-| `frontend/.env` | API base URL (empty = same-origin via Nginx) |
-| `backend/Dockerfile` | Python 3.12 multi-stage build |
-| `frontend/Dockerfile` | Node 20 multi-stage build with Nginx runtime |
-| `backend/requirements.txt` | Python dependencies |
-| `frontend/package.json` | Node dependencies |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/transcribe/health` | Transcriber service health + GPU info |
+| `GET` | `/transcribe/files` | List music files with lyrics status (query: `directory`) |
+| `GET` | `/transcribe/start` | Start transcription (SSE stream, query: `directory`, `files`, `output_format`, `skip_existing`, `language`, `skip_separation`, `skip_correction`) |
 
 ## Deployment
 
 ### Local Development
 
-For local development with hot-reload:
-
-```powershell
+```bash
 # Backend (with auto-reload)
 cd backend
 pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 3332
 
-# Frontend (dev server)
+# Frontend (dev server with HMR, proxies API to localhost:8000)
 cd frontend
 npm install
 npm run dev
@@ -337,9 +271,7 @@ npm run dev
 
 ### Production with Docker Compose
 
-Use `deploy.yml` as a template for server deployment:
-
-```powershell
+```bash
 # Pull images from Docker Hub
 docker compose -f deploy.yml pull
 
@@ -353,87 +285,25 @@ docker compose -f deploy.yml logs -f
 docker compose -f deploy.yml down
 ```
 
-**Important:** Adjust the volumes and environment variables in `deploy.yml` to your environment!
+### Push Images to Docker Hub
 
-## Push Images to Docker Hub
-
-The compose/deploy files expect the following images:
-
-- `bosscock/media-renamer:backend`
-- `bosscock/media-renamer:frontend`
-
-**If you want to push the Images to your own Docker-Repository**, replace `bosscock` it in the commands below and in `deploy.yml`/`docker-compose.yml`.
-
-### 1) Log in to Docker Hub
-
-```powershell
-docker login
-```
-
-### 2) Build and tag images locally
-
-Backend (FastAPI):
-
-```powershell
+```bash
+# Build and tag
 docker build -t bosscock/media-renamer:backend ./backend
-```
-
-Frontend (React + Nginx):
-
-```powershell
 docker build -t bosscock/media-renamer:frontend ./frontend
-```
 
-Optional: add version tags as well (recommended for reproducible deployments):
-
-```powershell
-$version = "v1.0.0"
-docker tag bosscock/media-renamer:backend  bosscock/media-renamer:backend-$version
-docker tag bosscock/media-renamer:frontend bosscock/media-renamer:frontend-$version
-```
-
-### 3) Push images
-
-```powershell
+# Push
 docker push bosscock/media-renamer:backend
 docker push bosscock/media-renamer:frontend
-
-# optionally push the version tags as well
-docker push bosscock/media-renamer:backend-$version
-docker push bosscock/media-renamer:frontend-$version
 ```
 
-### Optional: Build and push multi-arch (amd64 + arm64)
+For multi-arch builds (amd64 + arm64):
 
-For servers on different architectures (x86_64 and ARM, e.g., Raspberry Pi):
-
-```powershell
-# one-time: create a builder
-docker buildx create --name multi --use ; docker buildx inspect --bootstrap
-
-# backend multi-arch
-docker buildx build --platform linux/amd64,linux/arm64 `
-   -t bosscock/media-renamer:backend `
-    ./backend `
-    --push
-
-# frontend multi-arch
-docker buildx build --platform linux/amd64,linux/arm64 `
-   -t bosscock/media-renamer:frontend `
-    ./frontend `
-    --push
+```bash
+docker buildx create --name multi --use
+docker buildx build --platform linux/amd64,linux/arm64 -t bosscock/media-renamer:backend ./backend --push
+docker buildx build --platform linux/amd64,linux/arm64 -t bosscock/media-renamer:frontend ./frontend --push
 ```
-
-### 4) Use the deploy file
-
-After pushing, the target server can pull and start the images, e.g., using the provided `deploy.yml`:
-
-```powershell
-docker compose -f deploy.yml pull
-docker compose -f deploy.yml up -d
-```
-
-**Note:** If you want to use your own network (e.g., `helper-network`), add a `networks` section to `deploy.yml` and connect both services to it. The frontend will then reach the backend at `http://helper-backend:3332`.
 
 ## Development
 
@@ -441,68 +311,79 @@ docker compose -f deploy.yml up -d
 
 ```
 Jellyfin_Media-Renamer/
-├── backend/                    # FastAPI Backend
+├── backend/
 │   ├── app/
-│   │   ├── main.py            # Main application + API routes
-│   │   ├── rename_episodes.py # TV show renaming
-│   │   ├── rename_music.py    # Music renaming
-│   │   └── get_dirs.py        # Directory scanning
+│   │   ├── main.py               # FastAPI app + all routes
+│   │   ├── config.py             # Configuration + env vars
+│   │   ├── rename_episodes.py    # TMDB episode matching + rename
+│   │   ├── rename_music.py       # Metadata-based music rename
+│   │   ├── transcribe_lyrics.py  # Lyrics transcription (SSE proxy)
+│   │   ├── get_dirs.py           # Directory listing (cached)
+│   │   └── fs_utils.py           # Filesystem utilities (fsync)
+│   ├── tests/                    # pytest test suite
 │   ├── Dockerfile
 │   └── requirements.txt
-├── frontend/                   # React Frontend
+├── frontend/
 │   ├── src/
-│   │   ├── App.tsx            # Main component
-│   │   └── main.tsx
-│   ├── nginx-app.conf         # Nginx reverse proxy config
+│   │   ├── App.tsx               # Main app + routing
+│   │   ├── components/
+│   │   │   ├── Landing.tsx       # Home page with module cards
+│   │   │   ├── EpisodePanel.tsx  # TV show renaming panel
+│   │   │   ├── MusicPanel.tsx    # Music renaming panel
+│   │   │   ├── LyricsPanel.tsx   # Lyrics transcription panel
+│   │   │   ├── PanelLayout.tsx   # Shared panel layout
+│   │   │   ├── LogPanel.tsx      # Output log display
+│   │   │   ├── ErrorBoundary.tsx
+│   │   │   └── ui/              # Shared UI components
+│   │   │       ├── DirectorySelect.tsx
+│   │   │       ├── FormSection.tsx
+│   │   │       ├── SegmentedControl.tsx
+│   │   │       └── ToggleSwitch.tsx
+│   │   ├── lib/
+│   │   │   ├── api.ts            # API fetch utilities
+│   │   │   └── sse.ts            # Server-Sent Events client
+│   │   └── __tests__/            # Vitest test suite
+│   ├── public/fonts/             # Self-hosted Geist + JetBrains Mono
+│   ├── nginx-app.conf            # Nginx reverse proxy config
 │   ├── Dockerfile
 │   └── package.json
-├── docker-compose.yml          # Local development
-├── deploy.yml                  # Production deployment
+├── docker-compose.yml            # Local development
+├── deploy.yml                    # Production deployment
 └── README.md
 ```
 
 ### Code Quality
 
-**Backend:**
-```powershell
-# Formatting with black
-pip install black
+```bash
+# Backend: formatting + linting
+pip install black ruff
 black backend/app/
-
-# Linting with ruff
-pip install ruff
 ruff check backend/app/
-```
 
-**Frontend:**
-```powershell
-# Formatting with prettier
-cd frontend
-npm run format
+# Frontend: formatting
+cd frontend && npm run format
 ```
 
 ### Testing
 
-```powershell
-# Backend tests (if implemented)
+```bash
+# Backend tests
 cd backend
+pip install pytest
 pytest
 
-# Frontend tests (if implemented)
+# Frontend tests
 cd frontend
 npm run test
 ```
 
 ## Troubleshooting
 
-### Problem: Backend cannot be started
+### Backend cannot start
 
-**Symptom:** Container starts, but stops immediately
-
-**Solution:**
-```powershell
+```bash
 # View logs
-docker compose logs helper-backend
+docker compose logs renamer-backend
 
 # Common causes:
 # 1. Missing TMDB_API_KEY
@@ -510,148 +391,43 @@ docker compose logs helper-backend
 # 3. Missing permissions for /media
 ```
 
-### Problem: Frontend cannot reach backend
+### Frontend cannot reach backend (502 Bad Gateway)
 
-**Symptom:** API calls fail with 502 Bad Gateway
-
-**Solution:**
-1. Check if both containers are in the same network:
-```powershell
-docker network inspect helper-network
+1. Check that both containers are in the same network:
+```bash
+docker network inspect renamer-network
 ```
 
 2. Check service names in `nginx-app.conf`:
 ```nginx
-proxy_pass http://helper-backend:3332;  # Must match docker-compose.yml
+proxy_pass http://renamer-backend:3332;  # Must match docker-compose.yml
 ```
 
-3. Check backend logs:
-```powershell
-docker compose logs helper-backend
-```
+### Lyrics transcriber shows "Offline"
 
-### Problem: TMDB API error
+1. Ensure the GPU service is running: `docker compose --profile gpu ps`
+2. Check the transcriber health: `curl http://localhost:3334/health`
+3. Verify `TRANSCRIBER_URL` is set correctly in the backend environment
+4. The transcriber requires an NVIDIA GPU with CUDA drivers
 
-**Symptom:** "Series not found" or API error
+### Renamed files not visible on SMB/CIFS or NFS shares
 
-**Solution:**
-1. Check API key:
-```powershell
-docker compose exec helper-backend env | grep TMDB_API_KEY
-```
+The renamer calls `fsync()` on the parent directory after each rename to flush metadata changes. For persistent issues:
 
-2. Test API key manually:
 ```bash
-curl "https://api.themoviedb.org/3/search/tv?api_key=YOUR_KEY&query=Breaking+Bad"
-```
-
-3. Check API limits (TMDB has rate limits)
-
-### Problem: Permissions
-
-**Symptom:** Files cannot be renamed
-
-**Solution:**
-```powershell
-# On the host: Check permissions
-icacls "D:\Path\to\Media"
-
-# In container: Check permissions
-docker compose exec helper-backend ls -la /media
-
-# Solution: Give the container write rights
-# Option 1: Change host permissions
-# Option 2: Use Docker user mapping
-```
-
-### Problem: Port already in use
-
-**Symptom:** "port is already allocated"
-
-**Solution:**
-```powershell
-# Check which process uses the port
-netstat -ano | findstr :3333
-netstat -ano | findstr :3332
-
-# Change ports in docker-compose.yml
-ports:
-  - "8080:3000"  # Instead of 3333:3000
-```
-
-### Problem: Umlauts are displayed incorrectly
-
-**Symptom:** Filenames with ä, ö, ü are wrong
-
-**Solution:**
-- Music: Check if audio tags are UTF-8 encoded
-- TV Shows: Check TMDB language setting (`language` parameter)
-- The code normalizes umlauts automatically (ä→ae, ö→oe, ü→ue)
-
-### Problem: Renamed files not visible on SMB/CIFS or NFS shares
-
-**Symptom:** Files are renamed successfully in the container (logs show success, HTTP 200), but:
-- Windows/Linux clients accessing via SMB/CIFS don't see the new filenames
-- Files appear to "disappear" or show stale names
-- Only a system/smb restart makes the changes visible
-
-**Root Cause:**
-Network filesystems (SMB/CIFS, NFS) use aggressive client-side attribute caching to improve performance. When files are renamed inside a container, the filesystem metadata changes are not immediately propagated to all clients because:
-- SMB/CIFS clients cache directory listings and file attributes for 30-60 seconds by default
-- NFS clients cache attributes according to `actimeo` settings (default 3-60 seconds)
-- Without explicit cache invalidation, clients continue to show old filenames until their cache expires or the server sends change notifications
-
-**Solution implemented:**
-The renamer calls `fsync()` on the parent directory after each successful rename and deletion operation. This forces the kernel to flush directory metadata changes to the storage backend, which triggers change notifications to SMB/NFS clients and helps them invalidate their caches faster.
-
-**Implementation details:**
-```python
-# After os.rename() and os.remove(), the code now does:
-try:
-    if hasattr(os, "O_DIRECTORY"):
-        dir_fd = os.open(directory, os.O_DIRECTORY | os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)  # Flush directory metadata
-        finally:
-            os.close(dir_fd)
-    else:
-        os.sync()  # Fallback for platforms without O_DIRECTORY
-except Exception:
-    pass  # Best-effort, don't fail the rename if fsync fails
-```
-
-**Additional recommendations for persistent issues:**
-
-For **SMB/CIFS** mounts:
-```bash
-# Reduce attribute cache timeout on the mount
+# SMB/CIFS: reduce cache timeout
 mount -t cifs //server/share /mnt -o username=user,actimeo=0
 
-# On Samba server (smb.conf):
-[share]
-    change notify = yes
-    kernel change notify = yes
-```
-
-For **NFS** mounts:
-```bash
-# Reduce attribute cache timeout
+# NFS: reduce attribute cache
 mount -t nfs server:/export /mnt -o actimeo=1,vers=4
-
-# Or disable attribute caching completely (impacts performance)
-mount -t nfs server:/export /mnt -o noac,vers=4
 ```
 
-**Note:** The `fsync()` implementation is a best-effort optimization. It significantly improves change visibility on network mounts but doesn't guarantee instant propagation on all client configurations. For mission-critical applications, consider adjusting mount options as shown above.
+### Umlauts displayed incorrectly
 
-## Changelog
+- Music: Check if audio tags are UTF-8 encoded
+- TV Shows: Check TMDB language setting
+- The code normalizes umlauts automatically (ä→ae, ö→oe, ü→ue)
 
-### Version 1.0.0 (current)
-- ✅ TV show renaming via TMDB
-- ✅ Music renaming via metadata
-- ✅ React web interface
-- ✅ Docker Compose setup
-- ✅ Nginx reverse proxy
-- ✅ Multi-language support
+---
 
 **Made for Jellyfin and Plex users**

@@ -1,6 +1,6 @@
 import os
 import re
-import ast
+import logging
 import unicodedata
 from mutagen.flac import FLAC
 from mutagen.wave import WAVE
@@ -10,14 +10,13 @@ from mutagen.oggopus import OggOpus
 from mutagen.aiff import AIFF
 from mutagen.asf import ASF
 from mutagen.musepack import Musepack
-from dotenv import load_dotenv
-from typing import Optional, Any, Tuple
+from mutagen import MutagenError
+from typing import Optional, Any
+from app.config import VALID_MUSIC_EXT
+from app.fs_utils import flush_directory, collision_safe_path
+from app.get_dirs import has_valid_files
 
-load_dotenv("dependencies/.env")
-
-VALID_MUSIC_EXT = set(
-    ast.literal_eval(os.getenv("VALID_MUSIC_EXT", "{'.mp3', '.flac', '.m4a', '.wav'}"))
-)
+logger = logging.getLogger(__name__)
 
 DISALLOWED_RE = re.compile(r'[\x00-\x1F<>:"/\\|?*]')
 
@@ -27,8 +26,8 @@ def try_decode_bytes(b: bytes) -> str:
     for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
         try:
             return b.decode(enc)
-        except Exception:
-            pass
+        except (UnicodeDecodeError, LookupError):
+            continue
     return b.decode("utf-8", errors="replace")
 
 
@@ -53,8 +52,8 @@ def fix_mojibake_if_needed(s: str) -> str:
             if cand_repl < best_repl:
                 best = cand
                 best_repl = cand_repl
-        except Exception:
-            pass
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            continue
 
     return best
 
@@ -76,10 +75,10 @@ def sanitize_tag_value(value) -> str:
     return s
 
 
-def get_first_tag_value(audio: FLAC, tag_name: str) -> Optional[str]:
+def get_first_tag_value(audio: Any, tag_name: str) -> Optional[str]:
     try:
         vals: Any = audio.get(tag_name)
-    except Exception:
+    except (KeyError, MutagenError):
         return None
 
     if vals is None:
@@ -93,21 +92,13 @@ def get_first_tag_value(audio: FLAC, tag_name: str) -> Optional[str]:
     if isinstance(vals, (bytes, bytearray)):
         try:
             return try_decode_bytes(bytes(vals))
-        except Exception:
+        except (UnicodeDecodeError, ValueError):
             return None
 
     try:
         return str(vals)
-    except Exception:
+    except (ValueError, TypeError):
         return None
-
-
-def has_valid_music_files(folder: str) -> bool:
-    for _, _, files in os.walk(folder):
-        for f in files:
-            if any(f.lower().endswith(ext.lower()) for ext in VALID_MUSIC_EXT):
-                return True
-    return False
 
 
 def load_audio_file(filepath: str) -> Optional[Any]:
@@ -133,13 +124,14 @@ def load_audio_file(filepath: str) -> Optional[Any]:
             return Musepack(filepath)
         else:
             return None
-    except Exception:
+    except MutagenError as e:
+        logger.warning("Failed to load audio file %s: %s", filepath, e)
         return None
 
 
 def rename_music(
     directory: str, dry_run: bool = False
-) -> Tuple[list[str], Optional[str]]:
+) -> tuple[list[str], Optional[str]]:
 
     logs: list[str] = []
     error: Optional[str] = None
@@ -148,7 +140,7 @@ def rename_music(
         error = f"Directory not found: {directory}"
         return logs, error
 
-    if not has_valid_music_files(directory):
+    if not has_valid_files(directory, VALID_MUSIC_EXT):
         error = f"No valid music files found (Extensions: {VALID_MUSIC_EXT})"
         return logs, error
 
@@ -197,13 +189,13 @@ def rename_music(
             if raw_disk:
                 m = re.search(r"\d", str(raw_disk))
                 disk_num = int(m.group(0)) if m else 0
-        except Exception:
+        except (ValueError, AttributeError):
             disk_num = 0
 
         m2 = re.match(r"\s*(\d+)", track_s)
         try:
             track_num = int(m2.group(1)) if m2 else 0
-        except Exception:
+        except (ValueError, AttributeError):
             track_num = 0
 
         if not title:
@@ -220,16 +212,7 @@ def rename_music(
             already_correct_count += 1
             continue
 
-        if os.path.exists(new_path):
-            base, file_ext = os.path.splitext(new_name_base)
-            i = 1
-            while True:
-                candidate = f"{base} ({i}){file_ext}"
-                candidate_path = os.path.join(directory, candidate)
-                if not os.path.exists(candidate_path):
-                    new_path = candidate_path
-                    break
-                i += 1
+        new_path = collision_safe_path(new_path)
 
         if not dry_run:
             try:
@@ -250,26 +233,6 @@ def rename_music(
             except Exception as e:
                 skipped_files.append((filename, f"Error renaming: {str(e)}"))
                 continue
-            # try to flush directory metadata so mount clients (SMB/CIFS) notice the change
-            try:
-                if hasattr(os, "O_DIRECTORY"):
-                    dir_flag = getattr(os, "O_DIRECTORY", 0)
-                    dir_fd = os.open(directory, dir_flag | os.O_RDONLY)
-                    try:
-                        os.fsync(dir_fd)
-                    finally:
-                        os.close(dir_fd)
-                else:
-                    sync_fn = getattr(os, "sync", None)
-                    if sync_fn:
-                        sync_fn()
-            except Exception:
-                try:
-                    sync_fn = getattr(os, "sync", None)
-                    if sync_fn:
-                        sync_fn()
-                except Exception:
-                    pass
         else:
             base_name = os.path.splitext(filepath)[0]
             for lyric_ext in [".txt", ".lrc"]:
@@ -281,6 +244,9 @@ def rename_music(
             logs.append(
                 f"[DRYRUN]\tWould rename '{filename}' -> {os.path.basename(new_path)}"
             )
+
+    if not dry_run and renamed_count > 0:
+        flush_directory(directory)
 
     for fname, reason in skipped_files:
         logs.append(f"[ SKIP ]\t'{fname}' - {reason}")

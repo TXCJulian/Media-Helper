@@ -429,4 +429,5 @@ backend/*.vscode
 
 TODO.txt
 /.claude
+.worktrees/
 nul

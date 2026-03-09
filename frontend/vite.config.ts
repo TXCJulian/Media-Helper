@@ -10,6 +10,11 @@ export default defineConfig({
       "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
   },
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: [],
+  },
   server: {
     proxy: {
       '/directories': {
@@ -17,6 +22,18 @@ export default defineConfig({
         changeOrigin: true,
       },
       '/rename': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/transcribe': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/config': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/health': {
         target: 'http://localhost:8000',
         changeOrigin: true,
       },

@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-WORKDIR /app
+WORKDIR /backend
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -9,8 +9,9 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app/ .     
+COPY app/ app/
+COPY dependencies/.env.example dependencies/.env.example
 
 EXPOSE 3332
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3332"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3332"]
