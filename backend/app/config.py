@@ -15,7 +15,15 @@ VALID_MUSIC_EXT = set(os.getenv("VALID_MUSIC_EXT", ".mp3,.flac,.m4a,.wav").split
 TRANSCRIBER_URL = os.getenv("TRANSCRIBER_URL", "")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3333").split(",")
 
-_VALID_FEATURES = {"episodes", "music", "lyrics"}
+VALID_CUTTER_EXT = set(
+    os.getenv(
+        "VALID_CUTTER_EXT",
+        ".mp4,.mkv,.mov,.avi,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.opus,.ogg,.aiff",
+    ).split(",")
+)
+CUTTER_UPLOAD_DIR = os.getenv("CUTTER_UPLOAD_DIR", "/tmp/cutter-uploads")
+
+_VALID_FEATURES = {"episodes", "music", "lyrics", "cutter"}
 _features_raw = os.getenv("ENABLED_FEATURES", "episodes,music")
 _parsed_features: set[str] = {
     f.strip().lower()
