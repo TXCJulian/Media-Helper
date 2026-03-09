@@ -293,34 +293,20 @@ export default function CutterPanel({
         {form.source === 'server' && (
           <>
             <FormSection label="Directory">
-              <div className="mb-0 flex-1">
-                <div className="relative">
-                  <button
-                    type="button"
-                    aria-haspopup="listbox"
-                    onClick={() => {
-                      /* handled by DirectorySelect-like dropdown below */
-                    }}
-                    disabled
-                    className="hidden"
-                  />
-                  {/* Simple directory select with search */}
-                  <input
-                    type="text"
-                    value={form.directory}
-                    onChange={(e) => handleDirectoryChange(e.target.value)}
-                    placeholder="Type a directory path..."
-                    className="input-field input-emerald"
-                    disabled={isCutting}
-                    list="cutter-dirs"
-                  />
-                  <datalist id="cutter-dirs">
-                    {directories.map((dir) => (
-                      <option key={dir} value={dir} />
-                    ))}
-                  </datalist>
-                </div>
-              </div>
+              <input
+                type="text"
+                value={form.directory}
+                onChange={(e) => handleDirectoryChange(e.target.value)}
+                placeholder="Type a directory path..."
+                className="input-field input-emerald"
+                disabled={isCutting}
+                list="cutter-dirs"
+              />
+              <datalist id="cutter-dirs">
+                {directories.map((dir) => (
+                  <option key={dir} value={dir} />
+                ))}
+              </datalist>
             </FormSection>
 
             {/* File list */}
