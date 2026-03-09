@@ -42,7 +42,7 @@ from app.cutter import (
     encode_file_id,
     decode_file_id,
 )
-from app.fs_utils import collision_safe_path, flush_directory
+from app.fs_utils import collision_safe_path
 
 logging.basicConfig(
     level=logging.INFO,
