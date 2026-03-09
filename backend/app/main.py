@@ -123,13 +123,16 @@ async def lifespan(app: FastAPI):
         )
         _observer = None
 
-    # Start cutter upload cleanup task
-    cleanup_task = asyncio.create_task(_cleanup_cutter_uploads())
+    # Start cutter upload cleanup task only if cutter feature is enabled
+    cleanup_task = None
+    if "cutter" in ENABLED_FEATURES:
+        cleanup_task = asyncio.create_task(_cleanup_cutter_uploads())
 
     yield
 
     # Shutdown
-    cleanup_task.cancel()
+    if cleanup_task is not None:
+        cleanup_task.cancel()
     if _observer:
         _observer.stop()
         _observer.join()
@@ -568,7 +571,10 @@ def cutter_stream(file_id: str, request: Request):
         def stream_transcode():
             try:
                 stdout = proc.stdout
-                assert stdout is not None
+                if stdout is None:
+                    raise HTTPException(
+                        status_code=500, detail="Transcoding process has no stdout"
+                    )
                 while True:
                     chunk = stdout.read(65536)
                     if not chunk:
@@ -596,11 +602,14 @@ def cutter_stream(file_id: str, request: Request):
     range_header = request.headers.get("range")
     if range_header:
         # Parse Range: bytes=X-Y
-        range_match = range_header.strip().replace("bytes=", "")
-        parts = range_match.split("-", 1)
-        start = int(parts[0]) if parts[0] else 0
-        end = int(parts[1]) if parts[1] else file_size - 1
-        end = min(end, file_size - 1)
+        try:
+            range_match = range_header.strip().replace("bytes=", "")
+            parts = range_match.split("-", 1)
+            start = int(parts[0]) if parts[0] else 0
+            end = int(parts[1]) if parts[1] else file_size - 1
+            end = min(end, file_size - 1)
+        except (ValueError, IndexError):
+            raise HTTPException(status_code=416, detail="Malformed Range header")
 
         if start >= file_size or start > end:
             raise HTTPException(status_code=416, detail="Range not satisfiable")
@@ -655,14 +664,30 @@ async def cutter_upload(file: UploadFile):
 
     os.makedirs(CUTTER_UPLOAD_DIR, exist_ok=True)
     filename = file.filename or "unnamed"
+
+    # Validate file extension
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in VALID_CUTTER_EXT:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid file extension '{ext}'. Allowed: {', '.join(sorted(VALID_CUTTER_EXT))}",
+        )
+
     dest = collision_safe_path(os.path.join(CUTTER_UPLOAD_DIR, filename))
 
+    max_upload_size = 2 * 1024 * 1024 * 1024  # 2 GB
     try:
+        bytes_written = 0
         with open(dest, "wb") as f:
             while True:
                 chunk = await file.read(65536)
                 if not chunk:
                     break
+                bytes_written += len(chunk)
+                if bytes_written > max_upload_size:
+                    raise HTTPException(
+                        status_code=413, detail="File exceeds 2 GB size limit"
+                    )
                 f.write(chunk)
     except Exception as e:
         # Clean up partial file on failure
@@ -709,6 +734,7 @@ def cutter_cut(
     # Determine output path
     src_dir = os.path.dirname(resolved)
     if output_name:
+        output_name = os.path.basename(output_name)
         output_path = os.path.join(src_dir, output_name)
     else:
         output_path = resolved
@@ -718,6 +744,11 @@ def cutter_cut(
 
     def run_cut():
         try:
+            if cancel_event.is_set():
+                msg_queue.put(("error_msg", "Cut cancelled before start"))
+                msg_queue.put(("done", "Cut cancelled"))
+                return
+
             def progress_cb(msg: str):
                 msg_queue.put(("progress", msg))
 
