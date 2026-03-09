@@ -18,6 +18,7 @@ _LOG_TAGS: dict[str, str] = {
     "SUCCESS": "[SUCCESS]\t\t",
     "SAVE": "[SAVE]\t\t\t",
     "RETRY": "[RETRY]\t\t\t",
+    "WARN": "[WARN]\t\t\t",
 }
 
 
@@ -107,7 +108,7 @@ def transcribe_file(
     transcriber_url: str,
     output_format: str = "lrc",
     no_separation: bool = False,
-    whisper_model: str = "large-v3",
+    whisper_model: str = "large-v3-turbo",
     language: str | None = None,
     artist: str | None = None,
     title: str | None = None,

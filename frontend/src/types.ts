@@ -39,8 +39,9 @@ export interface LyricsForm {
 
 export interface TranscriberHealth {
   status: string
-  cuda_available?: boolean
-  gpu?: string | null
+  gpu_backend?: string
+  gpu_name?: string | null
+  transcription_engine?: string
   error?: string
 }
 

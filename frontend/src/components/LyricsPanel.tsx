@@ -243,8 +243,8 @@ export default function LyricsPanel({
               : 'bg-[var(--error)]'
         }`}
       />
-      {isServiceOk && health?.gpu
-        ? shortGpuName(health.gpu)
+      {isServiceOk && health?.gpu_name
+        ? shortGpuName(health.gpu_name)
         : health === null
           ? 'Checking...'
           : 'Offline'}

@@ -64,7 +64,7 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 - GPU health indicator showing connected GPU model
 - Skip existing lyrics option
 - Advanced options: language override, skip vocal separation, skip Genius correction
-- Requires optional GPU service ([lyric-transcriber](https://github.com/TXCJulian/lyric-transcriber))
+- Requires optional GPU service ([Whisper_Lyric-Transcriber](https://github.com/TXCJulian/Whisper_Lyric-Transcriber))
 
 ### General
 - Modern dark-themed web interface with glassmorphism design
