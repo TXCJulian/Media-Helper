@@ -1,11 +1,14 @@
-from fastapi import FastAPI, Query, Form, HTTPException
+from fastapi import FastAPI, Query, Form, UploadFile, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
+import asyncio
+import mimetypes
 import os
 import logging
 import queue
 import threading
+import time
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -14,6 +17,8 @@ from app.config import (
     TVSHOW_FOLDER_NAME,
     MUSIC_FOLDER_NAME,
     VALID_MUSIC_EXT,
+    VALID_CUTTER_EXT,
+    CUTTER_UPLOAD_DIR,
     TRANSCRIBER_URL,
     ALLOWED_ORIGINS,
     ENABLED_FEATURES,
@@ -28,6 +33,16 @@ from app.transcribe_lyrics import (
     check_existing_lyrics,
     transcribe_file,
 )
+from app.cutter import (
+    probe_file,
+    generate_waveform,
+    needs_transcoding,
+    transcode_for_preview,
+    cut_file,
+    encode_file_id,
+    decode_file_id,
+)
+from app.fs_utils import collision_safe_path, flush_directory
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,6 +87,24 @@ class DirChangeHandler(FileSystemEventHandler):
 _observer = None
 
 
+async def _cleanup_cutter_uploads():
+    """Periodically delete uploaded files older than 1 hour."""
+    while True:
+        await asyncio.sleep(600)  # every 10 minutes
+        try:
+            if not os.path.isdir(CUTTER_UPLOAD_DIR):
+                continue
+            now = time.time()
+            for entry in os.scandir(CUTTER_UPLOAD_DIR):
+                if entry.is_file():
+                    age = now - entry.stat().st_mtime
+                    if age > 3600:  # older than 1 hour
+                        os.remove(entry.path)
+                        logger.info("Cleaned up expired upload: %s", entry.name)
+        except Exception:
+            logger.exception("Error during cutter upload cleanup")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan with startup and shutdown events."""
@@ -90,9 +123,13 @@ async def lifespan(app: FastAPI):
         )
         _observer = None
 
+    # Start cutter upload cleanup task
+    cleanup_task = asyncio.create_task(_cleanup_cutter_uploads())
+
     yield
 
     # Shutdown
+    cleanup_task.cancel()
     if _observer:
         _observer.stop()
         _observer.join()
@@ -406,6 +443,312 @@ def start_transcription(
                         break
                 except queue.Empty:
                     # Heartbeat to keep connection alive
+                    yield "event: progress\ndata: heartbeat\n\n"
+        finally:
+            cancel_event.set()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ── Cutter Endpoints ────────────────────────────────────────────────────
+
+
+def resolve_cutter_path(path: str, source: str) -> str:
+    """Resolve and validate a cutter file path based on source type."""
+    if source == "server":
+        return validate_path(BASE_PATH, path)
+    elif source == "upload":
+        return validate_path(CUTTER_UPLOAD_DIR, path)
+    else:
+        raise HTTPException(status_code=400, detail=f"Invalid source: '{source}'")
+
+
+# Content-type mapping for common media extensions
+_MEDIA_CONTENT_TYPES = {
+    ".mp4": "video/mp4",
+    ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime",
+    ".avi": "video/x-msvideo",
+    ".mp3": "audio/mpeg",
+    ".flac": "audio/flac",
+    ".m4a": "audio/mp4",
+    ".wav": "audio/wav",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/opus",
+    ".aiff": "audio/aiff",
+    ".ac3": "audio/ac3",
+    ".dts": "audio/vnd.dts",
+}
+
+
+@app.get("/cutter/files")
+def list_cutter_files(
+    directory: str = Query(..., max_length=500),
+):
+    require_feature("cutter")
+    path = validate_path(BASE_PATH, directory)
+    if not os.path.isdir(path):
+        return {"files": []}
+
+    files = []
+    for entry in os.scandir(path):
+        if entry.is_file():
+            ext = os.path.splitext(entry.name)[1].lower()
+            if ext in VALID_CUTTER_EXT:
+                files.append({
+                    "name": entry.name,
+                    "size": entry.stat().st_size,
+                    "extension": ext,
+                })
+    files.sort(key=lambda f: f["name"].lower())
+    return {"files": files}
+
+
+@app.get("/cutter/probe")
+def cutter_probe(
+    path: str = Query(..., max_length=500),
+    source: str = Query(..., max_length=10),
+):
+    require_feature("cutter")
+    resolved = resolve_cutter_path(path, source)
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        return probe_file(resolved)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/cutter/waveform")
+def cutter_waveform(
+    path: str = Query(..., max_length=500),
+    source: str = Query(..., max_length=10),
+    peaks: int = Query(2000, ge=100, le=10000),
+):
+    require_feature("cutter")
+    resolved = resolve_cutter_path(path, source)
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        return {"peaks": generate_waveform(resolved, num_peaks=peaks)}
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/cutter/stream/{file_id}")
+def cutter_stream(file_id: str, request: Request):
+    require_feature("cutter")
+    try:
+        source, path = decode_file_id(file_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    resolved = resolve_cutter_path(path, source)
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Check if transcoding is needed
+    try:
+        probe = probe_file(resolved)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if needs_transcoding(probe.get("audio_codec", "unknown")):
+        proc = transcode_for_preview(resolved)
+
+        def stream_transcode():
+            try:
+                stdout = proc.stdout
+                assert stdout is not None
+                while True:
+                    chunk = stdout.read(65536)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                if proc.stdout:
+                    proc.stdout.close()
+                proc.wait()
+
+        return StreamingResponse(
+            stream_transcode(),
+            media_type="video/mp4",
+            headers={"Accept-Ranges": "none"},
+        )
+
+    # Serve raw file with HTTP Range support
+    file_size = os.path.getsize(resolved)
+    ext = os.path.splitext(resolved)[1].lower()
+    content_type = _MEDIA_CONTENT_TYPES.get(
+        ext,
+        mimetypes.guess_type(resolved)[0] or "application/octet-stream",
+    )
+
+    range_header = request.headers.get("range")
+    if range_header:
+        # Parse Range: bytes=X-Y
+        range_match = range_header.strip().replace("bytes=", "")
+        parts = range_match.split("-", 1)
+        start = int(parts[0]) if parts[0] else 0
+        end = int(parts[1]) if parts[1] else file_size - 1
+        end = min(end, file_size - 1)
+
+        if start >= file_size or start > end:
+            raise HTTPException(status_code=416, detail="Range not satisfiable")
+
+        content_length = end - start + 1
+
+        def range_generator():
+            with open(resolved, "rb") as f:
+                f.seek(start)
+                remaining = content_length
+                while remaining > 0:
+                    chunk_size = min(65536, remaining)
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+
+        return StreamingResponse(
+            range_generator(),
+            status_code=206,
+            media_type=content_type,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Content-Length": str(content_length),
+                "Accept-Ranges": "bytes",
+            },
+        )
+
+    # Full file response
+    def file_generator():
+        with open(resolved, "rb") as f:
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+
+    return StreamingResponse(
+        file_generator(),
+        media_type=content_type,
+        headers={
+            "Content-Length": str(file_size),
+            "Accept-Ranges": "bytes",
+        },
+    )
+
+
+@app.post("/cutter/upload")
+async def cutter_upload(file: UploadFile):
+    require_feature("cutter")
+
+    os.makedirs(CUTTER_UPLOAD_DIR, exist_ok=True)
+    filename = file.filename or "unnamed"
+    dest = collision_safe_path(os.path.join(CUTTER_UPLOAD_DIR, filename))
+
+    try:
+        with open(dest, "wb") as f:
+            while True:
+                chunk = await file.read(65536)
+                if not chunk:
+                    break
+                f.write(chunk)
+    except Exception as e:
+        # Clean up partial file on failure
+        if os.path.exists(dest):
+            os.remove(dest)
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+    saved_name = os.path.basename(dest)
+    relative_path = os.path.relpath(dest, CUTTER_UPLOAD_DIR)
+
+    try:
+        probe = probe_file(dest)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=f"Probe failed: {e}")
+
+    return {
+        "file_id": encode_file_id("upload", relative_path),
+        "filename": saved_name,
+        "probe": probe,
+    }
+
+
+@app.post("/cutter/cut")
+def cutter_cut(
+    path: str = Form(..., max_length=500),
+    source: str = Form(..., max_length=10),
+    in_point: float = Form(..., ge=0.0),
+    out_point: float = Form(..., ge=0.0),
+    output_name: str = Form("", max_length=300),
+    stream_copy: bool = Form(True),
+    codec: str = Form("", max_length=20),
+    container: str = Form("", max_length=20),
+):
+    require_feature("cutter")
+    resolved = resolve_cutter_path(path, source)
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if out_point <= in_point:
+        raise HTTPException(
+            status_code=422, detail="out_point must be greater than in_point"
+        )
+
+    # Determine output path
+    src_dir = os.path.dirname(resolved)
+    if output_name:
+        output_path = os.path.join(src_dir, output_name)
+    else:
+        output_path = resolved
+
+    msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+    cancel_event = threading.Event()
+
+    def run_cut():
+        try:
+            def progress_cb(msg: str):
+                msg_queue.put(("progress", msg))
+
+            final_path = cut_file(
+                filepath=resolved,
+                in_point=in_point,
+                out_point=out_point,
+                output_path=output_path,
+                stream_copy=stream_copy,
+                codec=codec or None,
+                container=container or None,
+                progress_cb=progress_cb,
+            )
+            msg_queue.put(("done", f"Output: {os.path.basename(final_path)}"))
+        except Exception as e:
+            logger.exception("Cut failed")
+            msg_queue.put(("error_msg", str(e)))
+            msg_queue.put(("done", "Cut failed"))
+
+    thread = threading.Thread(target=run_cut, daemon=True)
+    thread.start()
+
+    def event_generator():
+        try:
+            while True:
+                try:
+                    event_type, data = msg_queue.get(timeout=30)
+                    yield f"event: {event_type}\ndata: {data}\n\n"
+                    if event_type == "done":
+                        break
+                except queue.Empty:
                     yield "event: progress\ndata: heartbeat\n\n"
         finally:
             cancel_event.set()
