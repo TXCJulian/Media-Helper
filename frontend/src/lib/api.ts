@@ -73,7 +73,12 @@ export async function fetchConfig(): Promise<{ features: string[] }> {
 export function uploadFile(
   file: File,
   onProgress?: (pct: number) => void,
-): Promise<{ file_id: string; filename: string; probe: import('@/types').ProbeResult }> {
+): Promise<{
+  job_id: string
+  file_id: string
+  filename: string
+  probe: import('@/types').ProbeResult
+}> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', new URL('/cutter/upload', API_BASE).href)
@@ -115,18 +120,25 @@ export function uploadFile(
 export function fetchProbe(
   path: string,
   source: string,
+  jobId = '',
+  timeoutMs = 60_000,
 ): Promise<import('@/types').ProbeResult> {
-  return fetchJson<import('@/types').ProbeResult>('/cutter/probe', { path, source })
+  const params: Record<string, string> = { path, source }
+  if (jobId) params.job_id = jobId
+  return fetchJson<import('@/types').ProbeResult>('/cutter/probe', params, timeoutMs)
 }
 
 export function fetchWaveform(
   path: string,
   source: string,
   peaks?: number,
+  jobId = '',
+  timeoutMs = 120_000,
 ): Promise<{ peaks: number[] }> {
   const params: Record<string, string> = { path, source }
   if (peaks) params.peaks = String(peaks)
-  return fetchJson<{ peaks: number[] }>('/cutter/waveform', params)
+  if (jobId) params.job_id = jobId
+  return fetchJson<{ peaks: number[] }>('/cutter/waveform', params, timeoutMs)
 }
 
 export function fetchCutterFiles(
@@ -135,6 +147,41 @@ export function fetchCutterFiles(
   return fetchJson<{ files: import('@/types').CutterFileInfo[] }>('/cutter/files', { directory })
 }
 
-export function getStreamUrl(fileId: string): string {
-  return `/cutter/stream/${encodeURIComponent(fileId)}`
+export function createJob(
+  path: string,
+  source = 'server',
+): Promise<{ job_id: string }> {
+  return postForm<{ job_id: string }>('/cutter/jobs', { path, source })
+}
+
+export function getStreamUrl(fileId: string, audioStreamIndex?: number | null): string {
+  const base = `/cutter/stream/${encodeURIComponent(fileId)}`
+  return audioStreamIndex != null ? `${base}?audio_stream=${audioStreamIndex}` : base
+}
+
+export function getThumbnailUrl(path: string, source: string, jobId = '', count = 30): string {
+  const params = new URLSearchParams({ path, source, count: String(count) })
+  if (jobId) params.set('job_id', jobId)
+  return `/cutter/thumbnails?${params.toString()}`
+}
+
+export function getDownloadUrl(jobId: string, filename: string): string {
+  return `/cutter/jobs/${encodeURIComponent(jobId)}/download/${encodeURIComponent(filename)}`
+}
+
+export async function listJobs(): Promise<{ jobs: import('@/types').CutterJob[] }> {
+  return fetchJson<{ jobs: import('@/types').CutterJob[] }>('/cutter/jobs')
+}
+
+export async function deleteJob(jobId: string): Promise<void> {
+  const url = new URL(`/cutter/jobs/${encodeURIComponent(jobId)}`, API_BASE)
+  const res = await fetch(url, { method: 'DELETE', signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS) })
+  if (!res.ok) throw new Error(await extractErrorMessage(res))
+}
+
+export async function saveToSource(jobId: string, filename: string): Promise<{ status: string; filename: string }> {
+  const url = new URL(`/cutter/jobs/${encodeURIComponent(jobId)}/save/${encodeURIComponent(filename)}`, API_BASE)
+  const res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS) })
+  if (!res.ok) throw new Error(await extractErrorMessage(res))
+  return res.json()
 }

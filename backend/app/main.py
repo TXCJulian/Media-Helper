@@ -7,8 +7,8 @@ import mimetypes
 import os
 import logging
 import queue
+import shutil
 import threading
-import time
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -18,14 +18,14 @@ from app.config import (
     MUSIC_FOLDER_NAME,
     VALID_MUSIC_EXT,
     VALID_CUTTER_EXT,
-    CUTTER_UPLOAD_DIR,
+    CUTTER_JOBS_DIR,
     TRANSCRIBER_URL,
     ALLOWED_ORIGINS,
     ENABLED_FEATURES,
 )
 from app.rename_episodes import rename_episodes
 from app.rename_music import rename_music, load_audio_file, get_first_tag_value
-from app.get_dirs import _get_all_dirs_cached, _get_music_dirs_cached
+from app.get_dirs import _get_all_dirs_cached, _get_music_dirs_cached, _get_cutter_dirs_cached
 from app.transcribe_lyrics import (
     check_transcriber_health,
     get_music_files,
@@ -36,13 +36,24 @@ from app.transcribe_lyrics import (
 from app.cutter import (
     probe_file,
     generate_waveform,
+    generate_thumbnail_strip,
     needs_transcoding,
     transcode_for_preview,
+    get_or_transcode_preview,
+    get_preview_path_if_ready,
+    wait_for_preview,
+    start_background_transcode,
     cut_file,
     encode_file_id,
     decode_file_id,
+    create_job,
+    get_job_dir,
+    load_job_metadata,
+    save_job_metadata,
+    list_jobs,
+    delete_job,
+    cleanup_old_jobs,
 )
-from app.fs_utils import collision_safe_path
 
 logging.basicConfig(
     level=logging.INFO,
@@ -71,38 +82,33 @@ class DirChangeHandler(FileSystemEventHandler):
         if event.is_directory:
             _get_all_dirs_cached.cache_clear()
             _get_music_dirs_cached.cache_clear()
+            _get_cutter_dirs_cached.cache_clear()
 
     def on_deleted(self, event):
         if event.is_directory:
             _get_all_dirs_cached.cache_clear()
             _get_music_dirs_cached.cache_clear()
+            _get_cutter_dirs_cached.cache_clear()
 
     def on_moved(self, event):
         if event.is_directory:
             _get_all_dirs_cached.cache_clear()
             _get_music_dirs_cached.cache_clear()
+            _get_cutter_dirs_cached.cache_clear()
 
 
 # Global observer instance
 _observer = None
 
 
-async def _cleanup_cutter_uploads():
-    """Periodically delete uploaded files older than 1 hour."""
+async def _cleanup_cutter_jobs():
+    """Periodically delete expired jobs."""
     while True:
         await asyncio.sleep(600)  # every 10 minutes
         try:
-            if not os.path.isdir(CUTTER_UPLOAD_DIR):
-                continue
-            now = time.time()
-            for entry in os.scandir(CUTTER_UPLOAD_DIR):
-                if entry.is_file():
-                    age = now - entry.stat().st_mtime
-                    if age > 3600:  # older than 1 hour
-                        os.remove(entry.path)
-                        logger.info("Cleaned up expired upload: %s", entry.name)
+            cleanup_old_jobs()
         except Exception:
-            logger.exception("Error during cutter upload cleanup")
+            logger.exception("Error during cutter job cleanup")
 
 
 @asynccontextmanager
@@ -126,7 +132,7 @@ async def lifespan(app: FastAPI):
     # Start cutter upload cleanup task only if cutter feature is enabled
     cleanup_task = None
     if "cutter" in ENABLED_FEATURES:
-        cleanup_task = asyncio.create_task(_cleanup_cutter_uploads())
+        cleanup_task = asyncio.create_task(_cleanup_cutter_jobs())
 
     yield
 
@@ -145,7 +151,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type"],
 )
 
@@ -219,8 +225,24 @@ def list_music_directories(
 def refresh_directories():
     _get_all_dirs_cached.cache_clear()
     _get_music_dirs_cached.cache_clear()
+    _get_cutter_dirs_cached.cache_clear()
     logger.info("Directory cache refreshed manually.")
     return {"status": "ok"}
+
+
+@app.get("/directories/media")
+def list_media_directories(
+    search: str | None = Query(None, description="Text filter", max_length=200),
+):
+    require_feature("cutter")
+    all_dirs = _get_cutter_dirs_cached()
+
+    filtered = all_dirs
+    if search:
+        search_lc = search.lower()
+        filtered = [d for d in filtered if search_lc in d.lower()]
+
+    return {"directories": filtered}
 
 
 @app.post("/rename/episodes")
@@ -464,12 +486,16 @@ def start_transcription(
 # ── Cutter Endpoints ────────────────────────────────────────────────────
 
 
-def resolve_cutter_path(path: str, source: str) -> str:
+def resolve_cutter_path(path: str, source: str, job_id: str = "") -> str:
     """Resolve and validate a cutter file path based on source type."""
     if source == "server":
         return validate_path(BASE_PATH, path)
     elif source == "upload":
-        return validate_path(CUTTER_UPLOAD_DIR, path)
+        if not job_id:
+            raise HTTPException(status_code=400, detail="job_id required for upload source")
+        job_dir = get_job_dir(job_id)
+        input_dir = os.path.join(job_dir, "input")
+        return validate_path(input_dir, path)
     else:
         raise HTTPException(status_code=400, detail=f"Invalid source: '{source}'")
 
@@ -520,13 +546,21 @@ def list_cutter_files(
 def cutter_probe(
     path: str = Query(..., max_length=500),
     source: str = Query(..., max_length=10),
+    job_id: str = Query("", max_length=50),
 ):
     require_feature("cutter")
-    resolved = resolve_cutter_path(path, source)
+    resolved = resolve_cutter_path(path, source, job_id)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
     try:
-        return probe_file(resolved)
+        info = probe_file(resolved)
+        info["needs_transcoding"] = needs_transcoding(
+            info.get("audio_codec", "unknown"), resolved
+        )
+        # Start background transcode early so preview is ready by play time
+        if info["needs_transcoding"] and job_id:
+            start_background_transcode(resolved, job_id)
+        return info
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -536,9 +570,10 @@ def cutter_waveform(
     path: str = Query(..., max_length=500),
     source: str = Query(..., max_length=10),
     peaks: int = Query(2000, ge=100, le=10000),
+    job_id: str = Query("", max_length=50),
 ):
     require_feature("cutter")
-    resolved = resolve_cutter_path(path, source)
+    resolved = resolve_cutter_path(path, source, job_id)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
     try:
@@ -547,15 +582,35 @@ def cutter_waveform(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/cutter/thumbnails")
+def cutter_thumbnails(
+    path: str = Query(..., max_length=500),
+    source: str = Query(..., max_length=10),
+    count: int = Query(30, ge=5, le=100),
+    job_id: str = Query("", max_length=50),
+):
+    require_feature("cutter")
+    from fastapi.responses import Response
+
+    resolved = resolve_cutter_path(path, source, job_id)
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        jpeg_bytes = generate_thumbnail_strip(resolved, count=count)
+        return Response(content=jpeg_bytes, media_type="image/jpeg")
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/cutter/stream/{file_id}")
-def cutter_stream(file_id: str, request: Request):
+def cutter_stream(file_id: str, request: Request, audio_stream: int | None = Query(None)):
     require_feature("cutter")
     try:
-        source, path = decode_file_id(file_id)
+        source, job_id, path = decode_file_id(file_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    resolved = resolve_cutter_path(path, source)
+    resolved = resolve_cutter_path(path, source, job_id)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -565,31 +620,64 @@ def cutter_stream(file_id: str, request: Request):
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    if needs_transcoding(probe.get("audio_codec", "unknown")):
-        proc = transcode_for_preview(resolved)
-
-        def stream_transcode():
-            try:
-                stdout = proc.stdout
-                if stdout is None:
-                    raise HTTPException(
-                        status_code=500, detail="Transcoding process has no stdout"
+    if needs_transcoding(probe.get("audio_codec", "unknown"), resolved):
+        if job_id:
+            # Check if preview is already cached
+            preview_path = get_preview_path_if_ready(
+                resolved, job_id, audio_stream_index=audio_stream
+            )
+            if not preview_path:
+                # Wait for background transcode (started during probe) to finish
+                preview_path = wait_for_preview(
+                    resolved, job_id, audio_stream_index=audio_stream, timeout=120
+                )
+            if not preview_path:
+                # Background transcode not started or failed — do it synchronously
+                try:
+                    preview_path = get_or_transcode_preview(
+                        resolved, job_id, audio_stream_index=audio_stream
                     )
-                while True:
-                    chunk = stdout.read(65536)
-                    if not chunk:
-                        break
-                    yield chunk
-            finally:
-                if proc.stdout:
-                    proc.stdout.close()
-                proc.wait()
+                except RuntimeError as e:
+                    raise HTTPException(status_code=500, detail=str(e))
+            # Serve the seekable preview file (falls through to Range logic below)
+            resolved = preview_path
+        else:
+            # No job context — pipe-based streaming (non-seekable fallback)
+            proc = transcode_for_preview(resolved, audio_stream_index=audio_stream)
+            has_video = probe.get("video_codec") is not None
 
-        return StreamingResponse(
-            stream_transcode(),
-            media_type="video/mp4",
-            headers={"Accept-Ranges": "none"},
-        )
+            def stream_transcode():
+                try:
+                    stdout = proc.stdout
+                    if stdout is None:
+                        raise HTTPException(
+                            status_code=500, detail="Transcoding process has no stdout"
+                        )
+                    while True:
+                        chunk = stdout.read(65536)
+                        if not chunk:
+                            break
+                        yield chunk
+                finally:
+                    if proc.stdout:
+                        proc.stdout.close()
+                    try:
+                        stderr_output = proc.stderr.read() if proc.stderr else b""
+                    except ValueError:
+                        stderr_output = b""
+                    proc.wait()
+                    if proc.returncode != 0:
+                        logger.error(
+                            "Transcode failed (exit %d): %s",
+                            proc.returncode,
+                            stderr_output.decode(errors="replace") if isinstance(stderr_output, bytes) else str(stderr_output),
+                        )
+
+            return StreamingResponse(
+                stream_transcode(),
+                media_type="video/mp4" if has_video else "audio/mp4",
+                headers={"Accept-Ranges": "none"},
+            )
 
     # Serve raw file with HTTP Range support
     file_size = os.path.getsize(resolved)
@@ -662,7 +750,6 @@ def cutter_stream(file_id: str, request: Request):
 async def cutter_upload(file: UploadFile):
     require_feature("cutter")
 
-    os.makedirs(CUTTER_UPLOAD_DIR, exist_ok=True)
     filename = file.filename or "unnamed"
 
     # Validate file extension
@@ -673,9 +760,13 @@ async def cutter_upload(file: UploadFile):
             detail=f"Invalid file extension '{ext}'. Allowed: {', '.join(sorted(VALID_CUTTER_EXT))}",
         )
 
-    dest = collision_safe_path(os.path.join(CUTTER_UPLOAD_DIR, filename))
+    # Create a job for this upload
+    job_id = create_job("upload", "", filename)
+    job_dir = get_job_dir(job_id)
+    input_dir = os.path.join(job_dir, "input")
+    dest = os.path.join(input_dir, filename)
 
-    max_upload_size = 2 * 1024 * 1024 * 1024  # 2 GB
+    max_upload_size = 50 * 1024 * 1024 * 1024  # 50 GB
     try:
         bytes_written = 0
         with open(dest, "wb") as f:
@@ -686,48 +777,163 @@ async def cutter_upload(file: UploadFile):
                 bytes_written += len(chunk)
                 if bytes_written > max_upload_size:
                     raise HTTPException(
-                        status_code=413, detail="File exceeds 2 GB size limit"
+                        status_code=413, detail="File exceeds 50 GB size limit"
                     )
                 f.write(chunk)
     except HTTPException:
-        # Clean up partial file on failure, re-raise HTTP exceptions as-is
-        if os.path.exists(dest):
-            os.remove(dest)
+        delete_job(job_id)
         raise
     except Exception as e:
-        # Clean up partial file on failure
-        if os.path.exists(dest):
-            os.remove(dest)
+        delete_job(job_id)
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
-
-    saved_name = os.path.basename(dest)
-    relative_path = os.path.relpath(dest, CUTTER_UPLOAD_DIR)
 
     try:
         probe = probe_file(dest)
+        probe["needs_transcoding"] = needs_transcoding(
+            probe.get("audio_codec", "unknown"), dest
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=f"Probe failed: {e}")
 
     return {
-        "file_id": encode_file_id("upload", relative_path),
-        "filename": saved_name,
+        "job_id": job_id,
+        "file_id": encode_file_id("upload", filename, job_id),
+        "filename": filename,
         "probe": probe,
     }
+
+
+@app.post("/cutter/jobs")
+def cutter_create_job(
+    path: str = Form(..., max_length=500),
+    source: str = Form("server", max_length=10),
+):
+    """Create a job for a server-side file (no file copy, metadata only)."""
+    require_feature("cutter")
+    resolved = resolve_cutter_path(path, source)
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="File not found")
+    filename = os.path.basename(resolved)
+    job_id = create_job(source, path, filename)
+    return {"job_id": job_id}
+
+
+@app.get("/cutter/jobs")
+def cutter_list_jobs():
+    """List all active jobs."""
+    require_feature("cutter")
+    return {"jobs": list_jobs()}
+
+
+@app.get("/cutter/jobs/{job_id}")
+def cutter_get_job(job_id: str):
+    """Get single job details."""
+    require_feature("cutter")
+    meta = load_job_metadata(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return meta
+
+
+@app.delete("/cutter/jobs/{job_id}")
+def cutter_delete_job(job_id: str):
+    """Delete a job and all its files."""
+    require_feature("cutter")
+    try:
+        delete_job(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"status": "deleted"}
+
+
+@app.get("/cutter/jobs/{job_id}/download/{filename}")
+def cutter_download(job_id: str, filename: str):
+    """Download an output file from a job."""
+    require_feature("cutter")
+    from fastapi.responses import FileResponse
+
+    try:
+        job_dir = get_job_dir(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    # Sanitize filename to prevent traversal
+    safe_name = os.path.basename(filename)
+    file_path = os.path.join(job_dir, "output", safe_name)
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="Output file not found")
+
+    return FileResponse(
+        file_path,
+        filename=safe_name,
+        media_type="application/octet-stream",
+    )
+
+
+@app.post("/cutter/jobs/{job_id}/save/{filename}")
+def cutter_save_to_source(job_id: str, filename: str):
+    """Copy an output file back to the original file's directory (server sources only)."""
+    require_feature("cutter")
+    from app.fs_utils import collision_safe_path
+
+    meta = load_job_metadata(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if meta.get("source") != "server":
+        raise HTTPException(status_code=400, detail="Save to Source only available for server files")
+
+    # Locate the output file in the job directory
+    try:
+        job_dir = get_job_dir(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    safe_name = os.path.basename(filename)
+    src_file = os.path.join(job_dir, "output", safe_name)
+    if not os.path.isfile(src_file):
+        raise HTTPException(status_code=404, detail="Output file not found")
+
+    # Resolve the original file's directory
+    original_path = meta.get("original_path", "")
+    try:
+        resolved_original = validate_path(BASE_PATH, original_path)
+    except HTTPException:
+        raise HTTPException(status_code=400, detail="Cannot resolve original file path")
+
+    dest_dir = os.path.dirname(resolved_original)
+    if not os.path.isdir(dest_dir):
+        raise HTTPException(status_code=400, detail="Original directory no longer exists")
+
+    dest_path = collision_safe_path(os.path.join(dest_dir, safe_name))
+    shutil.copy2(src_file, dest_path)
+
+    return {"status": "saved", "filename": os.path.basename(dest_path)}
 
 
 @app.post("/cutter/cut")
 def cutter_cut(
     path: str = Form(..., max_length=500),
     source: str = Form(..., max_length=10),
+    job_id: str = Form(..., max_length=50),
     in_point: float = Form(..., ge=0.0),
     out_point: float = Form(..., ge=0.0),
     output_name: str = Form("", max_length=300),
     stream_copy: bool = Form(True),
     codec: str = Form("", max_length=20),
+    audio_codec: str = Form("", max_length=20),
     container: str = Form("", max_length=20),
+    audio_stream: int | None = Form(None),
 ):
     require_feature("cutter")
-    resolved = resolve_cutter_path(path, source)
+
+    # Validate job
+    try:
+        job_dir = get_job_dir(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    resolved = resolve_cutter_path(path, source, job_id)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -736,13 +942,42 @@ def cutter_cut(
             status_code=422, detail="out_point must be greater than in_point"
         )
 
-    # Determine output path
-    src_dir = os.path.dirname(resolved)
+    # Determine output filename — use original name if no output_name given
+    original_name = os.path.basename(resolved)
+    original_ext = os.path.splitext(original_name)[1]  # e.g. ".mkv"
+
     if output_name:
-        output_name = os.path.basename(output_name)
-        output_path = os.path.join(src_dir, output_name)
+        out_filename = os.path.basename(output_name)
     else:
-        output_path = resolved
+        out_filename = original_name
+
+    # Ensure the output filename has a proper extension so ffmpeg can
+    # determine the muxer.  When stream-copying, keep the original
+    # container extension; when re-encoding, use the chosen container.
+    name_stem, name_ext = os.path.splitext(out_filename)
+    if not name_ext:
+        if stream_copy:
+            out_filename = name_stem + original_ext
+        elif container:
+            out_filename = name_stem + "." + container
+        else:
+            out_filename = name_stem + original_ext
+
+    output_dir = os.path.join(job_dir, "output")
+    output_path = os.path.join(output_dir, out_filename)
+
+    # Update job metadata
+    meta = load_job_metadata(job_id)
+    if meta:
+        meta["status"] = "cutting"
+        meta["cut_settings"] = {
+            "in_point": in_point,
+            "out_point": out_point,
+            "stream_copy": stream_copy,
+            "codec": codec or None,
+            "container": container or None,
+        }
+        save_job_metadata(job_id, meta)
 
     msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
     cancel_event = threading.Event()
@@ -751,7 +986,7 @@ def cutter_cut(
         try:
             if cancel_event.is_set():
                 msg_queue.put(("error_msg", "Cut cancelled before start"))
-                msg_queue.put(("done", "Cut cancelled"))
+                msg_queue.put(("done", "Cut failed"))
                 return
 
             def progress_cb(msg: str):
@@ -764,12 +999,32 @@ def cutter_cut(
                 output_path=output_path,
                 stream_copy=stream_copy,
                 codec=codec or None,
+                audio_codec=audio_codec or None,
                 container=container or None,
                 progress_cb=progress_cb,
+                audio_stream_index=audio_stream,
             )
-            msg_queue.put(("done", f"Output: {os.path.basename(final_path)}"))
+
+            final_name = os.path.basename(final_path)
+
+            # Update job metadata with output
+            meta = load_job_metadata(job_id)
+            if meta:
+                meta["status"] = "done"
+                existing = meta.get("output_files", [])
+                if final_name not in existing:
+                    existing.append(final_name)
+                meta["output_files"] = existing
+                save_job_metadata(job_id, meta)
+
+            msg_queue.put(("done", f"Output: {final_name}"))
         except Exception as e:
             logger.exception("Cut failed")
+            # Update job status to error
+            meta = load_job_metadata(job_id)
+            if meta:
+                meta["status"] = "error"
+                save_job_metadata(job_id, meta)
             msg_queue.put(("error_msg", str(e)))
             msg_queue.put(("done", "Cut failed"))
 

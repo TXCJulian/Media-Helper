@@ -12,6 +12,8 @@ services:
       - VALID_MUSIC_EXT=.flac,.wav,.mp3
       - TRANSCRIBER_URL=${TRANSCRIBER_URL:-http://lyric-transcriber:3334}
       - ENABLED_FEATURES=${ENABLED_FEATURES:-episodes,music,lyrics}
+      - CUTTER_JOBS_DIR=/data/cutter-jobs
+      - CUTTER_JOB_TTL=${CUTTER_JOB_TTL:-86400}
     ports:
       - target: 3332
         published: 3332
@@ -19,6 +21,7 @@ services:
     restart: unless-stopped
     volumes:
       - /path/to/your/media:/media:rw
+      - cutter-jobs:/data/cutter-jobs
     networks:
       - renamer-network
 
@@ -67,4 +70,5 @@ networks:
     driver: bridge
 
 volumes:
+  cutter-jobs:
   transcriber-models:

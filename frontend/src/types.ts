@@ -65,7 +65,18 @@ export interface CutterForm {
   outputName: string
   streamCopy: boolean
   codec: string
+  audioCodec: string
   container: string
+  audioStreamIndex: number | null
+}
+
+export interface AudioStreamInfo {
+  index: number
+  codec: string
+  channels: number
+  sample_rate: number
+  language: string
+  title: string
 }
 
 export interface ProbeResult {
@@ -77,10 +88,41 @@ export interface ProbeResult {
   width: number | null
   height: number | null
   sample_rate: number
+  needs_transcoding: boolean
+  audio_streams: AudioStreamInfo[]
 }
 
 export interface CutterFileInfo {
   name: string
   size: number
   extension: string
+}
+
+export interface CutterSourceState {
+  probe: ProbeResult | null
+  peaks: number[]
+  filePath: string
+  fileId: string
+  thumbnailUrl: string
+  files: CutterFileInfo[]
+  jobId: string
+  outputFiles: string[]
+  isLoadingFile: boolean
+}
+
+export interface CutterJob {
+  job_id: string
+  source: string
+  original_name: string
+  created_at: string
+  status: string
+  output_files: string[]
+}
+
+export interface CutterPersistedState {
+  form: CutterForm
+  directories: string[]
+  search: string
+  serverState: CutterSourceState
+  uploadState: CutterSourceState
 }

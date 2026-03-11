@@ -296,6 +296,42 @@
       0 4px 20px rgba(0, 0, 0, 0.3);
   }
 
+  /* ── Sliders ── */
+  .slider-emerald {
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.08);
+    outline: none;
+    cursor: pointer;
+  }
+  .slider-emerald::-webkit-slider-thumb {
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-4);
+    border: 2px solid rgba(0, 0, 0, 0.3);
+    cursor: grab;
+    transition: box-shadow 0.15s;
+  }
+  .slider-emerald::-webkit-slider-thumb:hover {
+    box-shadow: 0 0 0 4px var(--accent-4-glow);
+  }
+  .slider-emerald::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-4);
+    border: 2px solid rgba(0, 0, 0, 0.3);
+    cursor: grab;
+  }
+  .slider-emerald::-moz-range-track {
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
   /* ── Spinners ── */
   .spinner-sm,
   .spinner-md {

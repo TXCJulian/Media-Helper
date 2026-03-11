@@ -4,9 +4,12 @@ import LogPanel from '@/components/LogPanel'
 import MediaPlayer from '@/components/cutter/MediaPlayer'
 import TrimControls from '@/components/cutter/TrimControls'
 import OutputSettings from '@/components/cutter/OutputSettings'
+import AudioTrackSelect from '@/components/cutter/AudioTrackSelect'
+import JobManager from '@/components/cutter/JobManager'
 import SegmentedControl from '@/components/ui/SegmentedControl'
 import FormSection from '@/components/ui/FormSection'
 import { connectSSE } from '@/lib/sse'
+import DirectorySelect from '@/components/ui/DirectorySelect'
 import {
   fetchJson,
   uploadFile,
@@ -14,9 +17,20 @@ import {
   fetchWaveform,
   fetchCutterFiles,
   getStreamUrl,
+  getThumbnailUrl,
+  getDownloadUrl,
+  createJob,
+  postRefresh,
+  saveToSource,
 } from '@/lib/api'
 import { useDebounce } from '@/hooks/useDebounce'
-import type { CutterForm, ProbeResult, CutterFileInfo, DirectoriesResponse } from '@/types'
+import type {
+  CutterForm,
+  CutterFileInfo,
+  CutterPersistedState,
+  CutterSourceState,
+  DirectoriesResponse,
+} from '@/types'
 
 interface CutterPanelProps {
   onLog: (log: string[]) => void
@@ -25,6 +39,8 @@ interface CutterPanelProps {
   log: string[]
   error: string
   hasStarted: boolean
+  persisted: CutterPersistedState
+  onPersistedChange: (state: CutterPersistedState) => void
 }
 
 export default function CutterPanel({
@@ -34,78 +50,158 @@ export default function CutterPanel({
   log,
   error,
   hasStarted,
+  persisted,
+  onPersistedChange,
 }: CutterPanelProps) {
-  const [form, setForm] = useState<CutterForm>({
-    source: 'server',
-    directory: '',
-    filename: '',
-    inPoint: 0,
-    outPoint: 0,
-    outputName: '',
-    streamCopy: true,
-    codec: 'aac',
-    container: 'mp4',
-  })
+  // Shared state
+  const { form, directories, search } = persisted
 
-  const [directories, setDirectories] = useState<string[]>([])
+  // Active source state — derives from whichever source is selected
+  const sourceKey = form.source === 'server' ? 'serverState' : 'uploadState'
+  const { probe, peaks, filePath, fileId, thumbnailUrl, files, jobId, outputFiles, isLoadingFile } =
+    persisted[sourceKey]
+
+  // Keep a ref to the latest persisted state so setPersisted never goes stale
+  const persistedRef = useRef(persisted)
+  persistedRef.current = persisted
+
+  const setPersisted = useCallback(
+    (updater: Partial<CutterPersistedState> | ((prev: CutterPersistedState) => Partial<CutterPersistedState>)) => {
+      const current = persistedRef.current
+      const partial = typeof updater === 'function' ? updater(current) : updater
+      const next = { ...current, ...partial }
+      persistedRef.current = next
+      onPersistedChange(next)
+    },
+    [onPersistedChange],
+  )
+
+  // Helper: update fields on the currently active source state
+  const setSource = useCallback(
+    (updater: Partial<CutterSourceState> | ((prev: CutterSourceState) => Partial<CutterSourceState>)) => {
+      const current = persistedRef.current
+      const key = current.form.source === 'server' ? 'serverState' : 'uploadState'
+      const prev = current[key]
+      const partial = typeof updater === 'function' ? updater(prev) : updater
+      const next = { ...current, [key]: { ...prev, ...partial } }
+      persistedRef.current = next
+      onPersistedChange(next)
+    },
+    [onPersistedChange],
+  )
+
+  const setForm = useCallback(
+    (updater: CutterForm | ((prev: CutterForm) => CutterForm)) => {
+      const currentForm = persistedRef.current.form
+      const next = typeof updater === 'function' ? updater(currentForm) : updater
+      setPersisted({ form: next })
+    },
+    [setPersisted],
+  )
+
+  // Transient state — resets on navigation (that's fine)
   const [isLoadingDirs, setIsLoadingDirs] = useState(false)
-  const [files, setFiles] = useState<CutterFileInfo[]>([])
   const [isLoadingFiles, setIsLoadingFiles] = useState(false)
-  const [probe, setProbe] = useState<ProbeResult | null>(null)
-  const [peaks, setPeaks] = useState<number[]>([])
-  const [filePath, setFilePath] = useState('') // raw relative path for API calls
-  const [fileId, setFileId] = useState('') // base64-encoded ID for stream URL
   const [isCutting, setIsCutting] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState(-1) // -1 = not uploading
+  const [uploadProgress, setUploadProgress] = useState(-1)
   const [isDragOver, setIsDragOver] = useState(false)
 
+  const debouncedSearch = useDebounce(search, 500)
   const abortSSERef = useRef<(() => void) | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-
-  const debouncedDirectory = useDebounce(form.directory, 500)
 
   const update = <K extends keyof CutterForm>(key: K, value: CutterForm[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }))
 
-  function encodeFileId(source: string, path: string): string {
-    return btoa(`${source}:${path}`)
+  function encodeFileId(source: string, path: string, jid = ''): string {
+    const bytes = new TextEncoder().encode(`${source}:${jid}:${path}`)
+    let bin = ''
+    for (const b of bytes) bin += String.fromCharCode(b)
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
   }
 
-  // ── Fetch directories on mount ────────────────────────────────
-  const fetchDirs = useCallback(async () => {
+  // ── Fetch directories with optional search filter ──────────
+  const fetchDirs = useCallback(
+    async (searchText: string) => {
+      setIsLoadingDirs(true)
+      onError('')
+      try {
+        const params: Record<string, string> = {}
+        if (searchText) params.search = searchText
+        const data = await fetchJson<DirectoriesResponse>('/directories/media', params)
+        const dirs = data.directories ?? []
+        setPersisted((prev) => ({
+          directories: dirs,
+          form: {
+            ...prev.form,
+            directory:
+              dirs.length > 0
+                ? dirs.includes(prev.form.directory)
+                  ? prev.form.directory
+                  : dirs[0]!
+                : '',
+          },
+        }))
+      } catch (err) {
+        onError(`Error loading directories: ${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        setIsLoadingDirs(false)
+      }
+    },
+    [onError, setPersisted],
+  )
+
+  // Only fetch on mount if directories are empty (first visit)
+  const initialFetchDone = useRef(directories.length > 0)
+  useEffect(() => {
+    if (!initialFetchDone.current) {
+      initialFetchDone.current = true
+      void fetchDirs(debouncedSearch)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-fetch when search changes (but not on mount)
+  const prevSearch = useRef(debouncedSearch)
+  useEffect(() => {
+    if (prevSearch.current !== debouncedSearch) {
+      prevSearch.current = debouncedSearch
+      void fetchDirs(debouncedSearch)
+    }
+  }, [debouncedSearch, fetchDirs])
+
+  const handleRefresh = async () => {
     setIsLoadingDirs(true)
     onError('')
     try {
-      const data = await fetchJson<DirectoriesResponse>('/directories/music')
-      const dirs = data.directories ?? []
-      setDirectories(dirs)
+      await postRefresh()
     } catch (err) {
-      onError(`Error loading directories: ${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setIsLoadingDirs(false)
+      onError(`Error refreshing: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [onError])
-
-  useEffect(() => {
-    void fetchDirs()
-  }, [fetchDirs])
+    await fetchDirs(search)
+  }
 
   // ── Fetch files when directory changes ────────────────────────
+  const prevDir = useRef(form.directory)
   useEffect(() => {
-    if (!debouncedDirectory) {
-      setFiles([])
+    if (form.source !== 'server') return
+    // Skip if directory hasn't changed (e.g., on remount with persisted state)
+    if (prevDir.current === form.directory && files.length > 0) return
+    prevDir.current = form.directory
+
+    if (!form.directory) {
+      setSource({ files: [] })
       return
     }
     const signal = { cancelled: false }
     setIsLoadingFiles(true)
-    fetchCutterFiles(debouncedDirectory)
+    fetchCutterFiles(form.directory)
       .then((data) => {
         if (signal.cancelled) return
-        setFiles(data.files ?? [])
+        setSource({ files: data.files ?? [] })
       })
       .catch(() => {
         if (signal.cancelled) return
-        setFiles([])
+        setSource({ files: [] })
       })
       .finally(() => {
         if (!signal.cancelled) setIsLoadingFiles(false)
@@ -113,53 +209,56 @@ export default function CutterPanel({
     return () => {
       signal.cancelled = true
     }
-  }, [debouncedDirectory])
+  }, [form.directory, form.source, setSource]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Load probe + waveform for a file ──────────────────────────
   const loadFileData = useCallback(
-    async (path: string, source: 'server' | 'upload') => {
+    async (path: string, source: 'server' | 'upload', jid = '') => {
       onError('')
-      setProbe(null)
-      setPeaks([])
+      setSource({ probe: null, peaks: [], thumbnailUrl: '', isLoadingFile: true })
       try {
         const [probeData, waveData] = await Promise.all([
-          fetchProbe(path, source),
-          fetchWaveform(path, source, 800),
+          fetchProbe(path, source, jid),
+          fetchWaveform(path, source, 800, jid),
         ])
-        setProbe(probeData)
-        setPeaks(waveData.peaks)
-        setForm((prev) => ({
-          ...prev,
-          inPoint: 0,
-          outPoint: probeData.duration,
+        setSource({ probe: probeData, peaks: waveData.peaks, isLoadingFile: false,
+          thumbnailUrl: probeData.video_codec != null ? getThumbnailUrl(path, source, jid) : '',
+        })
+        setPersisted((prev) => ({
+          form: { ...prev.form, inPoint: 0, outPoint: probeData.duration },
         }))
       } catch (err) {
         onError(`Error loading file: ${err instanceof Error ? err.message : String(err)}`)
+        setSource({ isLoadingFile: false })
       }
     },
-    [onError],
+    [onError, setSource, setPersisted],
   )
 
   // ── Server file selection ─────────────────────────────────────
   const handleFileSelect = useCallback(
-    (file: CutterFileInfo) => {
+    async (file: CutterFileInfo) => {
       const path = `${form.directory}/${file.name}`
-      setForm((prev) => ({ ...prev, filename: file.name }))
-      setFilePath(path)
-      setFileId(encodeFileId('server', path))
-      void loadFileData(path, 'server')
+      setSource({ isLoadingFile: true, probe: null, peaks: [], thumbnailUrl: '', outputFiles: [] })
+      try {
+        const { job_id } = await createJob(path, 'server')
+        setSource({ filePath: path, fileId: encodeFileId('server', path, job_id), jobId: job_id })
+        setPersisted((prev) => ({ form: { ...prev.form, filename: file.name } }))
+        await loadFileData(path, 'server')
+      } catch (err) {
+        onError(`Error creating job: ${err instanceof Error ? err.message : String(err)}`)
+        setSource({ isLoadingFile: false })
+      }
     },
-    [form.directory, loadFileData],
+    [form.directory, loadFileData, setSource, setPersisted, onError],
   )
 
-  // ── Directory selection from dropdown ─────────────────────────
+  // ── Directory selection from DirectorySelect ─────────────────
   const handleDirectoryChange = (dir: string) => {
-    update('directory', dir)
-    update('filename', '')
-    setProbe(null)
-    setPeaks([])
-    setFilePath('')
-    setFileId('')
+    setPersisted({ form: { ...form, directory: dir, filename: '' } })
+    setSource({ probe: null, peaks: [], filePath: '', fileId: '', thumbnailUrl: '', jobId: '', outputFiles: [] })
+    // Reset prevDir so the files effect fires
+    prevDir.current = ''
   }
 
   // ── Upload handling ───────────────────────────────────────────
@@ -167,31 +266,41 @@ export default function CutterPanel({
     async (file: File) => {
       setUploadProgress(0)
       onError('')
-      setProbe(null)
-      setPeaks([])
-      setFilePath('')
-      setFileId('')
+      setSource({
+        probe: null, peaks: [], filePath: '', fileId: '', thumbnailUrl: '', isLoadingFile: true,
+        jobId: '', outputFiles: [],
+      })
       try {
         const result = await uploadFile(file, setUploadProgress)
-        setProbe(result.probe)
-        setFilePath(result.filename)
-        setFileId(result.file_id)
-        setForm((prev) => ({
-          ...prev,
-          filename: result.filename,
-          inPoint: 0,
-          outPoint: result.probe.duration,
+        const waveData = await fetchWaveform(result.filename, 'upload', 800, result.job_id)
+        setSource({
+          probe: result.probe,
+          filePath: result.filename,
+          fileId: result.file_id,
+          jobId: result.job_id,
+          peaks: waveData.peaks,
+          thumbnailUrl:
+            result.probe.video_codec != null
+              ? getThumbnailUrl(result.filename, 'upload', result.job_id)
+              : '',
+          isLoadingFile: false,
+        })
+        setPersisted((prev) => ({
+          form: {
+            ...prev.form,
+            filename: result.filename,
+            inPoint: 0,
+            outPoint: result.probe.duration,
+          },
         }))
-        // Fetch waveform for uploaded file
-        const waveData = await fetchWaveform(result.filename, 'upload', 800)
-        setPeaks(waveData.peaks)
       } catch (err) {
         onError(`Upload failed: ${err instanceof Error ? err.message : String(err)}`)
+        setSource({ isLoadingFile: false })
       } finally {
         setUploadProgress(-1)
       }
     },
-    [onError],
+    [onError, setSource, setPersisted],
   )
 
   const handleDrop = useCallback(
@@ -208,7 +317,6 @@ export default function CutterPanel({
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0]
       if (file) void handleUpload(file)
-      // Reset input so same file can be re-selected
       e.target.value = ''
     },
     [handleUpload],
@@ -217,17 +325,19 @@ export default function CutterPanel({
   // ── Cut execution ─────────────────────────────────────────────
   const handleCut = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!filePath || !probe || isCutting) return
+    if (!filePath || !probe || isCutting || !jobId) return
 
     setIsCutting(true)
     onError('')
     onLog([])
+    setSource({ outputFiles: [] })
 
     const logs: string[] = []
 
     const params: Record<string, string> = {
       path: filePath,
       source: form.source,
+      job_id: jobId,
       in_point: String(form.inPoint),
       out_point: String(form.outPoint),
       stream_copy: String(form.streamCopy),
@@ -236,7 +346,11 @@ export default function CutterPanel({
     if (!form.streamCopy) {
       params.codec = form.codec
       params.container = form.container
+      if (form.audioCodec && form.audioCodec !== 'copy') {
+        params.audio_codec = form.audioCodec
+      }
     }
+    if (form.audioStreamIndex != null) params.audio_stream = String(form.audioStreamIndex)
 
     abortSSERef.current?.()
     abortSSERef.current = connectSSE('/cutter/cut', params, {
@@ -255,6 +369,14 @@ export default function CutterPanel({
         onLog([...logs])
         setIsCutting(false)
         abortSSERef.current = null
+
+        // Parse output filename from "Output: filename.ext"
+        const match = data.match(/^Output:\s*(.+)$/)
+        if (match) {
+          setSource((prev) => ({
+            outputFiles: [...prev.outputFiles, match[1]!],
+          }))
+        }
       },
     })
   }
@@ -266,24 +388,19 @@ export default function CutterPanel({
     }
   }, [])
 
-  // Reset file state when switching source tabs
+  // Source tab switch — just update the form, state is preserved per-source
   const handleSourceChange = (source: string) => {
-    update('source', source as CutterForm['source'])
-    update('filename', '')
-    setProbe(null)
-    setPeaks([])
-    setFilePath('')
-    setFileId('')
-    setFiles([])
+    setPersisted({ form: { ...form, source: source as CutterForm['source'] } })
     setUploadProgress(-1)
   }
 
-  const busy = isLoadingDirs || isCutting
+  const locked = isCutting || isLoadingFile || uploadProgress >= 0
+  const busy = isLoadingDirs || locked
   const isVideo = probe?.video_codec != null
   const hasFile = !!probe && !!filePath
 
   return (
-    <PanelLayout title="Media Cutter" onBack={onBack}>
+    <PanelLayout title="Media Cutter" onBack={onBack} maxWidth="1100px">
       <form onSubmit={handleCut}>
         {/* Source selector */}
         <FormSection label="Source">
@@ -294,7 +411,7 @@ export default function CutterPanel({
             ]}
             value={form.source}
             onChange={handleSourceChange}
-            disabled={isCutting}
+            disabled={locked}
             color="emerald"
           />
         </FormSection>
@@ -302,21 +419,27 @@ export default function CutterPanel({
         {/* ── Server tab ────────────────────────────────────── */}
         {form.source === 'server' && (
           <>
-            <FormSection label="Directory">
+            <FormSection label="Search">
               <input
                 type="text"
-                value={form.directory}
-                onChange={(e) => handleDirectoryChange(e.target.value)}
-                placeholder="Type a directory path..."
+                value={search}
+                onChange={(e) => setPersisted({ search: e.target.value })}
+                placeholder="Filter directories..."
                 className="input-field input-emerald"
-                disabled={isCutting}
-                list="cutter-dirs"
+                disabled={locked}
               />
-              <datalist id="cutter-dirs">
-                {directories.map((dir) => (
-                  <option key={dir} value={dir} />
-                ))}
-              </datalist>
+            </FormSection>
+
+            <FormSection label="Directory">
+              <DirectorySelect
+                directories={directories}
+                value={form.directory}
+                onChange={handleDirectoryChange}
+                onRefresh={() => void handleRefresh()}
+                isLoading={isLoadingDirs}
+                disabled={locked}
+                color="emerald"
+              />
             </FormSection>
 
             {/* File list */}
@@ -339,12 +462,12 @@ export default function CutterPanel({
                           key={file.name}
                           type="button"
                           onClick={() => handleFileSelect(file)}
-                          disabled={isCutting}
+                          disabled={locked}
                           className={`flex w-full cursor-pointer items-center gap-[0.6rem] rounded-lg border-none bg-transparent px-3 py-[0.5rem] text-left font-[Geist,sans-serif] transition-colors duration-150 hover:bg-[rgba(255,255,255,0.025)] ${
                             isSelected
                               ? 'bg-[rgba(52,211,153,0.08)] text-[var(--accent-4)]'
                               : 'text-[var(--text-primary)]'
-                          } ${isCutting ? 'cursor-not-allowed opacity-50' : ''}`}
+                          } ${locked ? 'cursor-not-allowed opacity-50' : ''}`}
                         >
                           <span className="min-w-0 flex-1 truncate text-[0.8rem]">{file.name}</span>
                           <span className="shrink-0 text-[0.68rem] text-[var(--text-tertiary)]">
@@ -417,12 +540,22 @@ export default function CutterPanel({
           </FormSection>
         )}
 
+        {/* ── Loading skeleton ─────────────────────────────── */}
+        {isLoadingFile && !probe && (
+          <FormSection label="Preview">
+            <div className="flex items-center justify-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg-input)] py-16">
+              <span className="spinner-md" />
+              <span className="text-[0.85rem] text-[var(--text-tertiary)]">Loading file...</span>
+            </div>
+          </FormSection>
+        )}
+
         {/* ── Player section (shown after file is loaded) ─── */}
         {hasFile && (
           <>
             <FormSection label="Preview">
               <MediaPlayer
-                streamUrl={getStreamUrl(fileId)}
+                streamUrl={getStreamUrl(fileId, form.audioStreamIndex)}
                 isVideo={isVideo}
                 peaks={peaks}
                 duration={probe.duration}
@@ -430,8 +563,21 @@ export default function CutterPanel({
                 outPoint={form.outPoint}
                 onInPointChange={(t) => update('inPoint', t)}
                 onOutPointChange={(t) => update('outPoint', t)}
+                thumbnailUrl={thumbnailUrl || undefined}
+                needsTranscoding={probe.needs_transcoding}
               />
             </FormSection>
+
+            {probe.audio_streams && probe.audio_streams.length > 1 && (
+              <FormSection label="Audio Track">
+                <AudioTrackSelect
+                  streams={probe.audio_streams}
+                  value={form.audioStreamIndex ?? probe.audio_streams[0]!.index}
+                  onChange={(index) => update('audioStreamIndex', index)}
+                  disabled={locked}
+                />
+              </FormSection>
+            )}
 
             <FormSection label="Trim">
               <TrimControls
@@ -447,10 +593,13 @@ export default function CutterPanel({
               outputName={form.outputName}
               streamCopy={form.streamCopy}
               codec={form.codec}
+              audioCodec={form.audioCodec}
               container={form.container}
+              isVideo={isVideo}
               onOutputNameChange={(v) => update('outputName', v)}
               onStreamCopyChange={(v) => update('streamCopy', v)}
               onCodecChange={(v) => update('codec', v)}
+              onAudioCodecChange={(v) => update('audioCodec', v)}
               onContainerChange={(v) => update('container', v)}
             />
 
@@ -471,7 +620,44 @@ export default function CutterPanel({
           color="emerald"
           idleMessage="Ready to cut..."
         />
+
+        {/* Download links below log */}
+        {outputFiles.length > 0 && jobId && (
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-[var(--glass-border)] bg-[var(--glass-bg)] px-5 py-2.5 backdrop-blur-sm">
+            {outputFiles.map((file) => (
+              <div key={file} className="inline-flex items-center gap-2">
+                <a
+                  href={getDownloadUrl(jobId, file)}
+                  download
+                  className="inline-flex items-center gap-1.5 font-mono text-xs text-emerald-400 underline decoration-emerald-400/30 transition-colors hover:decoration-emerald-400"
+                >
+                  &darr; {file}
+                </a>
+                {form.source === 'server' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      saveToSource(jobId, file)
+                        .then((r) => onLog([...log, `Saved ${r.filename} to source directory`]))
+                        .catch((err) => onError(`Save failed: ${err instanceof Error ? err.message : String(err)}`))
+                    }}
+                    className="inline-flex items-center gap-1 rounded-md border border-emerald-400/20 bg-emerald-400/5 px-2 py-0.5 text-[0.65rem] text-emerald-400/70 transition-colors hover:border-emerald-400/40 hover:bg-emerald-400/10 hover:text-emerald-400"
+                    title="Save to original file directory"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
+                      <polyline points="17 21 17 13 7 13 7 21" />
+                      <polyline points="7 3 7 8 15 8" />
+                    </svg>
+                    Save to Source
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </form>
+      <JobManager activeJobId={jobId} />
     </PanelLayout>
   )
 }
@@ -479,5 +665,6 @@ export default function CutterPanel({
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }

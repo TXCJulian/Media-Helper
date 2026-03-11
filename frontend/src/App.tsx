@@ -6,6 +6,39 @@ import MusicPanel from '@/components/MusicPanel'
 import LyricsPanel from '@/components/LyricsPanel'
 import CutterPanel from '@/components/CutterPanel'
 import { fetchConfig } from '@/lib/api'
+import type { CutterPersistedState, CutterSourceState } from '@/types'
+
+const EMPTY_SOURCE_STATE: CutterSourceState = {
+  probe: null,
+  peaks: [],
+  filePath: '',
+  fileId: '',
+  thumbnailUrl: '',
+  files: [],
+  jobId: '',
+  outputFiles: [],
+  isLoadingFile: false,
+}
+
+const INITIAL_CUTTER_STATE: CutterPersistedState = {
+  form: {
+    source: 'server',
+    directory: '',
+    filename: '',
+    inPoint: 0,
+    outPoint: 0,
+    outputName: '',
+    streamCopy: true,
+    codec: 'aac',
+    audioCodec: 'copy',
+    container: 'mp4',
+    audioStreamIndex: null,
+  },
+  directories: [],
+  search: '',
+  serverState: { ...EMPTY_SOURCE_STATE },
+  uploadState: { ...EMPTY_SOURCE_STATE },
+}
 
 export default function App() {
   const [activeView, setActiveView] = useState<'home' | PanelName>('home')
@@ -33,6 +66,7 @@ export default function App() {
   const [cutterLog, setCutterLog] = useState<string[]>([])
   const [cutterError, setCutterError] = useState('')
   const [cutterStarted, setCutterStarted] = useState(false)
+  const [cutterState, setCutterState] = useState<CutterPersistedState>(INITIAL_CUTTER_STATE)
 
   const handleEpisodeLog = useCallback((log: string[]) => {
     setEpisodeStarted(true)
@@ -120,6 +154,8 @@ export default function App() {
       log={cutterLog}
       error={cutterError}
       hasStarted={cutterStarted}
+      persisted={cutterState}
+      onPersistedChange={setCutterState}
     />
   )
 }
