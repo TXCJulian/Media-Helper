@@ -17,6 +17,7 @@ import {
   fetchWaveform,
   fetchCutterFiles,
   getStreamUrl,
+  fetchPreviewStatus,
   getThumbnailUrl,
   getDownloadUrl,
   createJob,
@@ -29,6 +30,7 @@ import type {
   CutterFileInfo,
   CutterPersistedState,
   CutterSourceState,
+  CutterPreviewStatus,
   DirectoriesResponse,
 } from '@/types'
 
@@ -105,6 +107,7 @@ export default function CutterPanel({
   const [isCutting, setIsCutting] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(-1)
   const [isDragOver, setIsDragOver] = useState(false)
+  const [previewStatus, setPreviewStatus] = useState<CutterPreviewStatus | null>(null)
 
   const debouncedSearch = useDebounce(search, 500)
   const abortSSERef = useRef<(() => void) | null>(null)
@@ -225,11 +228,13 @@ export default function CutterPanel({
           thumbnailUrl: probeData.video_codec != null ? getThumbnailUrl(path, source, jid) : '',
         })
         setPersisted((prev) => ({
-          form: { ...prev.form, inPoint: 0, outPoint: probeData.duration },
+          form: { ...prev.form, inPoint: 0, outPoint: probeData.duration, audioStreamIndex: null },
         }))
+        setPreviewStatus(null)
       } catch (err) {
         onError(`Error loading file: ${err instanceof Error ? err.message : String(err)}`)
         setSource({ isLoadingFile: false })
+        setPreviewStatus(null)
       }
     },
     [onError, setSource, setPersisted],
@@ -243,8 +248,8 @@ export default function CutterPanel({
       try {
         const { job_id } = await createJob(path, 'server')
         setSource({ filePath: path, fileId: encodeFileId('server', path, job_id), jobId: job_id })
-        setPersisted((prev) => ({ form: { ...prev.form, filename: file.name } }))
-        await loadFileData(path, 'server')
+        setPersisted((prev) => ({ form: { ...prev.form, filename: file.name, audioStreamIndex: null } }))
+        await loadFileData(path, 'server', job_id)
       } catch (err) {
         onError(`Error creating job: ${err instanceof Error ? err.message : String(err)}`)
         setSource({ isLoadingFile: false })
@@ -255,8 +260,9 @@ export default function CutterPanel({
 
   // ── Directory selection from DirectorySelect ─────────────────
   const handleDirectoryChange = (dir: string) => {
-    setPersisted({ form: { ...form, directory: dir, filename: '' } })
+    setPersisted({ form: { ...form, directory: dir, filename: '', audioStreamIndex: null } })
     setSource({ probe: null, peaks: [], filePath: '', fileId: '', thumbnailUrl: '', jobId: '', outputFiles: [] })
+    setPreviewStatus(null)
     // Reset prevDir so the files effect fires
     prevDir.current = ''
   }
@@ -291,8 +297,10 @@ export default function CutterPanel({
             filename: result.filename,
             inPoint: 0,
             outPoint: result.probe.duration,
+            audioStreamIndex: null,
           },
         }))
+        setPreviewStatus(null)
       } catch (err) {
         onError(`Upload failed: ${err instanceof Error ? err.message : String(err)}`)
         setSource({ isLoadingFile: false })
@@ -326,6 +334,10 @@ export default function CutterPanel({
   const handleCut = (e: React.FormEvent) => {
     e.preventDefault()
     if (!filePath || !probe || isCutting || !jobId) return
+    if (form.inPoint >= form.outPoint) {
+      onError('In-point must be before out-point')
+      return
+    }
 
     setIsCutting(true)
     onError('')
@@ -350,7 +362,7 @@ export default function CutterPanel({
         params.audio_codec = form.audioCodec
       }
     }
-    if (form.audioStreamIndex != null) params.audio_stream = String(form.audioStreamIndex)
+    if (selectedAudioStreamIndex != null) params.audio_stream = String(selectedAudioStreamIndex)
 
     abortSSERef.current?.()
     abortSSERef.current = connectSSE('/cutter/cut', params, {
@@ -398,6 +410,58 @@ export default function CutterPanel({
   const busy = isLoadingDirs || locked
   const isVideo = probe?.video_codec != null
   const hasFile = !!probe && !!filePath
+  const defaultAudioStreamIndex = probe?.audio_streams?.[0]?.index ?? null
+  const selectedAudioStreamIndex = (() => {
+    if (!probe?.audio_streams?.length) return null
+    if (form.audioStreamIndex != null && probe.audio_streams.some((s) => s.index === form.audioStreamIndex)) {
+      return form.audioStreamIndex
+    }
+    return defaultAudioStreamIndex
+  })()
+
+  useEffect(() => {
+    if (!hasFile || !probe?.needs_transcoding || !fileId) {
+      setPreviewStatus(null)
+      return
+    }
+
+    let cancelled = false
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
+    let lastState: CutterPreviewStatus['state'] = 'running'
+
+    const poll = async () => {
+      try {
+        const status = await fetchPreviewStatus(fileId)
+        if (cancelled) return
+        setPreviewStatus(status)
+        lastState = status.state
+        if (status.state === 'error' && status.message) {
+          onError(status.message)
+        }
+      } catch (err) {
+        if (cancelled) return
+        setPreviewStatus((prev) => prev ?? {
+          state: 'error',
+          ready: false,
+          percent: 0,
+          eta_seconds: null,
+          elapsed_seconds: 0,
+          message: err instanceof Error ? err.message : String(err),
+        })
+      } finally {
+        if (!cancelled && lastState !== 'done' && lastState !== 'error') {
+          timeoutId = setTimeout(poll, 1200)
+        }
+      }
+    }
+
+    void poll()
+
+    return () => {
+      cancelled = true
+      if (timeoutId) clearTimeout(timeoutId)
+    }
+  }, [hasFile, probe?.needs_transcoding, fileId, onError])
 
   return (
     <PanelLayout title="Media Cutter" onBack={onBack} maxWidth="1100px">
@@ -555,7 +619,7 @@ export default function CutterPanel({
           <>
             <FormSection label="Preview">
               <MediaPlayer
-                streamUrl={getStreamUrl(fileId, form.audioStreamIndex)}
+                streamUrl={getStreamUrl(fileId, selectedAudioStreamIndex)}
                 isVideo={isVideo}
                 peaks={peaks}
                 duration={probe.duration}
@@ -565,6 +629,8 @@ export default function CutterPanel({
                 onOutPointChange={(t) => update('outPoint', t)}
                 thumbnailUrl={thumbnailUrl || undefined}
                 needsTranscoding={probe.needs_transcoding}
+                transcodePercent={previewStatus?.percent}
+                transcodeEtaSeconds={previewStatus?.eta_seconds ?? null}
               />
             </FormSection>
 
@@ -572,7 +638,7 @@ export default function CutterPanel({
               <FormSection label="Audio Track">
                 <AudioTrackSelect
                   streams={probe.audio_streams}
-                  value={form.audioStreamIndex ?? probe.audio_streams[0]!.index}
+                  value={selectedAudioStreamIndex ?? probe.audio_streams[0]!.index}
                   onChange={(index) => update('audioStreamIndex', index)}
                   disabled={locked}
                 />
@@ -657,7 +723,7 @@ export default function CutterPanel({
           </div>
         )}
       </form>
-      <JobManager activeJobId={jobId} />
+      <JobManager activeJobId={jobId} onLog={(msg) => onLog([...log, msg])} />
     </PanelLayout>
   )
 }

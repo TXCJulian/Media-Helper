@@ -141,3 +141,91 @@ class TestPathTraversal:
             "directory": "../../../etc",
         })
         assert resp.status_code == 400
+
+
+class TestCutterStreamValidation:
+    def test_cutter_stream_rejects_invalid_audio_index(self, client, tmp_path, monkeypatch):
+        import app.main as main_mod
+
+        media_file = tmp_path / "clip.mkv"
+        media_file.write_bytes(b"demo")
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "", "clip.mkv"))
+        monkeypatch.setattr(
+            main_mod,
+            "resolve_cutter_path",
+            lambda _path, _source, _job_id="": str(media_file),
+        )
+        monkeypatch.setattr(
+            main_mod,
+            "probe_file",
+            lambda _path: {
+                "audio_codec": "aac",
+                "audio_streams": [{"index": 1}, {"index": 2}],
+            },
+        )
+        monkeypatch.setattr(main_mod, "needs_transcoding", lambda *_args, **_kwargs: False)
+
+        resp = client.get("/cutter/stream/demo", params={"audio_stream": 99})
+        assert resp.status_code == 400
+        assert "Invalid audio stream index" in resp.json()["detail"]
+
+    def test_cutter_stream_allows_valid_audio_index(self, client, tmp_path, monkeypatch):
+        import app.main as main_mod
+
+        media_file = tmp_path / "clip.mkv"
+        media_file.write_bytes(b"demo")
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "", "clip.mkv"))
+        monkeypatch.setattr(
+            main_mod,
+            "resolve_cutter_path",
+            lambda _path, _source, _job_id="": str(media_file),
+        )
+        monkeypatch.setattr(
+            main_mod,
+            "probe_file",
+            lambda _path: {
+                "audio_codec": "aac",
+                "audio_streams": [{"index": 1}, {"index": 2}],
+            },
+        )
+        monkeypatch.setattr(main_mod, "needs_transcoding", lambda *_args, **_kwargs: False)
+
+        resp = client.get("/cutter/stream/demo", params={"audio_stream": 1})
+        assert resp.status_code == 200
+        assert resp.content == b"demo"
+
+
+class TestCutterPreviewStatus:
+    def test_preview_status_non_transcoding_is_done(self, client, tmp_path, monkeypatch):
+        import app.main as main_mod
+
+        media_file = tmp_path / "clip.mp4"
+        media_file.write_bytes(b"demo")
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "", "clip.mp4"))
+        monkeypatch.setattr(
+            main_mod,
+            "resolve_cutter_path",
+            lambda _path, _source, _job_id="": str(media_file),
+        )
+        monkeypatch.setattr(
+            main_mod,
+            "probe_file",
+            lambda _path: {
+                "audio_codec": "aac",
+                "audio_streams": [{"index": 1}],
+            },
+        )
+        monkeypatch.setattr(main_mod, "needs_transcoding", lambda *_args, **_kwargs: False)
+
+        resp = client.get("/cutter/preview-status/demo")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["state"] == "done"
+        assert data["ready"] is True
+        assert data["percent"] == 100.0

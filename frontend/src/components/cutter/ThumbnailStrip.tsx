@@ -32,6 +32,7 @@ export default function ThumbnailStrip({
   count = 30,
 }: ThumbnailStripProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const overlayRef = useRef<HTMLCanvasElement>(null)
   const dragRef = useRef<DragTarget>(null)
   const isDraggingRef = useRef(false)
   const [spriteImg, setSpriteImg] = useState<HTMLImageElement | null>(null)
@@ -60,7 +61,7 @@ export default function ThumbnailStrip({
     [duration],
   )
 
-  // Draw
+  // ── Main canvas: thumbnails + trim overlay + handles ──────────
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -130,8 +131,29 @@ export default function ThumbnailStrip({
 
     drawHandle(inX)
     drawHandle(outX)
+  }, [spriteImg, duration, inPoint, outPoint, count, timeToX])
 
-    // Playhead
+  // ── Overlay canvas: playhead only (redraws at 60fps during playback) ──
+  useEffect(() => {
+    const overlay = overlayRef.current
+    if (!overlay) return
+    const ctx = overlay.getContext('2d')
+    if (!ctx) return
+
+    const dpr = window.devicePixelRatio || 1
+    const rect = overlay.getBoundingClientRect()
+    const w = rect.width * dpr
+    const h = rect.height * dpr
+
+    overlay.width = w
+    overlay.height = h
+    ctx.scale(dpr, dpr)
+
+    const cssW = rect.width
+    const cssH = rect.height
+
+    ctx.clearRect(0, 0, cssW, cssH)
+
     const playX = timeToX(currentTime, cssW)
     ctx.strokeStyle = '#ffffff'
     ctx.lineWidth = 1.5
@@ -139,12 +161,12 @@ export default function ThumbnailStrip({
     ctx.moveTo(playX, 0)
     ctx.lineTo(playX, cssH)
     ctx.stroke()
-  }, [spriteImg, duration, inPoint, outPoint, currentTime, count, timeToX])
+  }, [currentTime, timeToX])
 
   // Hit test
   const hitTest = useCallback(
     (clientX: number): DragTarget => {
-      const canvas = canvasRef.current
+      const canvas = overlayRef.current
       if (!canvas) return null
       const rect = canvas.getBoundingClientRect()
       const x = clientX - rect.left
@@ -167,47 +189,45 @@ export default function ThumbnailStrip({
         dragRef.current = target
         isDraggingRef.current = true
         e.preventDefault()
+
+        // Register window listeners only during drag
+        const handleMouseMove = (ev: MouseEvent) => {
+          const canvas = overlayRef.current
+          if (!canvas) return
+          const rect = canvas.getBoundingClientRect()
+          const time = xToTime(ev.clientX - rect.left, rect)
+
+          if (dragRef.current === 'in') {
+            onInPointChange(Math.max(0, Math.min(time, outPoint - 0.01)))
+          } else {
+            onOutPointChange(Math.max(inPoint + 0.01, Math.min(time, duration)))
+          }
+        }
+
+        const handleMouseUp = () => {
+          dragRef.current = null
+          isDraggingRef.current = false
+          window.removeEventListener('mousemove', handleMouseMove)
+          window.removeEventListener('mouseup', handleMouseUp)
+        }
+
+        window.addEventListener('mousemove', handleMouseMove)
+        window.addEventListener('mouseup', handleMouseUp)
       } else {
-        const canvas = canvasRef.current
+        // Click to seek (clamped to trim range)
+        const canvas = overlayRef.current
         if (!canvas) return
         const rect = canvas.getBoundingClientRect()
-        onSeek(xToTime(e.clientX - rect.left, rect))
+        const time = xToTime(e.clientX - rect.left, rect)
+        onSeek(Math.max(inPoint, Math.min(time, outPoint)))
       }
     },
-    [hitTest, xToTime, onSeek],
+    [hitTest, xToTime, onSeek, inPoint, outPoint, duration, onInPointChange, onOutPointChange],
   )
-
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isDraggingRef.current || !dragRef.current) return
-      const canvas = canvasRef.current
-      if (!canvas) return
-      const rect = canvas.getBoundingClientRect()
-      const time = xToTime(e.clientX - rect.left, rect)
-
-      if (dragRef.current === 'in') {
-        onInPointChange(Math.max(0, Math.min(time, outPoint - 0.01)))
-      } else {
-        onOutPointChange(Math.max(inPoint + 0.01, Math.min(time, duration)))
-      }
-    }
-
-    const handleMouseUp = () => {
-      dragRef.current = null
-      isDraggingRef.current = false
-    }
-
-    window.addEventListener('mousemove', handleMouseMove)
-    window.addEventListener('mouseup', handleMouseUp)
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove)
-      window.removeEventListener('mouseup', handleMouseUp)
-    }
-  }, [inPoint, outPoint, duration, xToTime, onInPointChange, onOutPointChange])
 
   const handleCanvasMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
-      const canvas = canvasRef.current
+      const canvas = overlayRef.current
       if (!canvas) return
       if (isDraggingRef.current) {
         canvas.style.cursor = 'grabbing'
@@ -219,10 +239,11 @@ export default function ThumbnailStrip({
   )
 
   return (
-    <div className="overflow-hidden rounded-lg border border-[var(--glass-border)]" style={{ height: STRIP_HEIGHT }}>
+    <div className="relative overflow-hidden rounded-lg border border-[var(--glass-border)]" style={{ height: STRIP_HEIGHT }}>
+      <canvas ref={canvasRef} className="absolute inset-0 block h-full w-full" />
       <canvas
-        ref={canvasRef}
-        className="block h-full w-full"
+        ref={overlayRef}
+        className="absolute inset-0 block h-full w-full"
         onMouseDown={handleMouseDown}
         onMouseMove={handleCanvasMouseMove}
       />

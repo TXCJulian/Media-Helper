@@ -20,7 +20,7 @@ const STATUS_COLORS: Record<string, string> = {
   error: 'bg-red-400/15 text-red-300',
 }
 
-export default function JobManager({ activeJobId }: { activeJobId?: string }) {
+export default function JobManager({ activeJobId, onLog }: { activeJobId?: string; onLog?: (msg: string) => void }) {
   const [jobs, setJobs] = useState<CutterJob[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
@@ -46,8 +46,8 @@ export default function JobManager({ activeJobId }: { activeJobId?: string }) {
     try {
       await deleteJob(jobId)
       setJobs((prev) => prev.filter((j) => j.job_id !== jobId))
-    } catch {
-      // silently fail
+    } catch (err) {
+      onLog?.(`Failed to delete job: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -117,7 +117,8 @@ export default function JobManager({ activeJobId }: { activeJobId?: string }) {
                                 const key = `${job.job_id}:${file}`
                                 setSavingFile(key)
                                 saveToSource(job.job_id, file)
-                                  .catch(() => {})
+                                  .then(() => onLog?.(`Saved ${file} to source directory`))
+                                  .catch((err) => onLog?.(`Save failed: ${err instanceof Error ? err.message : String(err)}`))
                                   .finally(() => setSavingFile(null))
                               }}
                               className="inline-flex items-center gap-0.5 rounded border border-emerald-400/15 bg-emerald-400/5 px-1.5 py-0.5 text-[0.58rem] text-emerald-400/60 transition hover:border-emerald-400/30 hover:text-emerald-400/90"

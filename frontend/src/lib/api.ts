@@ -159,6 +159,17 @@ export function getStreamUrl(fileId: string, audioStreamIndex?: number | null): 
   return audioStreamIndex != null ? `${base}?audio_stream=${audioStreamIndex}` : base
 }
 
+export function fetchPreviewStatus(
+  fileId: string,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+): Promise<import('@/types').CutterPreviewStatus> {
+  return fetchJson<import('@/types').CutterPreviewStatus>(
+    `/cutter/preview-status/${encodeURIComponent(fileId)}`,
+    undefined,
+    timeoutMs,
+  )
+}
+
 export function getThumbnailUrl(path: string, source: string, jobId = '', count = 30): string {
   const params = new URLSearchParams({ path, source, count: String(count) })
   if (jobId) params.set('job_id', jobId)

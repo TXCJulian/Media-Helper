@@ -13,6 +13,8 @@ interface MediaPlayerProps {
   onOutPointChange: (time: number) => void
   thumbnailUrl?: string
   needsTranscoding?: boolean
+  transcodePercent?: number
+  transcodeEtaSeconds?: number | null
 }
 
 function formatTime(seconds: number): string {
@@ -33,9 +35,15 @@ export default function MediaPlayer({
   onOutPointChange,
   thumbnailUrl,
   needsTranscoding,
+  transcodePercent,
+  transcodeEtaSeconds,
 }: MediaPlayerProps) {
+  const END_TOLERANCE_SECONDS = 0.05
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null)
+  const volumeControlRef = useRef<HTMLDivElement | null>(null)
   const rafRef = useRef<number>(0)
+  const inPointRef = useRef(inPoint)
+  const outPointRef = useRef(outPoint)
   const [currentTime, setCurrentTime] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [volume, setVolume] = useState(() => {
@@ -46,21 +54,35 @@ export default function MediaPlayer({
   const [isMediaReady, setIsMediaReady] = useState(!needsTranscoding)
   const isTranscoding = needsTranscoding && !isMediaReady
 
+  useEffect(() => {
+    inPointRef.current = inPoint
+    outPointRef.current = outPoint
+  }, [inPoint, outPoint])
+
+  const enforceTrimBounds = useCallback((el: HTMLVideoElement | HTMLAudioElement): boolean => {
+    const start = inPointRef.current
+    const end = outPointRef.current
+
+    if (el.currentTime >= end - END_TOLERANCE_SECONDS) {
+      el.currentTime = start
+      setCurrentTime(start)
+      return true
+    }
+
+    return false
+  }, [])
+
   // ── Cut-preview RAF loop ──────────────────────────────────────
   const startLoop = useCallback(() => {
     const tick = () => {
       const el = mediaRef.current
       if (!el) return
+      enforceTrimBounds(el)
       setCurrentTime(el.currentTime)
-      if (el.currentTime >= outPoint) {
-        el.pause()
-        setIsPlaying(false)
-        return
-      }
       rafRef.current = requestAnimationFrame(tick)
     }
     rafRef.current = requestAnimationFrame(tick)
-  }, [outPoint])
+  }, [enforceTrimBounds])
 
   const stopLoop = useCallback(() => {
     if (rafRef.current) {
@@ -84,11 +106,45 @@ export default function MediaPlayer({
     localStorage.setItem('cutter-volume', String(volume))
   }, [volume])
 
-  // Reset ready/error state when stream URL changes
+  const adjustVolumeByWheel = useCallback((deltaY: number) => {
+    const delta = deltaY < 0 ? 0.1 : -0.1
+    setVolume((v) => {
+      const next = Math.max(0, Math.min(1, v + delta))
+      if (next > 0) setMuted(false)
+      return next
+    })
+  }, [])
+
+  // Use a non-passive native listener so wheel changes volume without page scroll.
+  useEffect(() => {
+    const el = volumeControlRef.current
+    if (!el) return
+
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      adjustVolumeByWheel(event.deltaY)
+    }
+
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      el.removeEventListener('wheel', onWheel)
+    }
+  }, [adjustVolumeByWheel])
+
+  // Reset ready/error state and force media reload when stream URL changes
   useEffect(() => {
     setMediaError('')
     if (needsTranscoding) setIsMediaReady(false)
-  }, [streamUrl, needsTranscoding])
+    const el = mediaRef.current
+    if (el) {
+      el.pause()
+      setIsPlaying(false)
+      stopLoop()
+      el.load()
+      setCurrentTime(0)
+    }
+  }, [streamUrl, needsTranscoding, stopLoop])
 
   // ── Play / Pause toggle ───────────────────────────────────────
   const togglePlay = useCallback(() => {
@@ -101,7 +157,7 @@ export default function MediaPlayer({
       stopLoop()
     } else {
       // Only reset to inPoint if outside trim range or playback finished
-      if (el.currentTime < inPoint || el.currentTime >= outPoint) {
+      if (el.currentTime < inPoint || el.currentTime >= outPoint - END_TOLERANCE_SECONDS || el.ended) {
         el.currentTime = inPoint
         setCurrentTime(inPoint)
       }
@@ -111,15 +167,13 @@ export default function MediaPlayer({
     }
   }, [isPlaying, inPoint, outPoint, startLoop, stopLoop])
 
-  // ── Clamp when inPoint moves ahead of current position ─────────
+  // ── Always seek to inPoint when it changes ──────────────────
   useEffect(() => {
     const el = mediaRef.current
-    if (!el || !isPlaying) return
-    if (el.currentTime < inPoint) {
-      el.currentTime = inPoint
-      setCurrentTime(inPoint)
-    }
-  }, [inPoint, isPlaying])
+    if (!el) return
+    el.currentTime = inPoint
+    setCurrentTime(inPoint)
+  }, [inPoint])
 
   // ── Sync when media ends or pauses externally ─────────────────
   const handlePause = useCallback(() => {
@@ -129,10 +183,38 @@ export default function MediaPlayer({
 
   const handleTimeUpdate = useCallback(() => {
     const el = mediaRef.current
-    if (el) setCurrentTime(el.currentTime)
-  }, [])
+    if (!el) return
+    enforceTrimBounds(el)
+    setCurrentTime(el.currentTime)
+  }, [enforceTrimBounds])
+
+  const handleEnded = useCallback(() => {
+    const el = mediaRef.current
+    if (!el) return
+
+    const start = inPointRef.current
+    el.currentTime = start
+    setCurrentTime(start)
+
+    const playPromise = el.play()
+    if (playPromise && typeof playPromise.catch === 'function') {
+      playPromise.catch(() => undefined)
+    }
+    setIsPlaying(true)
+    stopLoop()
+    startLoop()
+  }, [startLoop, stopLoop])
 
   const [mediaError, setMediaError] = useState<string>('')
+
+  const transcodingProgressLabel = (() => {
+    const percent = Number.isFinite(transcodePercent) ? Math.max(0, Math.min(100, transcodePercent ?? 0)) : 0
+    const eta = transcodeEtaSeconds != null && Number.isFinite(transcodeEtaSeconds)
+      ? Math.max(0, Math.round(transcodeEtaSeconds))
+      : null
+    if (eta == null) return `${percent.toFixed(1)}%`
+    return `${percent.toFixed(1)}% • ~${eta}s remaining`
+  })()
 
   const handleMediaError = useCallback(() => {
     const el = mediaRef.current
@@ -142,8 +224,11 @@ export default function MediaPlayer({
       ? `Media error ${err.code}: ${err.message || ['', 'ABORTED', 'NETWORK', 'DECODE', 'SRC_NOT_SUPPORTED'][err.code] || 'unknown'}`
       : 'Unknown media error'
     setMediaError(msg)
+    setIsMediaReady(true)
+    setIsPlaying(false)
+    stopLoop()
     console.error('[MediaPlayer]', msg, 'src:', streamUrl)
-  }, [streamUrl])
+  }, [streamUrl, stopLoop])
 
   // ── Seek from WaveformBar ─────────────────────────────────────
   const handleSeek = useCallback(
@@ -173,7 +258,15 @@ export default function MediaPlayer({
       <span className="font-mono text-xs text-white/60">
         {formatTime(currentTime)} / {formatTime(duration)}
       </span>
-      <div className="ml-auto flex items-center gap-1.5">
+      <div
+        ref={volumeControlRef}
+        className="ml-auto flex items-center gap-1.5"
+        onWheel={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          adjustVolumeByWheel(e.deltaY)
+        }}
+      >
         <button
           type="button"
           onClick={() => setMuted((m) => !m)}
@@ -222,15 +315,22 @@ export default function MediaPlayer({
             onClick={isTranscoding ? undefined : togglePlay}
             onPause={handlePause}
             onTimeUpdate={handleTimeUpdate}
+            onEnded={handleEnded}
             onError={handleMediaError}
-            onCanPlay={() => setIsMediaReady(true)}
+            onCanPlay={() => {
+              setMediaError('')
+              setIsMediaReady(true)
+            }}
             preload="metadata"
             playsInline
           />
           {isTranscoding && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-xl bg-black/70">
               <span className="spinner-md" />
-              <span className="text-[0.8rem] text-white/60">Transcoding for preview...</span>
+              <div className="text-[0.8rem] text-white/60 text-center leading-tight">
+                <span className="block">Transcoding for preview...</span>
+                <span className="block">{transcodingProgressLabel}</span>
+              </div>
             </div>
           )}
         </div>
@@ -277,14 +377,21 @@ export default function MediaPlayer({
         preload="metadata"
         onPause={handlePause}
         onTimeUpdate={handleTimeUpdate}
+        onEnded={handleEnded}
         onError={handleMediaError}
-        onCanPlay={() => setIsMediaReady(true)}
+        onCanPlay={() => {
+          setMediaError('')
+          setIsMediaReady(true)
+        }}
         style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }}
       />
       {isTranscoding && (
         <div className="flex items-center justify-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg-input)] py-8">
           <span className="spinner-md" />
-          <span className="text-[0.8rem] text-[var(--text-tertiary)]">Transcoding for preview...</span>
+          <div className="text-[0.8rem] text-[var(--text-tertiary)] text-center leading-tight">
+            <span className="block">Transcoding for preview...</span>
+            <span className="block">{transcodingProgressLabel}</span>
+          </div>
         </div>
       )}
       {mediaError && (

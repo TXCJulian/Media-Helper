@@ -38,11 +38,12 @@ from app.cutter import (
     generate_waveform,
     generate_thumbnail_strip,
     needs_transcoding,
-    transcode_for_preview,
     get_or_transcode_preview,
     get_preview_path_if_ready,
+    get_preview_status,
     wait_for_preview,
     start_background_transcode,
+    get_track_preview,
     cut_file,
     encode_file_id,
     decode_file_id,
@@ -620,64 +621,44 @@ def cutter_stream(file_id: str, request: Request, audio_stream: int | None = Que
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    if audio_stream is not None:
+        audio_indexes = {s.get("index") for s in probe.get("audio_streams", [])}
+        if audio_stream not in audio_indexes:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Invalid audio stream index {audio_stream}. "
+                    f"Available indexes: {sorted(audio_indexes)}"
+                ),
+            )
+
     if needs_transcoding(probe.get("audio_codec", "unknown"), resolved):
-        if job_id:
-            # Check if preview is already cached
-            preview_path = get_preview_path_if_ready(
-                resolved, job_id, audio_stream_index=audio_stream
-            )
-            if not preview_path:
-                # Wait for background transcode (started during probe) to finish
-                preview_path = wait_for_preview(
-                    resolved, job_id, audio_stream_index=audio_stream, timeout=120
+        if not job_id:
+            raise HTTPException(status_code=400, detail="job_id required for transcoded preview")
+
+        status = get_preview_status(resolved, job_id)
+        if status.get("state") == "error":
+            raise HTTPException(status_code=500, detail=status.get("message") or "Preview transcode failed")
+
+        # Get or create the master preview (all audio tracks)
+        master_path = get_preview_path_if_ready(resolved, job_id)
+        if not master_path:
+            master_path = wait_for_preview(resolved, job_id, timeout=120)
+        if not master_path:
+            try:
+                master_path = get_or_transcode_preview(resolved, job_id)
+            except RuntimeError as e:
+                raise HTTPException(status_code=500, detail=str(e))
+        # If a specific audio track is requested, do a fast stream-copy remux
+        if audio_stream is not None:
+            try:
+                resolved = get_track_preview(
+                    master_path, audio_stream, resolved, job_id
                 )
-            if not preview_path:
-                # Background transcode not started or failed — do it synchronously
-                try:
-                    preview_path = get_or_transcode_preview(
-                        resolved, job_id, audio_stream_index=audio_stream
-                    )
-                except RuntimeError as e:
-                    raise HTTPException(status_code=500, detail=str(e))
-            # Serve the seekable preview file (falls through to Range logic below)
-            resolved = preview_path
+            except RuntimeError as e:
+                raise HTTPException(status_code=500, detail=str(e))
         else:
-            # No job context — pipe-based streaming (non-seekable fallback)
-            proc = transcode_for_preview(resolved, audio_stream_index=audio_stream)
-            has_video = probe.get("video_codec") is not None
-
-            def stream_transcode():
-                try:
-                    stdout = proc.stdout
-                    if stdout is None:
-                        raise HTTPException(
-                            status_code=500, detail="Transcoding process has no stdout"
-                        )
-                    while True:
-                        chunk = stdout.read(65536)
-                        if not chunk:
-                            break
-                        yield chunk
-                finally:
-                    if proc.stdout:
-                        proc.stdout.close()
-                    try:
-                        stderr_output = proc.stderr.read() if proc.stderr else b""
-                    except ValueError:
-                        stderr_output = b""
-                    proc.wait()
-                    if proc.returncode != 0:
-                        logger.error(
-                            "Transcode failed (exit %d): %s",
-                            proc.returncode,
-                            stderr_output.decode(errors="replace") if isinstance(stderr_output, bytes) else str(stderr_output),
-                        )
-
-            return StreamingResponse(
-                stream_transcode(),
-                media_type="video/mp4" if has_video else "audio/mp4",
-                headers={"Accept-Ranges": "none"},
-            )
+            resolved = master_path
 
     # Serve raw file with HTTP Range support
     file_size = os.path.getsize(resolved)
@@ -746,11 +727,49 @@ def cutter_stream(file_id: str, request: Request, audio_stream: int | None = Que
     )
 
 
+@app.get("/cutter/preview-status/{file_id}")
+def cutter_preview_status(file_id: str):
+    require_feature("cutter")
+    try:
+        source, job_id, path = decode_file_id(file_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    resolved = resolve_cutter_path(path, source, job_id)
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        probe = probe_file(resolved)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not needs_transcoding(probe.get("audio_codec", "unknown"), resolved):
+        return {
+            "state": "done",
+            "ready": True,
+            "percent": 100.0,
+            "eta_seconds": 0.0,
+            "elapsed_seconds": 0.0,
+            "message": "",
+        }
+
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id required for transcoded preview")
+
+    start_background_transcode(resolved, job_id)
+    return get_preview_status(resolved, job_id)
+
+
 @app.post("/cutter/upload")
 async def cutter_upload(file: UploadFile):
     require_feature("cutter")
 
-    filename = file.filename or "unnamed"
+    # Sanitize filename: strip path components and non-printable characters
+    filename = os.path.basename(file.filename or "unnamed")
+    filename = "".join(c for c in filename if c.isprintable())
+    if not filename or filename in ('.', '..'):
+        filename = "unnamed"
 
     # Validate file extension
     ext = os.path.splitext(filename)[1].lower()
@@ -793,6 +812,7 @@ async def cutter_upload(file: UploadFile):
             probe.get("audio_codec", "unknown"), dest
         )
     except RuntimeError as e:
+        delete_job(job_id)
         raise HTTPException(status_code=500, detail=f"Probe failed: {e}")
 
     return {
@@ -942,6 +962,18 @@ def cutter_cut(
             status_code=422, detail="out_point must be greater than in_point"
         )
 
+    # Validate against file duration
+    try:
+        file_info = probe_file(resolved)
+        file_duration = file_info.get("duration", 0)
+        if file_duration > 0 and out_point > file_duration + 0.5:
+            raise HTTPException(
+                status_code=422,
+                detail=f"out_point ({out_point:.2f}s) exceeds file duration ({file_duration:.2f}s)",
+            )
+    except RuntimeError:
+        pass  # If probe fails, let cut_file handle it
+
     # Determine output filename — use original name if no output_name given
     original_name = os.path.basename(resolved)
     original_ext = os.path.splitext(original_name)[1]  # e.g. ".mkv"
@@ -1003,6 +1035,7 @@ def cutter_cut(
                 container=container or None,
                 progress_cb=progress_cb,
                 audio_stream_index=audio_stream,
+                cancel_event=cancel_event,
             )
 
             final_name = os.path.basename(final_path)

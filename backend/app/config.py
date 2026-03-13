@@ -21,7 +21,6 @@ VALID_CUTTER_EXT = set(
         ".mp4,.mkv,.mov,.avi,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.opus,.ogg,.aiff",
     ).split(",")
 )
-CUTTER_UPLOAD_DIR = os.getenv("CUTTER_UPLOAD_DIR", "/tmp/cutter-uploads")  # deprecated
 CUTTER_JOBS_DIR = os.getenv("CUTTER_JOBS_DIR", "/tmp/cutter-jobs")
 CUTTER_JOB_TTL = int(os.getenv("CUTTER_JOB_TTL", "86400"))
 

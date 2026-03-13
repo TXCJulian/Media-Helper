@@ -51,7 +51,7 @@ export default function WaveformBar({
   color = 'emerald',
 }: WaveformBarProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
+  const overlayRef = useRef<HTMLCanvasElement>(null)
   const dragRef = useRef<DragTarget>(null)
   const isDraggingRef = useRef(false)
 
@@ -73,7 +73,7 @@ export default function WaveformBar({
     [duration],
   )
 
-  // ── Canvas draw ───────────────────────────────────────────────
+  // ── Main canvas: waveform + trim overlay + handles (redraws on trim/peaks change) ──
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -138,7 +138,6 @@ export default function WaveformBar({
 
     // ── Handle rendering helper ─────────────────────────────────
     const drawHandle = (xPos: number) => {
-      // Vertical line
       ctx.strokeStyle = palette.active
       ctx.lineWidth = 1.5
       ctx.beginPath()
@@ -146,7 +145,6 @@ export default function WaveformBar({
       ctx.lineTo(xPos, cssH)
       ctx.stroke()
 
-      // Grab tab at top
       const tabW = HANDLE_TAB_WIDTH
       const tabH = HANDLE_TAB_HEIGHT
       ctx.fillStyle = palette.active
@@ -157,8 +155,29 @@ export default function WaveformBar({
 
     drawHandle(inX)
     drawHandle(outX)
+  }, [peaks, duration, inPoint, outPoint, size, color, palette, config, timeToX])
 
-    // ── Playhead ────────────────────────────────────────────────
+  // ── Overlay canvas: playhead only (redraws at 60fps during playback) ──
+  useEffect(() => {
+    const overlay = overlayRef.current
+    if (!overlay) return
+    const ctx = overlay.getContext('2d')
+    if (!ctx) return
+
+    const dpr = window.devicePixelRatio || 1
+    const rect = overlay.getBoundingClientRect()
+    const w = rect.width * dpr
+    const h = rect.height * dpr
+
+    overlay.width = w
+    overlay.height = h
+    ctx.scale(dpr, dpr)
+
+    const cssW = rect.width
+    const cssH = rect.height
+
+    ctx.clearRect(0, 0, cssW, cssH)
+
     const playX = timeToX(currentTime, cssW)
     ctx.strokeStyle = '#ffffff'
     ctx.lineWidth = 1.5
@@ -166,12 +185,12 @@ export default function WaveformBar({
     ctx.moveTo(playX, 0)
     ctx.lineTo(playX, cssH)
     ctx.stroke()
-  }, [peaks, duration, inPoint, outPoint, currentTime, size, color, palette, config, timeToX])
+  }, [currentTime, timeToX])
 
   // ── Hit-test which handle (if any) is near an x position ──────
   const hitTest = useCallback(
     (clientX: number): DragTarget => {
-      const canvas = canvasRef.current
+      const canvas = overlayRef.current
       if (!canvas) return null
       const rect = canvas.getBoundingClientRect()
       const x = clientX - rect.left
@@ -195,53 +214,48 @@ export default function WaveformBar({
         dragRef.current = target
         isDraggingRef.current = true
         e.preventDefault()
+
+        // Register window listeners only during drag
+        const handleMouseMove = (ev: MouseEvent) => {
+          const canvas = overlayRef.current
+          if (!canvas) return
+          const rect = canvas.getBoundingClientRect()
+          const time = xToTime(ev.clientX - rect.left, rect)
+
+          if (dragRef.current === 'in') {
+            const clamped = Math.max(0, Math.min(time, outPoint - 0.01))
+            onInPointChange(clamped)
+          } else {
+            const clamped = Math.max(inPoint + 0.01, Math.min(time, duration))
+            onOutPointChange(clamped)
+          }
+        }
+
+        const handleMouseUp = () => {
+          dragRef.current = null
+          isDraggingRef.current = false
+          window.removeEventListener('mousemove', handleMouseMove)
+          window.removeEventListener('mouseup', handleMouseUp)
+        }
+
+        window.addEventListener('mousemove', handleMouseMove)
+        window.addEventListener('mouseup', handleMouseUp)
       } else {
-        // Click to seek
-        const canvas = canvasRef.current
+        // Click to seek (clamped to trim range)
+        const canvas = overlayRef.current
         if (!canvas) return
         const rect = canvas.getBoundingClientRect()
         const time = xToTime(e.clientX - rect.left, rect)
-        onSeek(time)
+        onSeek(Math.max(inPoint, Math.min(time, outPoint)))
       }
     },
-    [hitTest, xToTime, onSeek],
+    [hitTest, xToTime, onSeek, inPoint, outPoint, duration, onInPointChange, onOutPointChange],
   )
-
-  // Window-level move/up for drag outside canvas bounds
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isDraggingRef.current || !dragRef.current) return
-      const canvas = canvasRef.current
-      if (!canvas) return
-      const rect = canvas.getBoundingClientRect()
-      const time = xToTime(e.clientX - rect.left, rect)
-
-      if (dragRef.current === 'in') {
-        const clamped = Math.max(0, Math.min(time, outPoint - 0.01))
-        onInPointChange(clamped)
-      } else {
-        const clamped = Math.max(inPoint + 0.01, Math.min(time, duration))
-        onOutPointChange(clamped)
-      }
-    }
-
-    const handleMouseUp = () => {
-      dragRef.current = null
-      isDraggingRef.current = false
-    }
-
-    window.addEventListener('mousemove', handleMouseMove)
-    window.addEventListener('mouseup', handleMouseUp)
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove)
-      window.removeEventListener('mouseup', handleMouseUp)
-    }
-  }, [inPoint, outPoint, duration, xToTime, onInPointChange, onOutPointChange])
 
   // ── Cursor management ─────────────────────────────────────────
   const handleCanvasMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
-      const canvas = canvasRef.current
+      const canvas = overlayRef.current
       if (!canvas) return
 
       if (isDraggingRef.current) {
@@ -261,10 +275,11 @@ export default function WaveformBar({
       : 'h-[56px] rounded-lg border border-[var(--glass-border)] overflow-hidden'
 
   return (
-    <div ref={containerRef} className={containerClass}>
+    <div className={`${containerClass} relative`}>
+      <canvas ref={canvasRef} className="absolute inset-0 block h-full w-full" />
       <canvas
-        ref={canvasRef}
-        className="block h-full w-full"
+        ref={overlayRef}
+        className="absolute inset-0 block h-full w-full"
         onMouseDown={handleMouseDown}
         onMouseMove={handleCanvasMouseMove}
       />

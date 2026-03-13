@@ -92,6 +92,15 @@ export interface ProbeResult {
   audio_streams: AudioStreamInfo[]
 }
 
+export interface CutterPreviewStatus {
+  state: 'idle' | 'running' | 'done' | 'error'
+  ready: boolean
+  percent: number
+  eta_seconds: number | null
+  elapsed_seconds: number
+  message: string
+}
+
 export interface CutterFileInfo {
   name: string
   size: number
