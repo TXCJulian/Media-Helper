@@ -119,13 +119,28 @@ export interface CutterSourceState {
   isLoadingFile: boolean
 }
 
+export interface CutJobSettings {
+  in_point: number
+  out_point: number
+  stream_copy: boolean
+  codec: string | null
+  audio_codec: string | null
+  container: string | null
+  output_name: string | null
+  audio_stream_index: number | null
+}
+
 export interface CutterJob {
   job_id: string
   source: string
   original_name: string
+  original_path: string
   created_at: string
   status: string
   output_files: string[]
+  cut_settings?: CutJobSettings | null
+  preview_transcoded?: boolean
+  transcode_error?: string | null
 }
 
 export interface CutterPersistedState {

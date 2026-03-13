@@ -16,11 +16,12 @@ function relativeTime(iso: string): string {
 const STATUS_COLORS: Record<string, string> = {
   ready: 'bg-white/10 text-white/50',
   cutting: 'bg-amber-400/15 text-amber-300',
+  transcoding: 'bg-blue-400/15 text-blue-300',
   done: 'bg-emerald-400/15 text-emerald-300',
   error: 'bg-red-400/15 text-red-300',
 }
 
-export default function JobManager({ activeJobId, onLog }: { activeJobId?: string; onLog?: (msg: string) => void }) {
+export default function JobManager({ activeJobId, onLog, onOpenJob }: { activeJobId?: string; onLog?: (msg: string) => void; onOpenJob?: (job: CutterJob) => void }) {
   const [jobs, setJobs] = useState<CutterJob[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
@@ -93,6 +94,22 @@ export default function JobManager({ activeJobId, onLog }: { activeJobId?: strin
                     <span className={`shrink-0 rounded px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase ${STATUS_COLORS[job.status] ?? STATUS_COLORS.ready}`}>
                       {job.status}
                     </span>
+                    {job.status === 'ready' && job.preview_transcoded && (
+                      <span
+                        className="shrink-0 rounded bg-emerald-400/15 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase text-emerald-300"
+                        title="Transcoded preview is ready for browser playback"
+                      >
+                        browser ready
+                      </span>
+                    )}
+                    {job.transcode_error && (
+                      <span
+                        className="shrink-0 cursor-help rounded bg-red-400/15 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase text-red-300"
+                        title={job.transcode_error}
+                      >
+                        transcode err
+                      </span>
+                    )}
                   </div>
                   <div className="mt-1 flex items-center gap-3 text-[0.68rem] text-white/35">
                     <span>{job.source}</span>
@@ -141,25 +158,45 @@ export default function JobManager({ activeJobId, onLog }: { activeJobId?: strin
                     </div>
                   )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void handleDelete(job.job_id)}
-                  disabled={job.job_id === activeJobId}
-                  className={`shrink-0 rounded-md p-1.5 transition ${
-                    job.job_id === activeJobId
-                      ? 'cursor-not-allowed text-white/10'
-                      : 'text-white/25 hover:bg-red-500/10 hover:text-red-400'
-                  }`}
-                  title={job.job_id === activeJobId ? 'Cannot delete active job' : 'Delete job'}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="3 6 5 6 21 6" />
-                    <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
-                    <path d="M10 11v6" />
-                    <path d="M14 11v6" />
-                    <path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2" />
-                  </svg>
-                </button>
+                <div className="flex shrink-0 items-center gap-1">
+                  {onOpenJob && (
+                    <button
+                      type="button"
+                      onClick={() => { onOpenJob(job); setOpen(false) }}
+                      disabled={job.job_id === activeJobId}
+                      className={`rounded-md p-1.5 transition ${
+                        job.job_id === activeJobId
+                          ? 'cursor-not-allowed text-white/10'
+                          : 'text-white/25 hover:bg-emerald-500/10 hover:text-emerald-400'
+                      }`}
+                      title={job.job_id === activeJobId ? 'Currently active job' : 'Open job settings'}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+                        <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+                      </svg>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void handleDelete(job.job_id)}
+                    disabled={job.job_id === activeJobId}
+                    className={`rounded-md p-1.5 transition ${
+                      job.job_id === activeJobId
+                        ? 'cursor-not-allowed text-white/10'
+                        : 'text-white/25 hover:bg-red-500/10 hover:text-red-400'
+                    }`}
+                    title={job.job_id === activeJobId ? 'Cannot delete active job' : 'Delete job'}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
+                      <path d="M10 11v6" />
+                      <path d="M14 11v6" />
+                      <path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2" />
+                    </svg>
+                  </button>
+                </div>
               </div>
             ))
           )}

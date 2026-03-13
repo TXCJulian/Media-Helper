@@ -198,6 +198,10 @@ export async function deleteJob(jobId: string): Promise<void> {
   if (!res.ok) throw new Error(await extractErrorMessage(res))
 }
 
+export async function getJob(jobId: string): Promise<import('@/types').CutterJob> {
+  return fetchJson<import('@/types').CutterJob>(`/cutter/jobs/${encodeURIComponent(jobId)}`)
+}
+
 export async function saveToSource(jobId: string, filename: string): Promise<{ status: string; filename: string }> {
   const url = new URL(`/cutter/jobs/${encodeURIComponent(jobId)}/save/${encodeURIComponent(filename)}`, API_BASE)
   const res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS) })

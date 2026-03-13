@@ -943,6 +943,11 @@ def start_background_transcode(
 
     # Already done
     if os.path.isfile(preview_path):
+        meta = load_job_metadata(job_id)
+        if meta and not meta.get("preview_transcoded"):
+            meta["preview_transcoded"] = True
+            meta.pop("transcode_error", None)
+            save_job_metadata(job_id, meta)
         return
 
     with _transcode_lock_guard:
@@ -965,9 +970,25 @@ def start_background_transcode(
         },
     )
 
+    # Mark job as transcoding while the preview is being built
+    _jmeta = load_job_metadata(job_id)
+    if _jmeta and _jmeta.get("status") == "ready":
+        _jmeta["status"] = "transcoding"
+        _jmeta["preview_transcoded"] = False
+        _jmeta.pop("transcode_error", None)
+        save_job_metadata(job_id, _jmeta)
+
     def _run():
         try:
             get_or_transcode_preview(filepath, job_id)
+            # Transcode succeeded — restore ready status
+            _meta = load_job_metadata(job_id)
+            if _meta:
+                if _meta.get("status") == "transcoding":
+                    _meta["status"] = "ready"
+                _meta["preview_transcoded"] = True
+                _meta.pop("transcode_error", None)
+                save_job_metadata(job_id, _meta)
         except Exception as exc:
             _set_preview_status(
                 status_key,
@@ -981,6 +1002,14 @@ def start_background_transcode(
                 },
             )
             logger.exception("Background preview transcode failed")
+            # Restore ready status but record the error for the UI
+            _meta = load_job_metadata(job_id)
+            if _meta:
+                if _meta.get("status") == "transcoding":
+                    _meta["status"] = "ready"
+                _meta["preview_transcoded"] = False
+                _meta["transcode_error"] = str(exc)
+                save_job_metadata(job_id, _meta)
         finally:
             event.set()
             with _transcode_lock_guard:
@@ -1219,6 +1248,7 @@ def create_job(source: str, original_path: str, original_name: str) -> str:
         "original_path": original_path,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": "ready",
+        "preview_transcoded": False,
         "cut_settings": None,
         "output_files": [],
     }

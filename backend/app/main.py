@@ -41,6 +41,7 @@ from app.cutter import (
     get_or_transcode_preview,
     get_preview_path_if_ready,
     get_preview_status,
+    start_background_transcode,
     wait_for_preview,
     get_track_preview,
     cut_file,
@@ -637,6 +638,7 @@ def cutter_stream(
         if not job_id:
             raise HTTPException(status_code=400, detail="job_id required for transcoded preview")
 
+        start_background_transcode(resolved, job_id)
         status = get_preview_status(resolved, job_id)
         if status.get("state") == "error":
             raise HTTPException(status_code=500, detail=status.get("message") or "Preview transcode failed")
@@ -757,6 +759,8 @@ def cutter_preview_status(file_id: str):
 
     if not job_id:
         raise HTTPException(status_code=400, detail="job_id required for transcoded preview")
+
+    start_background_transcode(resolved, job_id)
     return get_preview_status(resolved, job_id)
 
 
@@ -1009,6 +1013,9 @@ def cutter_cut(
             "stream_copy": stream_copy,
             "codec": codec or None,
             "container": container or None,
+            "audio_codec": audio_codec or None,
+            "audio_stream_index": audio_stream,
+            "output_name": output_name or None,
         }
         save_job_metadata(job_id, meta)
 

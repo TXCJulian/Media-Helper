@@ -29,6 +29,7 @@ import { useDebounce } from '@/hooks/useDebounce'
 import type {
   CutterForm,
   CutterFileInfo,
+  CutterJob,
   CutterPersistedState,
   CutterSourceState,
   CutterPreviewStatus,
@@ -271,6 +272,60 @@ export default function CutterPanel({
     // Reset prevDir so the files effect fires
     prevDir.current = ''
   }
+
+  // ── Reopen job from job manager ───────────────────────────────
+  const handleOpenJob = useCallback(
+    async (job: CutterJob) => {
+      const source = job.source as CutterForm['source']
+      const filePath = source === 'server' ? job.original_path : job.original_name
+      const directory = job.original_path
+        ? job.original_path.substring(0, job.original_path.lastIndexOf('/'))
+        : ''
+      const settings = job.cut_settings ?? null
+      const sourceStatePatch = {
+        filePath,
+        fileId: encodeFileId(source, filePath, job.job_id),
+        jobId: job.job_id,
+        outputFiles: job.output_files,
+        probe: null,
+        peaks: [] as number[],
+        thumbnailUrl: '',
+        isLoadingFile: true,
+      }
+      setPersisted((prev) => ({
+        form: {
+          ...prev.form,
+          source,
+          directory: source === 'server' ? directory : prev.form.directory,
+          filename: job.original_name,
+          inPoint: settings?.in_point ?? 0,
+          outPoint: settings?.out_point ?? 0,
+          streamCopy: settings?.stream_copy ?? true,
+          codec: settings?.codec ?? 'aac',
+          audioCodec: settings?.audio_codec ?? 'copy',
+          container: settings?.container ?? 'mp4',
+          outputName: settings?.output_name ?? '',
+          audioStreamIndex: settings?.audio_stream_index ?? null,
+        },
+        serverState: source === 'server' ? { ...prev.serverState, ...sourceStatePatch } : prev.serverState,
+        uploadState: source === 'upload' ? { ...prev.uploadState, ...sourceStatePatch } : prev.uploadState,
+      }))
+      setPreviewStatus(null)
+      setTranscodePreviewEnabled(false)
+      try {
+        await loadFileData(filePath, source, job.job_id)
+        // Restore saved in/out points — loadFileData resets them to 0/duration
+        if (settings) {
+          setPersisted((prev) => ({
+            form: { ...prev.form, inPoint: settings.in_point, outPoint: settings.out_point },
+          }))
+        }
+      } catch (err) {
+        onError(`Error reopening job: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    },
+    [loadFileData, setPersisted, onError],
+  )
 
   // ── Upload handling ───────────────────────────────────────────
   const handleUpload = useCallback(
@@ -763,7 +818,7 @@ export default function CutterPanel({
           </div>
         )}
       </form>
-      <JobManager activeJobId={jobId} onLog={(msg) => onLog([...log, msg])} />
+      <JobManager activeJobId={jobId} onLog={(msg) => onLog([...log, msg])} onOpenJob={handleOpenJob} />
     </PanelLayout>
   )
 }
