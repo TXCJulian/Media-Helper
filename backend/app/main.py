@@ -42,7 +42,6 @@ from app.cutter import (
     get_preview_path_if_ready,
     get_preview_status,
     wait_for_preview,
-    start_background_transcode,
     get_track_preview,
     cut_file,
     encode_file_id,
@@ -558,9 +557,6 @@ def cutter_probe(
         info["needs_transcoding"] = needs_transcoding(
             info.get("audio_codec", "unknown"), resolved
         )
-        # Start background transcode early so preview is ready by play time
-        if info["needs_transcoding"] and job_id:
-            start_background_transcode(resolved, job_id)
         return info
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -604,7 +600,12 @@ def cutter_thumbnails(
 
 
 @app.get("/cutter/stream/{file_id}")
-def cutter_stream(file_id: str, request: Request, audio_stream: int | None = Query(None)):
+def cutter_stream(
+    file_id: str,
+    request: Request,
+    audio_stream: int | None = Query(None),
+    transcode: bool = Query(False),
+):
     require_feature("cutter")
     try:
         source, job_id, path = decode_file_id(file_id)
@@ -632,7 +633,7 @@ def cutter_stream(file_id: str, request: Request, audio_stream: int | None = Que
                 ),
             )
 
-    if needs_transcoding(probe.get("audio_codec", "unknown"), resolved):
+    if transcode and needs_transcoding(probe.get("audio_codec", "unknown"), resolved):
         if not job_id:
             raise HTTPException(status_code=400, detail="job_id required for transcoded preview")
 
@@ -756,8 +757,6 @@ def cutter_preview_status(file_id: str):
 
     if not job_id:
         raise HTTPException(status_code=400, detail="job_id required for transcoded preview")
-
-    start_background_transcode(resolved, job_id)
     return get_preview_status(resolved, job_id)
 
 
@@ -863,6 +862,8 @@ def cutter_delete_job(job_id: str):
         delete_job(job_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     return {"status": "deleted"}
 
 
@@ -1035,6 +1036,7 @@ def cutter_cut(
                 container=container or None,
                 progress_cb=progress_cb,
                 audio_stream_index=audio_stream,
+                job_id=job_id,
                 cancel_event=cancel_event,
             )
 

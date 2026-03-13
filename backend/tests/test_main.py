@@ -198,6 +198,75 @@ class TestCutterStreamValidation:
         assert resp.status_code == 200
         assert resp.content == b"demo"
 
+    def test_cutter_stream_does_not_transcode_without_flag(self, client, tmp_path, monkeypatch):
+        import app.main as main_mod
+
+        media_file = tmp_path / "clip.mkv"
+        media_file.write_bytes(b"demo")
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "job-1", "clip.mkv"))
+        monkeypatch.setattr(
+            main_mod,
+            "resolve_cutter_path",
+            lambda _path, _source, _job_id="": str(media_file),
+        )
+        monkeypatch.setattr(
+            main_mod,
+            "probe_file",
+            lambda _path: {
+                "audio_codec": "dts",
+                "audio_streams": [{"index": 1}],
+            },
+        )
+        monkeypatch.setattr(main_mod, "needs_transcoding", lambda *_args, **_kwargs: True)
+
+        called = {"value": False}
+
+        def fail_if_called(*_args, **_kwargs):
+            called["value"] = True
+            raise AssertionError("get_or_transcode_preview should not be called without transcode flag")
+
+        monkeypatch.setattr(main_mod, "get_or_transcode_preview", fail_if_called)
+
+        resp = client.get("/cutter/stream/demo")
+        assert resp.status_code == 200
+        assert resp.content == b"demo"
+        assert called["value"] is False
+
+    def test_cutter_stream_transcodes_when_flag_enabled(self, client, tmp_path, monkeypatch):
+        import app.main as main_mod
+
+        media_file = tmp_path / "clip.mkv"
+        preview_file = tmp_path / "preview.mp4"
+        media_file.write_bytes(b"orig")
+        preview_file.write_bytes(b"preview")
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "job-1", "clip.mkv"))
+        monkeypatch.setattr(
+            main_mod,
+            "resolve_cutter_path",
+            lambda _path, _source, _job_id="": str(media_file),
+        )
+        monkeypatch.setattr(
+            main_mod,
+            "probe_file",
+            lambda _path: {
+                "audio_codec": "dts",
+                "audio_streams": [{"index": 1}],
+            },
+        )
+        monkeypatch.setattr(main_mod, "needs_transcoding", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(main_mod, "get_preview_status", lambda *_args, **_kwargs: {"state": "idle"})
+        monkeypatch.setattr(main_mod, "get_preview_path_if_ready", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(main_mod, "wait_for_preview", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(main_mod, "get_or_transcode_preview", lambda *_args, **_kwargs: str(preview_file))
+
+        resp = client.get("/cutter/stream/demo", params={"transcode": "true"})
+        assert resp.status_code == 200
+        assert resp.content == b"preview"
+
 
 class TestCutterPreviewStatus:
     def test_preview_status_non_transcoding_is_done(self, client, tmp_path, monkeypatch):
@@ -229,3 +298,20 @@ class TestCutterPreviewStatus:
         assert data["state"] == "done"
         assert data["ready"] is True
         assert data["percent"] == 100.0
+
+
+class TestCutterDeleteJob:
+    def test_delete_job_returns_conflict_for_busy_job(self, client, monkeypatch):
+        import app.main as main_mod
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
+
+        def fake_delete_job(_job_id):
+            raise RuntimeError("Job is still busy and could not be deleted")
+
+        monkeypatch.setattr(main_mod, "delete_job", fake_delete_job)
+
+        resp = client.delete("/cutter/jobs/11111111-1111-1111-1111-111111111111")
+
+        assert resp.status_code == 409
+        assert "still busy" in resp.json()["detail"]

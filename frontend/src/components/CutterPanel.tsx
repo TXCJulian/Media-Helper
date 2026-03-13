@@ -24,6 +24,7 @@ import {
   postRefresh,
   saveToSource,
 } from '@/lib/api'
+import { getBrowserCompatibilityMessage, getBrowserCompatibilityReport } from '@/lib/mediaCompatibility'
 import { useDebounce } from '@/hooks/useDebounce'
 import type {
   CutterForm,
@@ -108,6 +109,7 @@ export default function CutterPanel({
   const [uploadProgress, setUploadProgress] = useState(-1)
   const [isDragOver, setIsDragOver] = useState(false)
   const [previewStatus, setPreviewStatus] = useState<CutterPreviewStatus | null>(null)
+  const [transcodePreviewEnabled, setTranscodePreviewEnabled] = useState(false)
 
   const debouncedSearch = useDebounce(search, 500)
   const abortSSERef = useRef<(() => void) | null>(null)
@@ -231,10 +233,12 @@ export default function CutterPanel({
           form: { ...prev.form, inPoint: 0, outPoint: probeData.duration, audioStreamIndex: null },
         }))
         setPreviewStatus(null)
+        setTranscodePreviewEnabled(false)
       } catch (err) {
         onError(`Error loading file: ${err instanceof Error ? err.message : String(err)}`)
         setSource({ isLoadingFile: false })
         setPreviewStatus(null)
+        setTranscodePreviewEnabled(false)
       }
     },
     [onError, setSource, setPersisted],
@@ -263,6 +267,7 @@ export default function CutterPanel({
     setPersisted({ form: { ...form, directory: dir, filename: '', audioStreamIndex: null } })
     setSource({ probe: null, peaks: [], filePath: '', fileId: '', thumbnailUrl: '', jobId: '', outputFiles: [] })
     setPreviewStatus(null)
+    setTranscodePreviewEnabled(false)
     // Reset prevDir so the files effect fires
     prevDir.current = ''
   }
@@ -301,6 +306,7 @@ export default function CutterPanel({
           },
         }))
         setPreviewStatus(null)
+        setTranscodePreviewEnabled(false)
       } catch (err) {
         onError(`Upload failed: ${err instanceof Error ? err.message : String(err)}`)
         setSource({ isLoadingFile: false })
@@ -419,8 +425,13 @@ export default function CutterPanel({
     return defaultAudioStreamIndex
   })()
 
+  const compatibilityReport = hasFile ? getBrowserCompatibilityReport(filePath, probe) : null
+  const compatibilityMessage = compatibilityReport?.hasIssues
+    ? getBrowserCompatibilityMessage(compatibilityReport)
+    : null
+
   useEffect(() => {
-    if (!hasFile || !probe?.needs_transcoding || !fileId) {
+    if (!hasFile || !probe?.needs_transcoding || !fileId || !transcodePreviewEnabled) {
       setPreviewStatus(null)
       return
     }
@@ -461,7 +472,7 @@ export default function CutterPanel({
       cancelled = true
       if (timeoutId) clearTimeout(timeoutId)
     }
-  }, [hasFile, probe?.needs_transcoding, fileId, onError])
+  }, [hasFile, probe?.needs_transcoding, fileId, transcodePreviewEnabled, onError])
 
   return (
     <PanelLayout title="Media Cutter" onBack={onBack} maxWidth="1100px">
@@ -617,9 +628,36 @@ export default function CutterPanel({
         {/* ── Player section (shown after file is loaded) ─── */}
         {hasFile && (
           <>
+            {compatibilityMessage && (
+              <div className="mb-3 rounded-xl border border-amber-400/30 bg-amber-400/8 px-4 py-3 text-[0.78rem] text-amber-200">
+                <p>{compatibilityMessage}</p>
+                {probe?.needs_transcoding && (
+                  <div className="mt-2 flex items-center gap-2">
+                    {!transcodePreviewEnabled ? (
+                      <button
+                        type="button"
+                        onClick={() => setTranscodePreviewEnabled(true)}
+                        className="rounded-md border border-amber-300/40 bg-amber-300/12 px-2.5 py-1 text-[0.72rem] font-semibold text-amber-100 transition hover:bg-amber-300/18"
+                      >
+                        Enable Transcoded Preview
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setTranscodePreviewEnabled(false)}
+                        className="rounded-md border border-white/20 bg-white/8 px-2.5 py-1 text-[0.72rem] font-semibold text-white/80 transition hover:bg-white/12"
+                      >
+                        Use Original Playback
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             <FormSection label="Preview">
               <MediaPlayer
-                streamUrl={getStreamUrl(fileId, selectedAudioStreamIndex)}
+                streamUrl={getStreamUrl(fileId, selectedAudioStreamIndex, transcodePreviewEnabled)}
                 isVideo={isVideo}
                 peaks={peaks}
                 duration={probe.duration}
@@ -628,9 +666,11 @@ export default function CutterPanel({
                 onInPointChange={(t) => update('inPoint', t)}
                 onOutPointChange={(t) => update('outPoint', t)}
                 thumbnailUrl={thumbnailUrl || undefined}
-                needsTranscoding={probe.needs_transcoding}
+                needsTranscoding={probe.needs_transcoding && transcodePreviewEnabled}
                 transcodePercent={previewStatus?.percent}
                 transcodeEtaSeconds={previewStatus?.eta_seconds ?? null}
+                transcodeState={previewStatus?.state}
+                transcodeMessage={previewStatus?.message}
               />
             </FormSection>
 

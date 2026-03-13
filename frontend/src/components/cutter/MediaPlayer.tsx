@@ -15,6 +15,8 @@ interface MediaPlayerProps {
   needsTranscoding?: boolean
   transcodePercent?: number
   transcodeEtaSeconds?: number | null
+  transcodeState?: 'idle' | 'running' | 'done' | 'error'
+  transcodeMessage?: string
 }
 
 function formatTime(seconds: number): string {
@@ -22,6 +24,17 @@ function formatTime(seconds: number): string {
   const m = Math.floor((seconds % 3600) / 60)
   const s = Math.floor(seconds % 60)
   return [h, m, s].map((v) => String(v).padStart(2, '0')).join(':')
+}
+
+function formatEta(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`
+  if (m > 0) return `${m}m ${String(s).padStart(2, '0')}s`
+  return `${s}s`
 }
 
 export default function MediaPlayer({
@@ -37,6 +50,8 @@ export default function MediaPlayer({
   needsTranscoding,
   transcodePercent,
   transcodeEtaSeconds,
+  transcodeState,
+  transcodeMessage,
 }: MediaPlayerProps) {
   const END_TOLERANCE_SECONDS = 0.05
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null)
@@ -207,14 +222,17 @@ export default function MediaPlayer({
 
   const [mediaError, setMediaError] = useState<string>('')
 
-  const transcodingProgressLabel = (() => {
-    const percent = Number.isFinite(transcodePercent) ? Math.max(0, Math.min(100, transcodePercent ?? 0)) : 0
-    const eta = transcodeEtaSeconds != null && Number.isFinite(transcodeEtaSeconds)
-      ? Math.max(0, Math.round(transcodeEtaSeconds))
+  const isPreparingPostTranscode = isTranscoding && transcodeState === 'done'
+  const transcodingProgress = Number.isFinite(transcodePercent)
+    ? Math.max(0, Math.min(100, transcodePercent ?? 0))
+    : 0
+  const transcodingPercentLabel = `${transcodingProgress.toFixed(1)}%`
+  const transcodingEtaLabel =
+    transcodeEtaSeconds != null && Number.isFinite(transcodeEtaSeconds)
+      ? formatEta(transcodeEtaSeconds)
       : null
-    if (eta == null) return `${percent.toFixed(1)}%`
-    return `${percent.toFixed(1)}% • ~${eta}s remaining`
-  })()
+  const transcodingTitle = isPreparingPostTranscode ? 'Preparing stream' : 'Transcoding preview'
+  const transcodingDetailMessage = transcodeMessage?.trim() || 'Generating browser-compatible preview'
 
   const handleMediaError = useCallback(() => {
     const el = mediaRef.current
@@ -321,15 +339,35 @@ export default function MediaPlayer({
               setMediaError('')
               setIsMediaReady(true)
             }}
-            preload="metadata"
+            preload="none"
             playsInline
           />
           {isTranscoding && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-xl bg-black/70">
               <span className="spinner-md" />
-              <div className="text-[0.8rem] text-white/60 text-center leading-tight">
-                <span className="block">Transcoding for preview...</span>
-                <span className="block">{transcodingProgressLabel}</span>
+              <div className="w-[min(84%,22rem)] rounded-xl border border-white/15 bg-black/45 px-3.5 py-3 backdrop-blur-sm">
+                <p className="text-center text-[0.78rem] font-medium uppercase tracking-[0.12em] text-white/55">
+                  {transcodingTitle}
+                </p>
+                <div className="mt-2 flex items-center justify-center gap-2 text-sm">
+                  {!isPreparingPostTranscode && (
+                    <span className="rounded-md border border-emerald-300/25 bg-emerald-300/10 px-2 py-1 font-mono font-semibold text-emerald-200">
+                      {transcodingPercentLabel}
+                    </span>
+                  )}
+                  {!isPreparingPostTranscode && transcodingEtaLabel && (
+                    <span className="rounded-md border border-white/20 bg-white/8 px-2 py-1 font-mono text-white/80">
+                      ETA {transcodingEtaLabel}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/15">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-emerald-300 via-teal-300 to-emerald-400 transition-[width] duration-300 ease-out"
+                    style={{ width: `${transcodingProgress}%` }}
+                  />
+                </div>
+                <p className="mt-2 text-center text-[0.7rem] text-white/65">{transcodingDetailMessage}</p>
               </div>
             </div>
           )}
@@ -374,7 +412,7 @@ export default function MediaPlayer({
       <audio
         ref={mediaRef as React.RefObject<HTMLAudioElement>}
         src={streamUrl}
-        preload="metadata"
+        preload="none"
         onPause={handlePause}
         onTimeUpdate={handleTimeUpdate}
         onEnded={handleEnded}
@@ -386,11 +424,31 @@ export default function MediaPlayer({
         style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }}
       />
       {isTranscoding && (
-        <div className="flex items-center justify-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg-input)] py-8">
+        <div className="flex items-center justify-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg-input)] px-4 py-7">
           <span className="spinner-md" />
-          <div className="text-[0.8rem] text-[var(--text-tertiary)] text-center leading-tight">
-            <span className="block">Transcoding for preview...</span>
-            <span className="block">{transcodingProgressLabel}</span>
+          <div className="w-full max-w-xs rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5">
+            <p className="text-[0.73rem] font-medium uppercase tracking-[0.11em] text-[var(--text-secondary)]">
+              {transcodingTitle}
+            </p>
+            <div className="mt-2 flex items-center gap-2 text-xs">
+              {!isPreparingPostTranscode && (
+                <span className="rounded-md border border-emerald-300/25 bg-emerald-300/10 px-2 py-1 font-mono font-semibold text-emerald-200">
+                  {transcodingPercentLabel}
+                </span>
+              )}
+              {!isPreparingPostTranscode && transcodingEtaLabel && (
+                <span className="rounded-md border border-white/15 bg-white/5 px-2 py-1 font-mono text-white/75">
+                  ETA {transcodingEtaLabel}
+                </span>
+              )}
+            </div>
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/12">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-emerald-300 via-teal-300 to-cyan-300 transition-[width] duration-300 ease-out"
+                style={{ width: `${transcodingProgress}%` }}
+              />
+            </div>
+            <p className="mt-2 text-[0.68rem] text-[var(--text-tertiary)]">{transcodingDetailMessage}</p>
           </div>
         </div>
       )}

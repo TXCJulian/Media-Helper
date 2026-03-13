@@ -154,9 +154,17 @@ export function createJob(
   return postForm<{ job_id: string }>('/cutter/jobs', { path, source })
 }
 
-export function getStreamUrl(fileId: string, audioStreamIndex?: number | null): string {
+export function getStreamUrl(
+  fileId: string,
+  audioStreamIndex?: number | null,
+  transcode = false,
+): string {
   const base = `/cutter/stream/${encodeURIComponent(fileId)}`
-  return audioStreamIndex != null ? `${base}?audio_stream=${audioStreamIndex}` : base
+  const params = new URLSearchParams()
+  if (audioStreamIndex != null) params.set('audio_stream', String(audioStreamIndex))
+  if (transcode) params.set('transcode', 'true')
+  const query = params.toString()
+  return query ? `${base}?${query}` : base
 }
 
 export function fetchPreviewStatus(

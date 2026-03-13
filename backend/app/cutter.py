@@ -29,6 +29,18 @@ _PASSTHROUGH_CODECS = {"aac", "mp3", "opus", "vorbis", "flac", "pcm_s16le", "pcm
 # File extensions browsers can play natively
 _BROWSER_EXTENSIONS = {".mp4", ".m4a", ".m4v", ".mov", ".webm", ".ogg", ".mp3", ".wav", ".aac", ".flac"}
 _FFMPEG_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+_DELETE_WAIT_SECONDS = 15.0
+_DELETE_RETRY_ATTEMPTS = 8
+_DELETE_RETRY_DELAY = 0.2
+
+
+class _JobActivityState:
+    def __init__(self) -> None:
+        self.condition = threading.Condition()
+        self.active_operations = 0
+        self.deleting = False
+        self.cancel_events: set[threading.Event] = set()
+        self.processes: set[object] = set()
 
 
 def _audio_relative_index(filepath: str, absolute_index: int) -> int:
@@ -323,6 +335,187 @@ def _seconds_from_ffmpeg_time(line: str) -> float | None:
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
+def _safe_remove_file(path: str) -> None:
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        return
+
+
+def _close_pipe(pipe: object) -> None:
+    close = getattr(pipe, "close", None)
+    if callable(close):
+        try:
+            close()
+        except OSError:
+            pass
+
+
+def _preview_file_path(filepath: str, job_id: str) -> str:
+    suffix = _preview_cache_key(filepath)
+    job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
+    return os.path.join(job_dir, f"preview_{suffix}.mp4")
+
+
+def _prune_job_activity_state(job_id: str, state: _JobActivityState) -> None:
+    with _job_activity_guard:
+        current = _job_activity.get(job_id)
+        if current is not state:
+            return
+        if state.active_operations == 0 and not state.cancel_events and not state.processes and not state.deleting:
+            _job_activity.pop(job_id, None)
+
+
+def _get_job_activity_state(job_id: str, create: bool = False) -> _JobActivityState | None:
+    with _job_activity_guard:
+        state = _job_activity.get(job_id)
+        if state is None and create:
+            state = _JobActivityState()
+            _job_activity[job_id] = state
+        return state
+
+
+def _begin_job_operation(job_id: str, cancel_event: threading.Event | None = None) -> None:
+    state = _get_job_activity_state(job_id, create=True)
+    assert state is not None
+    with state.condition:
+        if state.deleting:
+            raise RuntimeError(f"Job {job_id} is being deleted")
+        state.active_operations += 1
+        if cancel_event is not None:
+            state.cancel_events.add(cancel_event)
+
+
+def _end_job_operation(job_id: str, cancel_event: threading.Event | None = None) -> None:
+    state = _get_job_activity_state(job_id)
+    if state is None:
+        return
+    with state.condition:
+        if cancel_event is not None:
+            state.cancel_events.discard(cancel_event)
+        if state.active_operations > 0:
+            state.active_operations -= 1
+        state.condition.notify_all()
+    _prune_job_activity_state(job_id, state)
+
+
+def _register_job_process(job_id: str, proc: object) -> None:
+    state = _get_job_activity_state(job_id, create=True)
+    assert state is not None
+    with state.condition:
+        state.processes.add(proc)
+        state.condition.notify_all()
+
+
+def _unregister_job_process(job_id: str, proc: object) -> None:
+    state = _get_job_activity_state(job_id)
+    if state is None:
+        return
+    with state.condition:
+        state.processes.discard(proc)
+        state.condition.notify_all()
+    _prune_job_activity_state(job_id, state)
+
+
+def _stop_process(proc: object, kill: bool = False) -> None:
+    poll = getattr(proc, "poll", None)
+    try:
+        if callable(poll) and poll() is not None:
+            return
+    except Exception:
+        pass
+    action = getattr(proc, "kill" if kill else "terminate", None)
+    if callable(action):
+        try:
+            action()
+        except Exception:
+            pass
+
+
+def _wait_for_process_shutdown(proc: object, timeout: float) -> None:
+    wait = getattr(proc, "wait", None)
+    if callable(wait):
+        try:
+            wait(timeout=timeout)
+        except Exception:
+            pass
+
+
+def _job_has_active_operations(job_id: str) -> bool:
+    state = _get_job_activity_state(job_id)
+    if state is None:
+        return False
+    with state.condition:
+        return state.active_operations > 0 or bool(state.processes)
+
+
+def _clear_job_runtime_state(job_id: str) -> None:
+    with _job_activity_guard:
+        _job_activity.pop(job_id, None)
+    status_prefix = f"{job_id}:"
+    with _preview_status_guard:
+        stale_keys = [key for key in _preview_status if key.startswith(status_prefix)]
+        for key in stale_keys:
+            _preview_status.pop(key, None)
+
+
+def _cancel_job_operations(job_id: str, timeout: float = _DELETE_WAIT_SECONDS) -> None:
+    state = _get_job_activity_state(job_id)
+    if state is None:
+        return
+
+    with state.condition:
+        state.deleting = True
+        cancel_events = list(state.cancel_events)
+        processes = list(state.processes)
+        state.condition.notify_all()
+
+    for event in cancel_events:
+        event.set()
+    for proc in processes:
+        _stop_process(proc)
+
+    deadline = time.monotonic() + timeout
+    while True:
+        with state.condition:
+            if state.active_operations == 0 and not state.processes:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            state.condition.wait(timeout=min(0.25, remaining))
+
+    with state.condition:
+        processes = list(state.processes)
+
+    for proc in processes:
+        _stop_process(proc, kill=True)
+        _wait_for_process_shutdown(proc, timeout=1.0)
+
+    deadline = time.monotonic() + 2.0
+    while True:
+        with state.condition:
+            if state.active_operations == 0 and not state.processes:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(f"Job {job_id} is still busy and could not be deleted")
+            state.condition.wait(timeout=min(0.25, remaining))
+
+
+def _remove_tree_with_retries(job_dir: str) -> None:
+    for attempt in range(_DELETE_RETRY_ATTEMPTS):
+        try:
+            shutil.rmtree(job_dir)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            if attempt == _DELETE_RETRY_ATTEMPTS - 1:
+                raise RuntimeError(f"Failed to delete {job_dir}: {exc}") from exc
+            time.sleep(_DELETE_RETRY_DELAY * (attempt + 1))
+
+
 def get_or_transcode_preview(
     filepath: str,
     job_id: str,
@@ -333,191 +526,217 @@ def get_or_transcode_preview(
     can be created instantly without re-encoding.  Stored in the job directory
     so it gets cleaned up with the job.
     """
-    job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
-    os.makedirs(job_dir, exist_ok=True)
+    cancel_event = threading.Event()
+    _begin_job_operation(job_id, cancel_event)
+    try:
+        job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
+        os.makedirs(job_dir, exist_ok=True)
 
-    suffix = _preview_cache_key(filepath)
-    status_key = _preview_status_key(filepath, job_id)
-    preview_path = os.path.join(job_dir, f"preview_{suffix}.mp4")
+        suffix = _preview_cache_key(filepath)
+        status_key = _preview_status_key(filepath, job_id)
+        preview_path = os.path.join(job_dir, f"preview_{suffix}.mp4")
 
-    if os.path.isfile(preview_path):
-        _set_preview_status(
-            status_key,
-            {
-                "state": "done",
-                "ready": True,
-                "percent": 100.0,
-                "eta_seconds": 0.0,
-                "elapsed_seconds": 0.0,
-                "message": "",
-                "updated_at": time.time(),
-            },
-        )
-        return preview_path
-
-    with _get_preview_build_lock(preview_path):
         if os.path.isfile(preview_path):
+            _set_preview_status(
+                status_key,
+                {
+                    "state": "done",
+                    "ready": True,
+                    "percent": 100.0,
+                    "eta_seconds": 0.0,
+                    "elapsed_seconds": 0.0,
+                    "message": "",
+                    "updated_at": time.time(),
+                },
+            )
             return preview_path
 
-        info = probe_file(filepath)
-        has_video = info.get("video_codec") is not None
-        duration = max(0.0, float(info.get("duration", 0.0) or 0.0))
-
-        cmd = ["ffmpeg", "-loglevel", "warning", "-stats", "-y", "-i", filepath]
-
-        # Map video (if present) + ALL audio streams
-        if has_video:
-            cmd += ["-map", "0:v:0", "-map", "0:a", "-c:v", "copy"]
-        else:
-            cmd += ["-map", "0:a", "-vn"]
-
-        # Transcode each audio stream: passthrough if browser-compatible, else AAC
-        audio_streams = info.get("audio_streams", [])
-        for i, stream in enumerate(audio_streams):
-            codec = stream.get("codec", "unknown").lower()
-            if codec in _PASSTHROUGH_CODECS:
-                cmd += [f"-c:a:{i}", "copy"]
-            else:
-                cmd += [f"-c:a:{i}", "aac", f"-b:a:{i}", "192k"]
-
-        # If no per-stream info, fall back to global decision
-        if not audio_streams:
-            audio_codec = info.get("audio_codec", "unknown").lower()
-            if audio_codec in _PASSTHROUGH_CODECS:
-                cmd += ["-c:a", "copy"]
-            else:
-                cmd += ["-c:a", "aac", "-b:a", "192k"]
-
-        # Use a unique temp file per writer to avoid cross-request collisions.
-        tmp_path = f"{preview_path}.{uuid.uuid4().hex}.tmp"
-        cmd += ["-sn", "-f", "mp4", "-movflags", "+faststart", tmp_path]
-
-        start_ts = time.monotonic()
-        _set_preview_status(
-            status_key,
-            {
-                "state": "running",
-                "ready": False,
-                "percent": 0.0,
-                "eta_seconds": None,
-                "elapsed_seconds": 0.0,
-                "message": "Starting preview transcode...",
-                "updated_at": time.time(),
-            },
-        )
-
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            errors="replace",
-        )
-
-        stderr_lines: list[str] = []
-        stdout_lines: list[str] = []
-
-        try:
-            while True:
-                line = proc.stderr.readline() if proc.stderr else ""
-                if not line:
-                    if proc.poll() is not None:
-                        break
-                    continue
-                stderr_lines.append(line.rstrip())
-                out_seconds = _seconds_from_ffmpeg_time(line)
-                if out_seconds is None or duration <= 0:
-                    continue
-                elapsed = max(0.001, time.monotonic() - start_ts)
-                speed = out_seconds / elapsed
-                remaining = max(0.0, duration - out_seconds)
-                eta_seconds = remaining / speed if speed > 0 else None
-                percent = max(0.0, min(99.9, (out_seconds / duration) * 100.0))
-                _set_preview_status(
-                    status_key,
-                    {
-                        "state": "running",
-                        "ready": False,
-                        "percent": percent,
-                        "eta_seconds": eta_seconds,
-                        "elapsed_seconds": elapsed,
-                        "message": "Transcoding preview",
-                        "updated_at": time.time(),
-                    },
-                )
-            if proc.stderr:
-                remaining_stderr = proc.stderr.read()
-                if remaining_stderr:
-                    stderr_lines.append(remaining_stderr.rstrip())
-            if proc.stdout:
-                stdout_blob = proc.stdout.read()
-                if stdout_blob:
-                    stdout_lines.append(stdout_blob.rstrip())
-            proc.wait(timeout=600)
-        except subprocess.TimeoutExpired as exc:
-            proc.kill()
-            _set_preview_status(
-                status_key,
-                {
-                    "state": "error",
-                    "ready": False,
-                    "percent": 0.0,
-                    "eta_seconds": None,
-                    "elapsed_seconds": time.monotonic() - start_ts,
-                    "message": f"Preview transcode timed out: {exc}",
-                    "updated_at": time.time(),
-                },
-            )
-            if os.path.isfile(tmp_path):
-                os.remove(tmp_path)
-            raise RuntimeError(f"Preview transcode timed out: {exc}") from exc
-
-        if proc.returncode != 0:
-            if os.path.isfile(tmp_path):
-                os.remove(tmp_path)
-            detail = _compact_process_error("\n".join(stderr_lines), "\n".join(stdout_lines))
-            message = (
-                f"Preview transcode failed (exit {proc.returncode}): {detail}. "
-                f"Command: {subprocess.list2cmdline(cmd)}"
-            )
-            _set_preview_status(
-                status_key,
-                {
-                    "state": "error",
-                    "ready": False,
-                    "percent": 0.0,
-                    "eta_seconds": None,
-                    "elapsed_seconds": time.monotonic() - start_ts,
-                    "message": message,
-                    "updated_at": time.time(),
-                },
-            )
-            raise RuntimeError(
-                message
-            )
-
-        # On Windows, transient file locks can remain briefly after ffmpeg exits.
-        for attempt in range(5):
-            try:
-                os.replace(tmp_path, preview_path)
-                _set_preview_status(
-                    status_key,
-                    {
-                        "state": "done",
-                        "ready": True,
-                        "percent": 100.0,
-                        "eta_seconds": 0.0,
-                        "elapsed_seconds": time.monotonic() - start_ts,
-                        "message": "",
-                        "updated_at": time.time(),
-                    },
-                )
+        with _get_preview_build_lock(preview_path):
+            if os.path.isfile(preview_path):
                 return preview_path
-            except PermissionError as exc:
-                # Another writer may have already completed this preview.
-                if os.path.isfile(preview_path):
-                    if os.path.isfile(tmp_path):
-                        os.remove(tmp_path)
+            if cancel_event.is_set():
+                raise RuntimeError(f"Preview transcode cancelled for job {job_id}")
+
+            info = probe_file(filepath)
+            has_video = info.get("video_codec") is not None
+            duration = max(0.0, float(info.get("duration", 0.0) or 0.0))
+
+            cmd = ["ffmpeg", "-loglevel", "warning", "-stats", "-y", "-i", filepath]
+
+            if has_video:
+                cmd += ["-map", "0:v:0", "-map", "0:a", "-c:v", "copy"]
+            else:
+                cmd += ["-map", "0:a", "-vn"]
+
+            audio_streams = info.get("audio_streams", [])
+            for i, stream in enumerate(audio_streams):
+                codec = stream.get("codec", "unknown").lower()
+                if codec in _PASSTHROUGH_CODECS:
+                    cmd += [f"-c:a:{i}", "copy"]
+                else:
+                    cmd += [f"-c:a:{i}", "aac", f"-b:a:{i}", "192k"]
+
+            if not audio_streams:
+                audio_codec = info.get("audio_codec", "unknown").lower()
+                if audio_codec in _PASSTHROUGH_CODECS:
+                    cmd += ["-c:a", "copy"]
+                else:
+                    cmd += ["-c:a", "aac", "-b:a", "192k"]
+
+            tmp_path = f"{preview_path}.{uuid.uuid4().hex}.tmp"
+            cmd += ["-sn", "-f", "mp4", "-movflags", "+faststart", tmp_path]
+
+            start_ts = time.monotonic()
+            _set_preview_status(
+                status_key,
+                {
+                    "state": "running",
+                    "ready": False,
+                    "percent": 0.0,
+                    "eta_seconds": None,
+                    "elapsed_seconds": 0.0,
+                    "message": "Starting preview transcode...",
+                    "updated_at": time.time(),
+                },
+            )
+
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                errors="replace",
+            )
+            _register_job_process(job_id, proc)
+
+            stderr_lines: list[str] = []
+            stdout_lines: list[str] = []
+
+            try:
+                while True:
+                    if cancel_event.is_set() and proc.poll() is None:
+                        proc.terminate()
+                    line = proc.stderr.readline() if proc.stderr else ""
+                    if not line:
+                        if proc.poll() is not None:
+                            break
+                        continue
+                    stderr_lines.append(line.rstrip())
+                    out_seconds = _seconds_from_ffmpeg_time(line)
+                    if out_seconds is None or duration <= 0:
+                        continue
+                    elapsed = max(0.001, time.monotonic() - start_ts)
+                    speed = out_seconds / elapsed
+                    progress_ratio = max(0.0, min(1.0, out_seconds / duration))
+
+                    # ffmpeg can report media time at/near full duration before mux/finalize
+                    # work is complete; keep ETA and percent conservative until done is real.
+                    if progress_ratio >= 0.995:
+                        eta_seconds = None
+                        percent = 99.0
+                        message = "Finalizing preview file"
+                    else:
+                        remaining = max(0.0, duration - out_seconds)
+                        eta_seconds = remaining / speed if speed > 0 else None
+                        percent = max(0.0, min(98.9, progress_ratio * 100.0))
+                        message = "Transcoding preview"
+
+                    _set_preview_status(
+                        status_key,
+                        {
+                            "state": "running",
+                            "ready": False,
+                            "percent": percent,
+                            "eta_seconds": eta_seconds,
+                            "elapsed_seconds": elapsed,
+                            "message": message,
+                            "updated_at": time.time(),
+                        },
+                    )
+                if proc.stderr:
+                    remaining_stderr = proc.stderr.read()
+                    if remaining_stderr:
+                        stderr_lines.append(remaining_stderr.rstrip())
+                if proc.stdout:
+                    stdout_blob = proc.stdout.read()
+                    if stdout_blob:
+                        stdout_lines.append(stdout_blob.rstrip())
+                proc.wait(timeout=600)
+            except subprocess.TimeoutExpired as exc:
+                proc.kill()
+                _set_preview_status(
+                    status_key,
+                    {
+                        "state": "error",
+                        "ready": False,
+                        "percent": 0.0,
+                        "eta_seconds": None,
+                        "elapsed_seconds": time.monotonic() - start_ts,
+                        "message": f"Preview transcode timed out: {exc}",
+                        "updated_at": time.time(),
+                    },
+                )
+                _safe_remove_file(tmp_path)
+                raise RuntimeError(f"Preview transcode timed out: {exc}") from exc
+            finally:
+                _unregister_job_process(job_id, proc)
+                _close_pipe(proc.stdout)
+                _close_pipe(proc.stderr)
+
+            if cancel_event.is_set():
+                _safe_remove_file(tmp_path)
+                message = f"Preview transcode cancelled because job {job_id} is being deleted"
+                _set_preview_status(
+                    status_key,
+                    {
+                        "state": "error",
+                        "ready": False,
+                        "percent": 0.0,
+                        "eta_seconds": None,
+                        "elapsed_seconds": time.monotonic() - start_ts,
+                        "message": message,
+                        "updated_at": time.time(),
+                    },
+                )
+                raise RuntimeError(message)
+
+            if proc.returncode != 0:
+                _safe_remove_file(tmp_path)
+                detail = _compact_process_error("\n".join(stderr_lines), "\n".join(stdout_lines))
+                message = (
+                    f"Preview transcode failed (exit {proc.returncode}): {detail}. "
+                    f"Command: {subprocess.list2cmdline(cmd)}"
+                )
+                _set_preview_status(
+                    status_key,
+                    {
+                        "state": "error",
+                        "ready": False,
+                        "percent": 0.0,
+                        "eta_seconds": None,
+                        "elapsed_seconds": time.monotonic() - start_ts,
+                        "message": message,
+                        "updated_at": time.time(),
+                    },
+                )
+                raise RuntimeError(message)
+
+            _set_preview_status(
+                status_key,
+                {
+                    "state": "running",
+                    "ready": False,
+                    "percent": 99.5,
+                    "eta_seconds": None,
+                    "elapsed_seconds": time.monotonic() - start_ts,
+                    "message": "Finalizing preview file",
+                    "updated_at": time.time(),
+                },
+            )
+
+            for attempt in range(5):
+                try:
+                    os.replace(tmp_path, preview_path)
                     _set_preview_status(
                         status_key,
                         {
@@ -531,27 +750,44 @@ def get_or_transcode_preview(
                         },
                     )
                     return preview_path
-                if attempt == 4:
-                    if os.path.isfile(tmp_path):
-                        os.remove(tmp_path)
-                    _set_preview_status(
-                        status_key,
-                        {
-                            "state": "error",
-                            "ready": False,
-                            "percent": 0.0,
-                            "eta_seconds": None,
-                            "elapsed_seconds": time.monotonic() - start_ts,
-                            "message": f"Preview finalize failed for {preview_path}: {exc}",
-                            "updated_at": time.time(),
-                        },
-                    )
-                    raise RuntimeError(
-                        f"Preview finalize failed for {preview_path}: {exc}"
-                    ) from exc
-                time.sleep(0.1 * (attempt + 1))
+                except PermissionError as exc:
+                    if os.path.isfile(preview_path):
+                        _safe_remove_file(tmp_path)
+                        _set_preview_status(
+                            status_key,
+                            {
+                                "state": "done",
+                                "ready": True,
+                                "percent": 100.0,
+                                "eta_seconds": 0.0,
+                                "elapsed_seconds": time.monotonic() - start_ts,
+                                "message": "",
+                                "updated_at": time.time(),
+                            },
+                        )
+                        return preview_path
+                    if attempt == 4:
+                        _safe_remove_file(tmp_path)
+                        _set_preview_status(
+                            status_key,
+                            {
+                                "state": "error",
+                                "ready": False,
+                                "percent": 0.0,
+                                "eta_seconds": None,
+                                "elapsed_seconds": time.monotonic() - start_ts,
+                                "message": f"Preview finalize failed for {preview_path}: {exc}",
+                                "updated_at": time.time(),
+                            },
+                        )
+                        raise RuntimeError(
+                            f"Preview finalize failed for {preview_path}: {exc}"
+                        ) from exc
+                    time.sleep(0.1 * (attempt + 1))
 
-    return preview_path
+        return preview_path
+    finally:
+        _end_job_operation(job_id, cancel_event)
 
 
 def get_track_preview(
@@ -565,52 +801,80 @@ def get_track_preview(
     Returns a cached per-track file.  Since the master already contains
     browser-compatible codecs this is a pure remux (no re-encoding).
     """
-    suffix = _preview_cache_key(filepath)
-    rel = _audio_relative_index(filepath, audio_stream_index)
-    job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
-    track_path = os.path.join(job_dir, f"preview_{suffix}_trackabs{audio_stream_index}.mp4")
+    cancel_event = threading.Event()
+    _begin_job_operation(job_id, cancel_event)
+    try:
+        suffix = _preview_cache_key(filepath)
+        rel = _audio_relative_index(filepath, audio_stream_index)
+        job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
+        track_path = os.path.join(job_dir, f"preview_{suffix}_trackabs{audio_stream_index}.mp4")
 
-    if os.path.isfile(track_path):
-        return track_path
-
-    tmp_path = f"{track_path}.{uuid.uuid4().hex}.tmp.mp4"
-    cmd = [
-        "ffmpeg", "-loglevel", "warning", "-y",
-        "-i", master_path,
-        "-map", "0:v?", "-map", f"0:a:{rel}",
-        "-c", "copy",
-        "-f", "mp4",
-        "-movflags", "+faststart",
-        tmp_path,
-    ]
-
-    result = subprocess.run(cmd, capture_output=True, timeout=60)
-    if result.returncode != 0:
-        if os.path.isfile(tmp_path):
-            os.remove(tmp_path)
-        raise RuntimeError(
-            f"Track remux failed: {result.stderr.decode(errors='replace')}"
-        )
-
-    # Handle transient lock/collision behavior on Windows similarly to master preview finalization.
-    for attempt in range(5):
-        try:
-            os.replace(tmp_path, track_path)
+        if os.path.isfile(track_path):
             return track_path
-        except PermissionError as exc:
-            if os.path.isfile(track_path):
-                if os.path.isfile(tmp_path):
-                    os.remove(tmp_path)
-                return track_path
-            if attempt == 4:
-                if os.path.isfile(tmp_path):
-                    os.remove(tmp_path)
-                raise RuntimeError(
-                    f"Track preview finalize failed for {track_path}: {exc}"
-                ) from exc
-            time.sleep(0.1 * (attempt + 1))
 
-    return track_path
+        with _get_preview_build_lock(track_path):
+            # Avoid duplicate expensive remuxes when multiple browser range requests
+            # arrive before the first remux has finished.
+            if os.path.isfile(track_path):
+                return track_path
+
+            tmp_path = f"{track_path}.{uuid.uuid4().hex}.tmp.mp4"
+            cmd = [
+                "ffmpeg", "-loglevel", "warning", "-y",
+                "-i", master_path,
+                "-map", "0:v?", "-map", f"0:a:{rel}",
+                "-c", "copy",
+                "-f", "mp4",
+                "-movflags", "+faststart",
+                tmp_path,
+            ]
+
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            _register_job_process(job_id, proc)
+            stdout_blob = b""
+            stderr_blob = b""
+            try:
+                while True:
+                    if cancel_event.is_set() and proc.poll() is None:
+                        proc.terminate()
+                    try:
+                        stdout_blob, stderr_blob = proc.communicate(timeout=0.2)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+            finally:
+                _unregister_job_process(job_id, proc)
+                _close_pipe(proc.stdout)
+                _close_pipe(proc.stderr)
+
+            if cancel_event.is_set():
+                _safe_remove_file(tmp_path)
+                raise RuntimeError(f"Track preview remux cancelled because job {job_id} is being deleted")
+
+            if proc.returncode != 0:
+                _safe_remove_file(tmp_path)
+                raise RuntimeError(
+                    f"Track remux failed: {stderr_blob.decode(errors='replace')}"
+                )
+
+            for attempt in range(5):
+                try:
+                    os.replace(tmp_path, track_path)
+                    return track_path
+                except PermissionError as exc:
+                    if os.path.isfile(track_path):
+                        _safe_remove_file(tmp_path)
+                        return track_path
+                    if attempt == 4:
+                        _safe_remove_file(tmp_path)
+                        raise RuntimeError(
+                            f"Track preview finalize failed for {track_path}: {exc}"
+                        ) from exc
+                    time.sleep(0.1 * (attempt + 1))
+
+        return track_path
+    finally:
+        _end_job_operation(job_id, cancel_event)
 
 
 # Track in-progress background transcodes to avoid duplicates
@@ -620,6 +884,8 @@ _preview_build_locks: dict[str, threading.Lock] = {}
 _preview_build_lock_guard = threading.Lock()
 _preview_status: dict[str, dict] = {}
 _preview_status_guard = threading.Lock()
+_job_activity: dict[str, _JobActivityState] = {}
+_job_activity_guard = threading.Lock()
 
 
 def _set_preview_status(status_key: str, payload: dict) -> None:
@@ -672,19 +938,18 @@ def start_background_transcode(
     job_id: str,
 ) -> None:
     """Kick off a background transcode so the master preview is ready for seeking."""
-    suffix = _preview_cache_key(filepath)
     job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
-    preview_path = os.path.join(job_dir, f"preview_{suffix}.mp4")
+    preview_path = _preview_file_path(filepath, job_id)
 
     # Already done
     if os.path.isfile(preview_path):
         return
 
     with _transcode_lock_guard:
-        if suffix in _transcode_locks:
+        if preview_path in _transcode_locks:
             return  # Already in progress
         event = threading.Event()
-        _transcode_locks[suffix] = event
+        _transcode_locks[preview_path] = event
 
     status_key = _preview_status_key(filepath, job_id)
     _set_preview_status(
@@ -719,7 +984,7 @@ def start_background_transcode(
         finally:
             event.set()
             with _transcode_lock_guard:
-                _transcode_locks.pop(suffix, None)
+                _transcode_locks.pop(preview_path, None)
 
     threading.Thread(target=_run, daemon=True).start()
 
@@ -729,9 +994,7 @@ def get_preview_path_if_ready(
     job_id: str,
 ) -> str | None:
     """Return the master preview file path if it exists, or None."""
-    suffix = _preview_cache_key(filepath)
-    job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
-    preview_path = os.path.join(job_dir, f"preview_{suffix}.mp4")
+    preview_path = _preview_file_path(filepath, job_id)
     return preview_path if os.path.isfile(preview_path) else None
 
 
@@ -745,11 +1008,11 @@ def wait_for_preview(
     Returns the master preview file path if it becomes available within the
     timeout, or None if the transcode hasn't started or timed out.
     """
-    suffix = _preview_cache_key(filepath)
+    preview_path = _preview_file_path(filepath, job_id)
 
     # Check if there's a background transcode event to wait on
     with _transcode_lock_guard:
-        event = _transcode_locks.get(suffix)
+        event = _transcode_locks.get(preview_path)
 
     if event:
         event.wait(timeout=timeout)
@@ -769,6 +1032,7 @@ def cut_file(
     container: Optional[str],
     progress_cb: Callable[[str], None],
     audio_stream_index: int | None = None,
+    job_id: str | None = None,
     cancel_event: Optional[threading.Event] = None,
 ) -> str:
     """Cut a segment from a media file using ffmpeg.
@@ -844,48 +1108,59 @@ def cut_file(
 
     progress_cb(f"Cutting {os.path.basename(filepath)} [{in_point:.2f}s - {out_point:.2f}s]")
 
+    if job_id is not None:
+        _begin_job_operation(job_id, cancel_event)
+
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
+    if job_id is not None:
+        _register_job_process(job_id, proc)
 
-    # Parse stderr for time= progress lines
-    time_pattern = re.compile(r"time=(\d+):(\d+):(\d+)\.(\d+)")
-    duration = out_point - in_point
-    stderr_lines: list[str] = []
+    try:
+        time_pattern = re.compile(r"time=(\d+):(\d+):(\d+)\.(\d+)")
+        duration = out_point - in_point
+        stderr_lines: list[str] = []
 
-    for line in iter(proc.stderr.readline, ""):
-        if cancel_event and cancel_event.is_set():
-            proc.terminate()
-            proc.wait(timeout=10)
-            if os.path.isfile(output_path):
-                os.remove(output_path)
-            raise RuntimeError("Cut cancelled by client disconnect")
+        for line in iter(proc.stderr.readline, ""):
+            if cancel_event and cancel_event.is_set():
+                proc.terminate()
+                proc.wait(timeout=10)
+                if os.path.isfile(output_path):
+                    _safe_remove_file(output_path)
+                raise RuntimeError("Cut cancelled because job was deleted or client disconnected")
 
-        match = time_pattern.search(line)
-        if match:
-            h, m, s, cs = match.groups()
-            current = int(h) * 3600 + int(m) * 60 + int(s) + int(cs) / 100
-            if duration > 0:
-                pct = min(100.0, (current / duration) * 100)
-                progress_cb(f"Progress: {pct:.1f}%")
-        else:
-            stripped = line.strip()
-            if stripped:
-                stderr_lines.append(stripped)
-                progress_cb(f"[ffmpeg] {stripped}")
+            match = time_pattern.search(line)
+            if match:
+                h, m, s, cs = match.groups()
+                current = int(h) * 3600 + int(m) * 60 + int(s) + int(cs) / 100
+                if duration > 0:
+                    pct = min(100.0, (current / duration) * 100)
+                    progress_cb(f"Progress: {pct:.1f}%")
+            else:
+                stripped = line.strip()
+                if stripped:
+                    stderr_lines.append(stripped)
+                    progress_cb(f"[ffmpeg] {stripped}")
 
-    proc.wait()
-    if proc.returncode != 0:
-        detail = "; ".join(stderr_lines[-5:]) if stderr_lines else "no details"
-        raise RuntimeError(
-            f"ffmpeg cut failed (exit {proc.returncode}): {detail}"
-        )
+        proc.wait()
+        if proc.returncode != 0:
+            detail = "; ".join(stderr_lines[-5:]) if stderr_lines else "no details"
+            raise RuntimeError(
+                f"ffmpeg cut failed (exit {proc.returncode}): {detail}"
+            )
 
-    progress_cb(f"Saved {os.path.basename(output_path)}")
-    return output_path
+        progress_cb(f"Saved {os.path.basename(output_path)}")
+        return output_path
+    finally:
+        if job_id is not None:
+            _unregister_job_process(job_id, proc)
+            _end_job_operation(job_id, cancel_event)
+        _close_pipe(proc.stdout)
+        _close_pipe(proc.stderr)
 
 
 def generate_thumbnail_strip(filepath: str, count: int = 30) -> bytes:
@@ -1004,7 +1279,9 @@ def list_jobs() -> list[dict]:
 def delete_job(job_id: str) -> None:
     """Delete a job and all its files."""
     job_dir = get_job_dir(job_id)
-    shutil.rmtree(job_dir, ignore_errors=True)
+    _cancel_job_operations(job_id)
+    _remove_tree_with_retries(job_dir)
+    _clear_job_runtime_state(job_id)
 
 
 def cleanup_old_jobs() -> None:
@@ -1018,18 +1295,20 @@ def cleanup_old_jobs() -> None:
         job_dir = os.path.join(CUTTER_JOBS_DIR, name)
         meta_path = os.path.join(job_dir, "job.json")
         try:
+            if _job_has_active_operations(name):
+                continue
             if os.path.isfile(meta_path):
                 with open(meta_path) as f:
                     meta = json.load(f)
                 created = datetime.fromisoformat(meta["created_at"])
                 if (now - created).total_seconds() > CUTTER_JOB_TTL:
-                    shutil.rmtree(job_dir, ignore_errors=True)
+                    delete_job(name)
                     logger.info("Cleaned up expired job %s", name)
             else:
                 # No metadata — check dir mtime
                 mtime = datetime.fromtimestamp(os.path.getmtime(job_dir), tz=timezone.utc)
                 if (now - mtime).total_seconds() > CUTTER_JOB_TTL:
-                    shutil.rmtree(job_dir, ignore_errors=True)
+                    delete_job(name)
         except Exception:
             logger.warning("Error checking job %s for cleanup", name, exc_info=True)
 

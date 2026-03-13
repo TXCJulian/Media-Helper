@@ -34,13 +34,13 @@ describe('MediaPlayer', () => {
   it('exits transcoding state when media load fails', () => {
     const { container } = render(<MediaPlayer {...baseProps()} />)
 
-    expect(screen.getByText(/Transcoding for preview/)).toBeTruthy()
+    expect(screen.getByText(/Transcoding preview/)).toBeTruthy()
 
     const video = container.querySelector('video')
     expect(video).toBeTruthy()
     fireEvent.error(video as HTMLVideoElement)
 
-    expect(screen.queryByText(/Transcoding for preview/)).toBeNull()
+    expect(screen.queryByText(/Transcoding preview/)).toBeNull()
     expect(screen.getByText('Unknown media error')).toBeTruthy()
   })
 
@@ -53,11 +53,11 @@ describe('MediaPlayer', () => {
 
     rerender(<MediaPlayer {...baseProps({ streamUrl: '/cutter/stream/demo?audio_stream=2' })} />)
     expect(screen.queryByText('Unknown media error')).toBeNull()
-    expect(screen.getByText(/Transcoding for preview/)).toBeTruthy()
+    expect(screen.getByText(/Transcoding preview/)).toBeTruthy()
 
     const secondVideo = container.querySelector('video')
     fireEvent.canPlay(secondVideo as HTMLVideoElement)
-    expect(screen.queryByText(/Transcoding for preview/)).toBeNull()
+    expect(screen.queryByText(/Transcoding preview/)).toBeNull()
   })
 
   it('shows percent and eta when provided', () => {
@@ -70,6 +70,8 @@ describe('MediaPlayer', () => {
       />,
     )
 
-    expect(screen.getByText('Transcoding for preview... 42.3% • ~17s remaining')).toBeTruthy()
+    expect(screen.getByText('Transcoding preview')).toBeTruthy()
+    expect(screen.getByText('42.3%')).toBeTruthy()
+    expect(screen.getByText('ETA 17s')).toBeTruthy()
   })
 })
