@@ -87,6 +87,7 @@ export interface ProbeResult {
   bitrate: number
   width: number | null
   height: number | null
+  display_aspect_ratio?: string | null
   sample_rate: number
   needs_transcoding: boolean
   audio_streams: AudioStreamInfo[]

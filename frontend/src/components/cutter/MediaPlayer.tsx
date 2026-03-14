@@ -7,6 +7,9 @@ interface MediaPlayerProps {
   isVideo: boolean
   peaks: number[]
   duration: number
+  sourceAspectRatio?: string | null
+  videoWidth?: number | null
+  videoHeight?: number | null
   inPoint: number
   outPoint: number
   onInPointChange: (time: number) => void
@@ -42,6 +45,9 @@ export default function MediaPlayer({
   isVideo,
   peaks,
   duration,
+  sourceAspectRatio,
+  videoWidth,
+  videoHeight,
   inPoint,
   outPoint,
   onInPointChange,
@@ -67,7 +73,15 @@ export default function MediaPlayer({
   })
   const [muted, setMuted] = useState(false)
   const [isMediaReady, setIsMediaReady] = useState(!needsTranscoding)
+  const [loadedAspectRatio, setLoadedAspectRatio] = useState<string | null>(null)
   const isTranscoding = needsTranscoding && !isMediaReady
+  const fallbackAspectRatio =
+    sourceAspectRatio && sourceAspectRatio.trim().length > 0
+      ? sourceAspectRatio
+      : videoWidth != null && videoHeight != null && videoWidth > 0 && videoHeight > 0
+      ? `${videoWidth} / ${videoHeight}`
+      : '16 / 9'
+  const videoAspectRatio = loadedAspectRatio ?? fallbackAspectRatio
 
   useEffect(() => {
     inPointRef.current = inPoint
@@ -150,6 +164,7 @@ export default function MediaPlayer({
   // Reset ready/error state and force media reload when stream URL changes
   useEffect(() => {
     setMediaError('')
+    setLoadedAspectRatio(null)
     if (needsTranscoding) setIsMediaReady(false)
     const el = mediaRef.current
     if (el) {
@@ -202,6 +217,14 @@ export default function MediaPlayer({
     enforceTrimBounds(el)
     setCurrentTime(el.currentTime)
   }, [enforceTrimBounds])
+
+  const handleLoadedMetadata = useCallback(() => {
+    const el = mediaRef.current
+    if (!(el instanceof HTMLVideoElement)) return
+    if (el.videoWidth > 0 && el.videoHeight > 0) {
+      setLoadedAspectRatio(`${el.videoWidth} / ${el.videoHeight}`)
+    }
+  }, [])
 
   const handleEnded = useCallback(() => {
     const el = mediaRef.current
@@ -329,11 +352,12 @@ export default function MediaPlayer({
             ref={mediaRef as React.RefObject<HTMLVideoElement>}
             src={streamUrl}
             className="w-full cursor-pointer rounded-xl bg-black"
-            style={{ aspectRatio: '16 / 9' }}
+            style={{ aspectRatio: videoAspectRatio }}
             onClick={isTranscoding ? undefined : togglePlay}
             onPause={handlePause}
             onTimeUpdate={handleTimeUpdate}
             onEnded={handleEnded}
+            onLoadedMetadata={handleLoadedMetadata}
             onError={handleMediaError}
             onCanPlay={() => {
               setMediaError('')

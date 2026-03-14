@@ -190,6 +190,21 @@ def probe_file(filepath: str) -> dict:
         None,
     )
 
+    display_aspect_ratio = None
+    if video_stream:
+        raw_dar = str(video_stream.get("display_aspect_ratio") or "").strip()
+        if raw_dar and raw_dar not in {"0:1", "N/A"}:
+            parts = raw_dar.split(":", 1)
+            if len(parts) == 2:
+                try:
+                    dar_width = int(parts[0])
+                    dar_height = int(parts[1])
+                except ValueError:
+                    display_aspect_ratio = None
+                else:
+                    if dar_width > 0 and dar_height > 0:
+                        display_aspect_ratio = f"{dar_width} / {dar_height}"
+
     audio_streams = [
         {
             "index": int(s["index"]),
@@ -212,6 +227,7 @@ def probe_file(filepath: str) -> dict:
         "bitrate": int(fmt.get("bit_rate", 0)),
         "width": int(video_stream["width"]) if video_stream and "width" in video_stream else None,
         "height": int(video_stream["height"]) if video_stream and "height" in video_stream else None,
+        "display_aspect_ratio": display_aspect_ratio,
         "sample_rate": first_audio["sample_rate"] if first_audio else 0,
         "audio_streams": audio_streams,
     }

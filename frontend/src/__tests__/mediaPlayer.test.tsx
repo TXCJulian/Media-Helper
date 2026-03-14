@@ -74,4 +74,54 @@ describe('MediaPlayer', () => {
     expect(screen.getByText('42.3%')).toBeTruthy()
     expect(screen.getByText('ETA 17s')).toBeTruthy()
   })
+
+  it('uses source video aspect ratio when dimensions are available', () => {
+    const { container } = render(
+      <MediaPlayer
+        {...baseProps({
+          videoWidth: 1920,
+          videoHeight: 800,
+        })}
+      />,
+    )
+
+    const video = container.querySelector('video')
+    expect(video).toBeTruthy()
+    expect(video?.getAttribute('style')).toContain('aspect-ratio: 1920 / 800')
+  })
+
+  it('updates aspect ratio from loaded transcoded video metadata', () => {
+    const { container } = render(
+      <MediaPlayer
+        {...baseProps({
+          videoWidth: 720,
+          videoHeight: 576,
+        })}
+      />,
+    )
+
+    const video = container.querySelector('video') as HTMLVideoElement | null
+    expect(video).toBeTruthy()
+    Object.defineProperty(video, 'videoWidth', { configurable: true, value: 1920 })
+    Object.defineProperty(video, 'videoHeight', { configurable: true, value: 804 })
+    fireEvent.loadedMetadata(video as HTMLVideoElement)
+
+    expect(video?.getAttribute('style')).toContain('aspect-ratio: 1920 / 804')
+  })
+
+  it('prefers source display aspect ratio over raw dimensions before metadata loads', () => {
+    const { container } = render(
+      <MediaPlayer
+        {...baseProps({
+          sourceAspectRatio: '16 / 9',
+          videoWidth: 720,
+          videoHeight: 576,
+        })}
+      />,
+    )
+
+    const video = container.querySelector('video')
+    expect(video).toBeTruthy()
+    expect(video?.getAttribute('style')).toContain('aspect-ratio: 16 / 9')
+  })
 })

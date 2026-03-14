@@ -722,6 +722,9 @@ export default function CutterPanel({
                 isVideo={isVideo}
                 peaks={peaks}
                 duration={probe.duration}
+                sourceAspectRatio={probe.display_aspect_ratio}
+                videoWidth={probe.width}
+                videoHeight={probe.height}
                 inPoint={form.inPoint}
                 outPoint={form.outPoint}
                 onInPointChange={(t) => update('inPoint', t)}
