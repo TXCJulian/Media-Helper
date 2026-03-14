@@ -479,6 +479,12 @@ export default function CutterPanel({
     }
     return defaultAudioStreamIndex
   })()
+  const streamAudioIndex = (() => {
+    if (selectedAudioStreamIndex == null) return null
+    // For original playback, skip audio_stream on default track to avoid costly remux.
+    if (!transcodePreviewEnabled && selectedAudioStreamIndex === defaultAudioStreamIndex) return null
+    return selectedAudioStreamIndex
+  })()
 
   const compatibilityReport = hasFile ? getBrowserCompatibilityReport(filePath, probe) : null
   const compatibilityMessage = compatibilityReport?.hasIssues
@@ -712,7 +718,7 @@ export default function CutterPanel({
 
             <FormSection label="Preview">
               <MediaPlayer
-                streamUrl={getStreamUrl(fileId, selectedAudioStreamIndex, transcodePreviewEnabled)}
+                streamUrl={getStreamUrl(fileId, streamAudioIndex, transcodePreviewEnabled)}
                 isVideo={isVideo}
                 peaks={peaks}
                 duration={probe.duration}

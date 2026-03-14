@@ -19,12 +19,10 @@ from app.fs_utils import collision_safe_path
 
 logger = logging.getLogger(__name__)
 
-# Ensure jobs directory exists
-os.makedirs(CUTTER_JOBS_DIR, exist_ok=True)
-
 # Codecs that need transcoding for browser preview playback
 _TRANSCODE_CODECS = {"ac3", "eac3", "dts", "dts_hd", "truehd"}
 _PASSTHROUGH_CODECS = {"aac", "mp3", "opus", "vorbis", "flac", "pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_f32le"}
+_BROWSER_VIDEO_CODECS = {"h264", "hevc", "h265", "vp8", "vp9", "av1"}
 
 # File extensions browsers can play natively
 _BROWSER_EXTENSIONS = {".mp4", ".m4a", ".m4v", ".mov", ".webm", ".ogg", ".mp3", ".wav", ".aac", ".flac"}
@@ -232,10 +230,10 @@ def generate_waveform(filepath: str, num_peaks: int = 2000) -> list[float]:
     return _waveform_cached(filepath, mtime, num_peaks)
 
 
-def needs_transcoding(audio_codec: str, filepath: str = "") -> bool:
+def needs_transcoding(audio_codec: str, filepath: str = "", video_codec: str = "") -> bool:
     """Return True if the file needs transcoding for browser preview.
 
-    Checks both the file extension and the audio codec. Browsers only
+    Checks file extension plus audio/video codecs. Browsers only
     support a limited set of containers (MP4, WebM, etc.) — files in
     unsupported containers (MKV, AVI, etc.) must always be transcoded.
     """
@@ -249,8 +247,16 @@ def needs_transcoding(audio_codec: str, filepath: str = "") -> bool:
     if codec in _TRANSCODE_CODECS:
         return True
     if codec in _PASSTHROUGH_CODECS:
-        return False
-    return True
+        pass
+    else:
+        return True
+
+    if video_codec:
+        vcodec = video_codec.lower()
+        if vcodec and vcodec not in _BROWSER_VIDEO_CODECS:
+            return True
+
+    return False
 
 
 def transcode_for_preview(filepath: str, audio_stream_index: int | None = None) -> subprocess.Popen:
@@ -282,8 +288,12 @@ def transcode_for_preview(filepath: str, audio_stream_index: int | None = None) 
     elif has_video:
         pass  # default mapping picks first video + first audio
 
+    video_codec = str(info.get("video_codec") or "").lower()
     if has_video:
-        cmd += ["-c:v", "copy"]
+        if video_codec in _BROWSER_VIDEO_CODECS:
+            cmd += ["-c:v", "copy"]
+        else:
+            cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"]
     else:
         cmd += ["-vn"]
 
@@ -563,8 +573,13 @@ def get_or_transcode_preview(
 
             cmd = ["ffmpeg", "-loglevel", "warning", "-stats", "-y", "-i", filepath]
 
+            video_codec = str(info.get("video_codec") or "").lower()
             if has_video:
-                cmd += ["-map", "0:v:0", "-map", "0:a?", "-c:v", "copy"]
+                cmd += ["-map", "0:v:0", "-map", "0:a?"]
+                if video_codec in _BROWSER_VIDEO_CODECS:
+                    cmd += ["-c:v", "copy"]
+                else:
+                    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"]
             else:
                 cmd += ["-map", "0:a", "-vn"]
 
@@ -807,6 +822,7 @@ def get_track_preview(
         suffix = _preview_cache_key(filepath)
         rel = _audio_relative_index(filepath, audio_stream_index)
         job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
+        os.makedirs(job_dir, exist_ok=True)
         track_path = os.path.join(job_dir, f"preview_{suffix}_trackabs{audio_stream_index}.mp4")
 
         if os.path.isfile(track_path):
@@ -834,14 +850,15 @@ def get_track_preview(
             stdout_blob = b""
             stderr_blob = b""
             try:
-                while True:
-                    if cancel_event.is_set() and proc.poll() is None:
+                while proc.poll() is None:
+                    if cancel_event.is_set():
                         proc.terminate()
-                    try:
-                        stdout_blob, stderr_blob = proc.communicate(timeout=0.2)
                         break
+                    try:
+                        proc.wait(timeout=0.25)
                     except subprocess.TimeoutExpired:
                         continue
+                stdout_blob, stderr_blob = proc.communicate()
             finally:
                 _unregister_job_process(job_id, proc)
                 _close_pipe(proc.stdout)
@@ -893,6 +910,7 @@ def get_track_remux(
         suffix = _preview_cache_key(filepath)
         rel = _audio_relative_index(filepath, audio_stream_index)
         job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
+        os.makedirs(job_dir, exist_ok=True)
 
         ext = os.path.splitext(filepath)[1].lower()
         force_format: str | None = None
@@ -930,14 +948,15 @@ def get_track_remux(
             stdout_blob = b""
             stderr_blob = b""
             try:
-                while True:
-                    if cancel_event.is_set() and proc.poll() is None:
+                while proc.poll() is None:
+                    if cancel_event.is_set():
                         proc.terminate()
-                    try:
-                        stdout_blob, stderr_blob = proc.communicate(timeout=0.2)
                         break
+                    try:
+                        proc.wait(timeout=0.25)
                     except subprocess.TimeoutExpired:
                         continue
+                stdout_blob, stderr_blob = proc.communicate()
             finally:
                 _unregister_job_process(job_id, proc)
                 _close_pipe(proc.stdout)
@@ -1249,7 +1268,6 @@ def cut_file(
 
     try:
         time_pattern = re.compile(r"time=(\d+):(\d+):(\d+)\.(\d+)")
-        duration = out_point - in_point
         stderr_lines: list[str] = []
 
         stderr_iter = iter(proc.stderr.readline, "") if proc.stderr else iter([])

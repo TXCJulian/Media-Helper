@@ -23,6 +23,9 @@ VALID_CUTTER_EXT = set(
 )
 CUTTER_JOBS_DIR = os.getenv("CUTTER_JOBS_DIR", "/tmp/cutter-jobs")
 CUTTER_JOB_TTL = int(os.getenv("CUTTER_JOB_TTL", "86400"))
+CUTTER_MAX_DIRECT_REMUX_BYTES = int(
+    os.getenv("CUTTER_MAX_DIRECT_REMUX_BYTES", str(1024 * 1024 * 1024))
+)
 
 _VALID_FEATURES = {"episodes", "music", "lyrics", "cutter"}
 _features_raw = os.getenv("ENABLED_FEATURES", "episodes,music")

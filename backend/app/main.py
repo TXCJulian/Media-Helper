@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, Form, UploadFile, Request, HTTPException
+from fastapi import FastAPI, Query, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
@@ -7,8 +7,10 @@ import mimetypes
 import os
 import logging
 import queue
+import re
 import shutil
 import threading
+from urllib.parse import unquote
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -19,6 +21,7 @@ from app.config import (
     VALID_MUSIC_EXT,
     VALID_CUTTER_EXT,
     CUTTER_JOBS_DIR,
+    CUTTER_MAX_DIRECT_REMUX_BYTES,
     TRANSCRIBER_URL,
     ALLOWED_ORIGINS,
     ENABLED_FEATURES,
@@ -134,6 +137,7 @@ async def lifespan(app: FastAPI):
     # Start cutter upload cleanup task only if cutter feature is enabled
     cleanup_task = None
     if "cutter" in ENABLED_FEATURES:
+        os.makedirs(CUTTER_JOBS_DIR, exist_ok=True)
         cleanup_task = asyncio.create_task(_cleanup_cutter_jobs())
 
     yield
@@ -557,7 +561,9 @@ def cutter_probe(
     try:
         info = probe_file(resolved)
         info["needs_transcoding"] = needs_transcoding(
-            info.get("audio_codec", "unknown"), resolved
+            info.get("audio_codec", "unknown"),
+            resolved,
+            info.get("video_codec", "") or "",
         )
         return info
     except RuntimeError as e:
@@ -635,7 +641,14 @@ def cutter_stream(
                 ),
             )
 
-    needs_tx = needs_transcoding(probe.get("audio_codec", "unknown"), resolved)
+    needs_tx = needs_transcoding(
+        probe.get("audio_codec", "unknown"),
+        resolved,
+        probe.get("video_codec", "") or "",
+    )
+    source_file_size = os.path.getsize(resolved)
+    audio_streams = probe.get("audio_streams", [])
+    default_audio_index = audio_streams[0].get("index") if audio_streams else None
 
     if transcode and needs_tx:
         if not job_id:
@@ -665,7 +678,17 @@ def cutter_stream(
                 raise HTTPException(status_code=500, detail=str(e))
         else:
             resolved = master_path
-    elif audio_stream is not None and job_id:
+    elif (
+        audio_stream is not None
+        and job_id
+        and not needs_tx
+        and audio_stream != default_audio_index
+        and source_file_size <= CUTTER_MAX_DIRECT_REMUX_BYTES
+    ):
+        # Only remux for browser-native containers (MP4, WebM, etc.) where
+        # non-default track isolation is meaningful and expected to be quick.
+        # Files that need transcoding (MKV, AVI, etc.) or large originals are
+        # served raw so preview startup doesn't block on a full-file remux.
         try:
             resolved = get_track_remux(resolved, audio_stream, job_id)
         except RuntimeError as e:
@@ -682,13 +705,14 @@ def cutter_stream(
     range_header = request.headers.get("range")
     if range_header:
         # Parse Range: bytes=X-Y
+        _range_re = re.match(r"bytes=(\d*)-(\d*)", range_header.strip())
+        if not _range_re:
+            raise HTTPException(status_code=416, detail="Malformed Range header")
         try:
-            range_match = range_header.strip().replace("bytes=", "")
-            parts = range_match.split("-", 1)
-            start = int(parts[0]) if parts[0] else 0
-            end = int(parts[1]) if parts[1] else file_size - 1
+            start = int(_range_re.group(1)) if _range_re.group(1) else 0
+            end = int(_range_re.group(2)) if _range_re.group(2) else file_size - 1
             end = min(end, file_size - 1)
-        except (ValueError, IndexError):
+        except ValueError:
             raise HTTPException(status_code=416, detail="Malformed Range header")
 
         if start >= file_size or start > end:
@@ -755,7 +779,11 @@ def cutter_preview_status(file_id: str):
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    if not needs_transcoding(probe.get("audio_codec", "unknown"), resolved):
+    if not needs_transcoding(
+        probe.get("audio_codec", "unknown"),
+        resolved,
+        probe.get("video_codec", "") or "",
+    ):
         return {
             "state": "done",
             "ready": True,
@@ -773,11 +801,14 @@ def cutter_preview_status(file_id: str):
 
 
 @app.post("/cutter/upload")
-async def cutter_upload(file: UploadFile):
+async def cutter_upload(request: Request):
     require_feature("cutter")
 
+    raw_name = request.headers.get("x-file-name") or "unnamed"
+    raw_name = unquote(raw_name)
+
     # Sanitize filename: strip path components and non-printable characters
-    filename = os.path.basename(file.filename or "unnamed")
+    filename = os.path.basename(raw_name)
     filename = "".join(c for c in filename if c.isprintable())
     if not filename or filename in ('.', '..'):
         filename = "unnamed"
@@ -800,16 +831,17 @@ async def cutter_upload(file: UploadFile):
     try:
         bytes_written = 0
         with open(dest, "wb") as f:
-            while True:
-                chunk = await file.read(65536)
+            async for chunk in request.stream():
                 if not chunk:
-                    break
+                    continue
                 bytes_written += len(chunk)
                 if bytes_written > max_upload_size:
                     raise HTTPException(
                         status_code=413, detail="File exceeds 50 GB size limit"
                     )
                 f.write(chunk)
+        if bytes_written == 0:
+            raise HTTPException(status_code=422, detail="No file data received")
     except HTTPException:
         delete_job(job_id)
         raise
@@ -820,7 +852,9 @@ async def cutter_upload(file: UploadFile):
     try:
         probe = probe_file(dest)
         probe["needs_transcoding"] = needs_transcoding(
-            probe.get("audio_codec", "unknown"), dest
+            probe.get("audio_codec", "unknown"),
+            dest,
+            probe.get("video_codec", "") or "",
         )
         meta = load_job_metadata(job_id)
         if meta:
@@ -853,7 +887,11 @@ def cutter_create_job(
 
     try:
         probe = probe_file(resolved)
-        browser_ready = not needs_transcoding(probe.get("audio_codec", "unknown"), resolved)
+        browser_ready = not needs_transcoding(
+            probe.get("audio_codec", "unknown"),
+            resolved,
+            probe.get("video_codec", "") or "",
+        )
         meta = load_job_metadata(job_id)
         if meta:
             meta["browser_ready"] = browser_ready

@@ -68,5 +68,5 @@ export function getBrowserCompatibilityMessage(report: BrowserCompatibilityRepor
   if (report.videoIssue) reasons.push(report.videoIssue)
   if (report.audioIssues.length > 0) reasons.push(`Audio track(s) ${report.audioIssues.join(', ')}`)
 
-  return `${reasons.join(' / ')} may not be natively supported by your browser. If playback has no video/audio and you need it, enable transcoding for this file.`
+  return `${reasons.join(' / ')} may not be natively supported by your browser. If playback has no video/audio and you need it for cutting, enable transcoding for this file here.`
 }

@@ -146,16 +146,20 @@ export default function App() {
     )
   }
 
-  return (
-    <CutterPanel
-      onLog={handleCutterLog}
-      onError={handleCutterError}
-      onBack={goHome}
-      log={cutterLog}
-      error={cutterError}
-      hasStarted={cutterStarted}
-      persisted={cutterState}
-      onPersistedChange={setCutterState}
-    />
-  )
+  if (activeView === 'cutter') {
+    return (
+      <CutterPanel
+        onLog={handleCutterLog}
+        onError={handleCutterError}
+        onBack={goHome}
+        log={cutterLog}
+        error={cutterError}
+        hasStarted={cutterStarted}
+        persisted={cutterState}
+        onPersistedChange={setCutterState}
+      />
+    )
+  }
+
+  return null
 }

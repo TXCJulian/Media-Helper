@@ -82,6 +82,8 @@ export function uploadFile(
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', new URL('/cutter/upload', API_BASE).href)
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream')
+    xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name))
 
     if (onProgress) {
       xhr.upload.addEventListener('progress', (e) => {
@@ -111,9 +113,7 @@ export function uploadFile(
     xhr.addEventListener('error', () => reject(new Error('Upload failed')))
     xhr.addEventListener('abort', () => reject(new Error('Upload aborted')))
 
-    const formData = new FormData()
-    formData.append('file', file)
-    xhr.send(formData)
+    xhr.send(file)
   })
 }
 
