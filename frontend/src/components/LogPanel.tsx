@@ -4,7 +4,7 @@ interface LogPanelProps {
   log: string[]
   error: string
   hasStarted: boolean
-  color?: 'blue' | 'indigo' | 'rose'
+  color?: 'blue' | 'indigo' | 'rose' | 'emerald'
   idleMessage?: string
 }
 
@@ -12,12 +12,14 @@ const iconColorClass = {
   blue: 'text-[var(--accent)]',
   indigo: 'text-[var(--accent-2)]',
   rose: 'text-[var(--accent-3)]',
+  emerald: 'text-[var(--accent-4)]',
 }
 
 const activeTextClass = {
   blue: 'text-[var(--accent-light)]',
   indigo: 'text-[var(--accent-2)]',
   rose: 'text-[var(--accent-3)]',
+  emerald: 'text-[var(--accent-4)]',
 }
 
 export default function LogPanel({
@@ -47,7 +49,7 @@ export default function LogPanel({
           Output
         </span>
       </div>
-      <div ref={bodyRef} className="max-h-[180px] overflow-auto bg-[rgba(0,0,0,0.25)] px-5 py-4">
+      <div ref={bodyRef} className="max-h-[420px] overflow-auto bg-[rgba(0,0,0,0.25)] px-5 py-4">
         <pre
           className={`font-[JetBrains_Mono,monospace] text-[0.78rem] leading-[1.7] whitespace-pre ${
             error

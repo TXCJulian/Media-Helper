@@ -185,7 +185,9 @@ def rename_episodes(
         if ep_num is not None and ep_num in ep_by_num and ep_num not in used_nums:
             ep = ep_by_num[ep_num]
             used_nums.add(ep_num)
-            assignments.append((f, ep["num"], ep["title"], -1.0))  # -1.0 signals pattern-match
+            assignments.append(
+                (f, ep["num"], ep["title"], -1.0)
+            )  # -1.0 signals pattern-match
         else:
             assignments.append((f, None, None, 0.0))
 
@@ -208,7 +210,9 @@ def rename_episodes(
                 used_nums.add(ep_num)
                 # Remove from unused pool too
                 unused = [e for e in unused if e["num"] != ep_num]
-                assignments.append((f, ep["num"], ep["title"], -2.0))  # -2.0 signals fallback-pattern
+                assignments.append(
+                    (f, ep["num"], ep["title"], -2.0)
+                )  # -2.0 signals fallback-pattern
             else:
                 assignments.append((f, None, None, best_score))
 
@@ -218,7 +222,12 @@ def rename_episodes(
         for i, (f, num, title, score) in enumerate(assignments):
             if num is None and leftovers:
                 ep = leftovers.pop(0)
-                assignments[i] = (f, ep["num"], ep["title"], -3.0)  # -3.0 signals sequential
+                assignments[i] = (
+                    f,
+                    ep["num"],
+                    ep["title"],
+                    -3.0,
+                )  # -3.0 signals sequential
 
     renamed_count = 0
     already_correct_count = 0
@@ -253,9 +262,7 @@ def rename_episodes(
         else:
             dst = collision_safe_path(dst)
             if not dry_run:
-                logs.append(
-                    f"[RENAME]\t'{f}' -> {os.path.basename(dst)}  {match_info}"
-                )
+                logs.append(f"[RENAME]\t'{f}' -> {os.path.basename(dst)}  {match_info}")
                 renamed_count += 1
                 os.rename(src, dst)
                 old_nfo = os.path.splitext(src)[0] + ".nfo"
