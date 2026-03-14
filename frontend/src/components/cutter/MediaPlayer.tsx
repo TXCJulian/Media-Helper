@@ -40,6 +40,48 @@ function formatEta(seconds: number): string {
   return `${s}s`
 }
 
+const MEDIA_ERROR_CODE_LABELS = ['', 'ABORTED', 'NETWORK', 'DECODE', 'SRC_NOT_SUPPORTED']
+
+const MEDIA_ERROR_HINTS: Array<{ match: RegExp; hint: string }> = [
+  {
+    match: /DEMUXER_ERROR_NO_SUPPORTED_STREAMS|no supported streams/i,
+    hint: 'This file likely uses a video or audio codec your browser cannot decode. Try enabling Transcoded Preview.',
+  },
+  {
+    match: /SRC_NOT_SUPPORTED|NotSupportedError/i,
+    hint: 'The browser cannot play this media source directly. Try enabling Transcoded Preview.',
+  },
+  {
+    match: /DECODE|decode|corrupt|invalid data/i,
+    hint: 'The media stream could not be decoded. The file may be damaged or use an unsupported codec profile.',
+  },
+  {
+    match: /NETWORK|ERR_|Failed to fetch/i,
+    hint: 'The stream could not be loaded due to a network or server issue. Retry in a moment.',
+  },
+]
+
+function getFriendlyMediaError(technical: string, code: number): string {
+  for (const entry of MEDIA_ERROR_HINTS) {
+    if (entry.match.test(technical)) return entry.hint
+  }
+
+  if (code === 4) {
+    return 'This media format is not supported by your browser. Try enabling Transcoded Preview.'
+  }
+  if (code === 3) {
+    return 'The browser could not decode the media stream. The codec or profile may not be supported.'
+  }
+  if (code === 2) {
+    return 'A network error interrupted media playback. Please retry.'
+  }
+  if (code === 1) {
+    return 'Playback was aborted before the stream became ready.'
+  }
+
+  return 'Playback failed for this media source.'
+}
+
 export default function MediaPlayer({
   streamUrl,
   isVideo,
@@ -103,9 +145,15 @@ export default function MediaPlayer({
 
   // ── Cut-preview RAF loop ──────────────────────────────────────
   const startLoop = useCallback(() => {
+    if (rafRef.current) return
+
     const tick = () => {
       const el = mediaRef.current
       if (!el) return
+      if (el.paused) {
+        rafRef.current = 0
+        return
+      }
       enforceTrimBounds(el)
       setCurrentTime(el.currentTime)
       rafRef.current = requestAnimationFrame(tick)
@@ -191,9 +239,21 @@ export default function MediaPlayer({
         el.currentTime = inPoint
         setCurrentTime(inPoint)
       }
-      el.play()
-      setIsPlaying(true)
-      startLoop()
+      const playPromise = el.play()
+      if (playPromise && typeof playPromise.then === 'function') {
+        playPromise
+          .then(() => {
+            setIsPlaying(true)
+            startLoop()
+          })
+          .catch(() => {
+            setIsPlaying(false)
+            stopLoop()
+          })
+      } else {
+        setIsPlaying(true)
+        startLoop()
+      }
     }
   }, [isPlaying, inPoint, outPoint, startLoop, stopLoop])
 
@@ -215,8 +275,11 @@ export default function MediaPlayer({
     const el = mediaRef.current
     if (!el) return
     enforceTrimBounds(el)
-    setCurrentTime(el.currentTime)
-  }, [enforceTrimBounds])
+    // While playing, RAF already updates currentTime at frame rate.
+    if (!isPlaying) {
+      setCurrentTime(el.currentTime)
+    }
+  }, [enforceTrimBounds, isPlaying])
 
   const handleLoadedMetadata = useCallback(() => {
     const el = mediaRef.current
@@ -236,7 +299,9 @@ export default function MediaPlayer({
 
     const playPromise = el.play()
     if (playPromise && typeof playPromise.catch === 'function') {
-      playPromise.catch(() => undefined)
+      playPromise.catch(() => {
+        setIsPlaying(false)
+      })
     }
     setIsPlaying(true)
     stopLoop()
@@ -262,8 +327,12 @@ export default function MediaPlayer({
     if (!el) return
     const err = el.error
     const msg = err
-      ? `Media error ${err.code}: ${err.message || ['', 'ABORTED', 'NETWORK', 'DECODE', 'SRC_NOT_SUPPORTED'][err.code] || 'unknown'}`
-      : 'Unknown media error'
+      ? (() => {
+          const technical = err.message || MEDIA_ERROR_CODE_LABELS[err.code] || 'unknown'
+          const friendly = getFriendlyMediaError(technical, err.code)
+          return `${friendly}\nMedia error ${err.code}: ${technical}`
+        })()
+      : 'Playback failed for an unknown reason.'
     setMediaError(msg)
     setIsMediaReady(true)
     setIsPlaying(false)
@@ -302,11 +371,6 @@ export default function MediaPlayer({
       <div
         ref={volumeControlRef}
         className="ml-auto flex items-center gap-1.5"
-        onWheel={(e) => {
-          e.preventDefault()
-          e.stopPropagation()
-          adjustVolumeByWheel(e.deltaY)
-        }}
       >
         <button
           type="button"
@@ -397,7 +461,7 @@ export default function MediaPlayer({
           )}
         </div>
         {mediaError && (
-          <div className="rounded-lg bg-red-500/10 border border-red-500/30 px-3 py-2 text-xs text-red-300">
+          <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs whitespace-pre-line text-red-300">
             {mediaError}
           </div>
         )}
@@ -477,7 +541,7 @@ export default function MediaPlayer({
         </div>
       )}
       {mediaError && (
-        <div className="rounded-lg bg-red-500/10 border border-red-500/30 px-3 py-2 text-xs text-red-300">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs whitespace-pre-line text-red-300">
           {mediaError}
         </div>
       )}

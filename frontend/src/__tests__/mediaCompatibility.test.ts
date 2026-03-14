@@ -15,6 +15,7 @@ function probe(overrides: Partial<ProbeResult> = {}): ProbeResult {
     bitrate: 0,
     width: 1920,
     height: 1080,
+    display_aspect_ratio: null,
     sample_rate: 48000,
     needs_transcoding: false,
     audio_streams: [

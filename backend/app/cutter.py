@@ -23,16 +23,21 @@ logger = logging.getLogger(__name__)
 _TRANSCODE_CODECS = {"ac3", "eac3", "dts", "dts_hd", "truehd"}
 _PASSTHROUGH_CODECS = {"aac", "mp3", "opus", "vorbis", "flac", "pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_f32le"}
 _BROWSER_VIDEO_CODECS = {"h264", "hevc", "h265", "vp8", "vp9", "av1"}
+_PREVIEW_X264_PRESET = "superfast"
+_PREVIEW_MAX_THREADS = "2"
 
 # File extensions browsers can play natively
 _BROWSER_EXTENSIONS = {".mp4", ".m4a", ".m4v", ".mov", ".webm", ".ogg", ".mp3", ".wav", ".aac", ".flac"}
 _FFMPEG_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+_FFMPEG_PROGRESS_RE = re.compile(r"^frame=\s*\d+")
 _DELETE_WAIT_SECONDS = 15.0
 _DELETE_RETRY_ATTEMPTS = 8
 _DELETE_RETRY_DELAY = 0.2
 
 
 class _JobActivityState:
+    """Mutable synchronization state for long-running operations per cutter job."""
+
     def __init__(self) -> None:
         self.condition = threading.Condition()
         self.active_operations = 0
@@ -60,6 +65,7 @@ def _audio_relative_index(filepath: str, absolute_index: int) -> int:
 
 # Map user-facing codec names to ffmpeg encoder names
 _CODEC_TO_ENCODER = {
+    "copy": "copy",
     "aac": "aac",
     "flac": "flac",
     "opus": "libopus",
@@ -99,7 +105,15 @@ def _extract_window(filepath: str, position: float, window_secs: float = 5.0) ->
         "-f", "f32le",
         "pipe:1",
     ]
-    result = subprocess.run(cmd, capture_output=True, timeout=30)
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "Waveform sample timed out at %.2fs for %s",
+            position,
+            filepath,
+        )
+        return b""
     if result.returncode != 0:
         return b""  # Skip failed windows gracefully
     return result.stdout
@@ -237,7 +251,7 @@ def probe_file(filepath: str) -> dict:
 def generate_waveform(filepath: str, num_peaks: int = 2000) -> list[float]:
     """Generate a normalized waveform peak list from an audio/video file.
 
-    Uses ffmpeg to extract mono PCM f32le audio at 8kHz (capped at 1 hour),
+    Uses ffmpeg to extract mono PCM f32le audio at 8kHz,
     then buckets samples and takes the max absolute value per bucket. Results
     are cached (bounded LRU, max 50 entries) by (filepath, mtime) to avoid
     regeneration.
@@ -278,8 +292,8 @@ def needs_transcoding(audio_codec: str, filepath: str = "", video_codec: str = "
 def transcode_for_preview(filepath: str, audio_stream_index: int | None = None) -> subprocess.Popen:
     """Remux/transcode into fragmented MP4 for browser-compatible streaming.
 
-    Video is always stream-copied (fast, no re-encoding). Audio is copied
-    when the codec is browser-compatible, or transcoded to AAC otherwise.
+    Video is stream-copied only when browser-compatible, otherwise re-encoded
+    to H.264. Audio is copied when browser-compatible, or transcoded to AAC.
     Subtitle streams are dropped (often incompatible with MP4).
     """
     info = probe_file(filepath)
@@ -293,7 +307,7 @@ def transcode_for_preview(filepath: str, audio_stream_index: int | None = None) 
     else:
         audio_codec = info.get("audio_codec", "unknown").lower()
 
-    cmd = ["ffmpeg", "-loglevel", "warning", "-i", filepath]
+    cmd = ["ffmpeg", "-nostdin", "-loglevel", "warning", "-i", filepath]
 
     # Map specific streams when audio stream is selected
     if audio_stream_index is not None:
@@ -309,7 +323,13 @@ def transcode_for_preview(filepath: str, audio_stream_index: int | None = None) 
         if video_codec in _BROWSER_VIDEO_CODECS:
             cmd += ["-c:v", "copy"]
         else:
-            cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"]
+            cmd += [
+                "-c:v", "libx264",
+                "-preset", _PREVIEW_X264_PRESET,
+                "-crf", "23",
+                "-threads", _PREVIEW_MAX_THREADS,
+                "-pix_fmt", "yuv420p",
+            ]
     else:
         cmd += ["-vn"]
 
@@ -345,12 +365,25 @@ def _preview_status_key(filepath: str, job_id: str) -> str:
 
 
 def _compact_process_error(stderr: str, stdout: str) -> str:
-    detail = (stderr or "").strip()
-    if not detail:
-        detail = (stdout or "").strip()
-    if not detail:
-        detail = "no stderr/stdout output from ffmpeg"
-    return detail[-1200:]
+    merged = "\n".join(part for part in ((stderr or ""), (stdout or "")) if part).strip()
+    if not merged:
+        return "no stderr/stdout output from ffmpeg"
+
+    lines = [line.strip() for line in merged.splitlines() if line.strip()]
+
+    # Drop ffmpeg -stats progress spam to keep actual warnings/errors visible.
+    meaningful = [
+        line
+        for line in lines
+        if not _FFMPEG_PROGRESS_RE.match(line)
+        and "bitrate=" not in line
+        and "speed=" not in line
+        and "elapsed=" not in line
+    ]
+
+    if meaningful:
+        return " | ".join(meaningful[-6:])[-1200:]
+    return merged[-1200:]
 
 
 def _seconds_from_ffmpeg_time(line: str) -> float | None:
@@ -365,6 +398,8 @@ def _safe_remove_file(path: str) -> None:
     try:
         os.remove(path)
     except FileNotFoundError:
+        return
+    except OSError:
         return
 
 
@@ -478,6 +513,16 @@ def _job_has_active_operations(job_id: str) -> bool:
 def _clear_job_runtime_state(job_id: str) -> None:
     with _job_activity_guard:
         _job_activity.pop(job_id, None)
+
+    job_dir_prefix = os.path.normcase(os.path.join(CUTTER_JOBS_DIR, job_id) + os.sep)
+    with _preview_build_lock_guard:
+        stale_lock_keys = [
+            key for key in _preview_build_locks
+            if os.path.normcase(key).startswith(job_dir_prefix)
+        ]
+        for key in stale_lock_keys:
+            _preview_build_locks.pop(key, None)
+
     status_prefix = f"{job_id}:"
     with _preview_status_guard:
         stale_keys = [key for key in _preview_status if key.startswith(status_prefix)]
@@ -587,7 +632,7 @@ def get_or_transcode_preview(
             has_video = info.get("video_codec") is not None
             duration = max(0.0, float(info.get("duration", 0.0) or 0.0))
 
-            cmd = ["ffmpeg", "-loglevel", "warning", "-stats", "-y", "-i", filepath]
+            cmd = ["ffmpeg", "-nostdin", "-loglevel", "warning", "-stats", "-y", "-i", filepath]
 
             video_codec = str(info.get("video_codec") or "").lower()
             if has_video:
@@ -595,7 +640,13 @@ def get_or_transcode_preview(
                 if video_codec in _BROWSER_VIDEO_CODECS:
                     cmd += ["-c:v", "copy"]
                 else:
-                    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"]
+                    cmd += [
+                        "-c:v", "libx264",
+                        "-preset", _PREVIEW_X264_PRESET,
+                        "-crf", "23",
+                        "-threads", _PREVIEW_MAX_THREADS,
+                        "-pix_fmt", "yuv420p",
+                    ]
             else:
                 cmd += ["-map", "0:a", "-vn"]
 
@@ -1209,12 +1260,15 @@ def cut_file(
         audio_codec: Target audio codec when re-encoding video (None = copy).
         container: Target container format (used for output extension).
         progress_cb: Callback for progress messages.
+        audio_stream_index: Absolute ffprobe audio stream index to map.
+        job_id: Optional cutter job id for cancellation/cleanup tracking.
+        cancel_event: Optional event used to cancel long-running ffmpeg tasks.
 
     Returns:
         The final output file path (may differ from output_path if collision).
     """
-    # FLAC stream-copy produces broken output (original duration retained).
-    # Force lossless re-encode (flac→flac) instead.
+    # FLAC stream-copy frequently preserves stale container duration metadata.
+    # Re-encoding flac->flac avoids "full-length" phantom tails in output.
     ext = os.path.splitext(filepath)[1].lower()
     if stream_copy and ext == ".flac":
         stream_copy = False
@@ -1230,6 +1284,7 @@ def cut_file(
         "-nostdin",
         "-loglevel", "warning",
         "-stats",
+        # Keep -ss before -i for fast input seeking on large files.
         "-ss", str(in_point),
         "-t", str(duration),
         "-i", filepath,
@@ -1356,7 +1411,10 @@ def generate_thumbnail_strip(filepath: str, count: int = 30) -> bytes:
         "-q:v", "5",
         "pipe:1",
     ]
-    result = subprocess.run(cmd, capture_output=True, timeout=120)
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ffmpeg thumbnail generation timed out: {exc}") from exc
     if result.returncode != 0:
         raise RuntimeError(
             f"ffmpeg thumbnail generation failed: {result.stderr.decode(errors='replace')}"
@@ -1364,10 +1422,43 @@ def generate_thumbnail_strip(filepath: str, count: int = 30) -> bytes:
     return result.stdout
 
 
+def _thumbnail_cache_key(filepath: str, count: int) -> str:
+    mtime = _safe_getmtime(filepath)
+    key = f"{filepath}:{mtime}:thumbs:{count}"
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def generate_thumbnail_strip_cached(filepath: str, count: int, job_id: str) -> bytes:
+    """Generate thumbnail strip and cache it under the cutter job directory."""
+    job_dir = get_job_dir(job_id)
+    cache_name = f"thumbs_{_thumbnail_cache_key(filepath, count)}.jpg"
+    cache_path = os.path.join(job_dir, cache_name)
+
+    if os.path.isfile(cache_path):
+        with open(cache_path, "rb") as f:
+            return f.read()
+
+    with _get_preview_build_lock(cache_path):
+        if os.path.isfile(cache_path):
+            with open(cache_path, "rb") as f:
+                return f.read()
+
+        jpeg = generate_thumbnail_strip(filepath, count=count)
+        tmp_path = f"{cache_path}.{uuid.uuid4().hex}.tmp"
+        try:
+            with open(tmp_path, "wb") as f:
+                f.write(jpeg)
+            os.replace(tmp_path, cache_path)
+        finally:
+            if os.path.exists(tmp_path):
+                _safe_remove_file(tmp_path)
+        return jpeg
+
+
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
-def create_job(source: str, original_path: str, original_name: str) -> str:
+def create_job(source: str, original_path: str, original_name: str, initial_status: str = "ready") -> str:
     """Create a new job directory structure and return the job_id."""
     job_id = str(uuid.uuid4())
     job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
@@ -1380,7 +1471,7 @@ def create_job(source: str, original_path: str, original_name: str) -> str:
         "original_name": original_name,
         "original_path": original_path,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "status": "ready",
+        "status": initial_status,
         "preview_transcoded": False,
         "browser_ready": False,
         "cut_settings": None,
@@ -1407,9 +1498,13 @@ def save_job_metadata(job_id: str, metadata: dict) -> None:
     job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
     final_path = os.path.join(job_dir, "job.json")
     tmp_path = final_path + ".tmp"
-    with open(tmp_path, "w") as f:
-        json.dump(metadata, f, indent=2)
-    os.replace(tmp_path, final_path)
+    try:
+        with open(tmp_path, "w") as f:
+            json.dump(metadata, f, indent=2)
+        os.replace(tmp_path, final_path)
+    finally:
+        if os.path.exists(tmp_path):
+            _safe_remove_file(tmp_path)
 
 
 def load_job_metadata(job_id: str) -> dict | None:
@@ -1421,8 +1516,12 @@ def load_job_metadata(job_id: str) -> dict | None:
     meta_path = os.path.join(job_dir, "job.json")
     if not os.path.isfile(meta_path):
         return None
-    with open(meta_path) as f:
-        return json.load(f)
+    try:
+        with open(meta_path) as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        logger.warning("Ignoring malformed job metadata file: %s", meta_path)
+        return None
 
 
 def _resolve_job_source_path(meta: dict) -> str | None:
@@ -1443,7 +1542,11 @@ def _resolve_job_source_path(meta: dict) -> str | None:
         if not original_path:
             return None
         if os.path.isabs(original_path):
-            return original_path
+            base_real = os.path.realpath(BASE_PATH)
+            path_real = os.path.realpath(original_path)
+            if path_real == base_real or path_real.startswith(base_real + os.sep):
+                return path_real
+            return None
         return os.path.join(BASE_PATH, original_path)
 
     return None
@@ -1472,6 +1575,11 @@ def list_jobs() -> list[dict]:
                     meta["browser_ready"] = _infer_browser_ready(meta)
                     save_job_metadata(name, meta)
                 except Exception:
+                    logger.warning(
+                        "Failed to infer browser_ready for job %s",
+                        name,
+                        exc_info=True,
+                    )
                     meta["browser_ready"] = False
             jobs.append(meta)
     jobs.sort(key=lambda j: j.get("created_at", ""), reverse=True)

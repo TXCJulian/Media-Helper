@@ -25,7 +25,6 @@ const audioCodecOptions = [
 ]
 
 const videoAudioCodecOptions = [
-  { label: 'Copy', value: 'copy' },
   { label: 'AAC', value: 'aac' },
   { label: 'AC3', value: 'ac3' },
   { label: 'FLAC', value: 'flac' },

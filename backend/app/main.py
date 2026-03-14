@@ -40,6 +40,7 @@ from app.cutter import (
     probe_file,
     generate_waveform,
     generate_thumbnail_strip,
+    generate_thumbnail_strip_cached,
     needs_transcoding,
     get_or_transcode_preview,
     get_preview_path_if_ready,
@@ -490,6 +491,11 @@ def start_transcription(
 
 
 # ── Cutter Endpoints ────────────────────────────────────────────────────
+# Workflow overview:
+# 1) Probe/waveform/thumbnail endpoints inspect a selected source file.
+# 2) /cutter/stream serves either original media or a browser-safe preview.
+# 3) /cutter/cut starts an SSE-driven ffmpeg cut operation into job output.
+# 4) Job metadata tracks readiness, errors, and downloadable outputs.
 
 
 def resolve_cutter_path(path: str, source: str, job_id: str = "") -> str:
@@ -536,7 +542,9 @@ def list_cutter_files(
 
     files = []
     for entry in os.scandir(path):
-        if entry.is_file():
+        try:
+            if not entry.is_file():
+                continue
             ext = os.path.splitext(entry.name)[1].lower()
             if ext in VALID_CUTTER_EXT:
                 files.append({
@@ -544,6 +552,9 @@ def list_cutter_files(
                     "size": entry.stat().st_size,
                     "extension": ext,
                 })
+        except OSError:
+            # File may disappear/change between scandir and stat on network shares.
+            continue
     files.sort(key=lambda f: f["name"].lower())
     return {"files": files}
 
@@ -565,6 +576,13 @@ def cutter_probe(
             resolved,
             info.get("video_codec", "") or "",
         )
+
+        if job_id:
+            meta = load_job_metadata(job_id)
+            if meta:
+                meta["browser_ready"] = not info["needs_transcoding"]
+                save_job_metadata(job_id, meta)
+
         return info
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -601,7 +619,14 @@ def cutter_thumbnails(
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
     try:
-        jpeg_bytes = generate_thumbnail_strip(resolved, count=count)
+        if job_id:
+            try:
+                jpeg_bytes = generate_thumbnail_strip_cached(resolved, count=count, job_id=job_id)
+            except ValueError:
+                # Optional cache only; malformed/unknown job ids still get a thumbnail.
+                jpeg_bytes = generate_thumbnail_strip(resolved, count=count)
+        else:
+            jpeg_bytes = generate_thumbnail_strip(resolved, count=count)
         return Response(content=jpeg_bytes, media_type="image/jpeg")
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -774,6 +799,28 @@ def cutter_preview_status(file_id: str):
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
 
+    def _done_status() -> dict:
+        return {
+            "state": "done",
+            "ready": True,
+            "percent": 100.0,
+            "eta_seconds": 0.0,
+            "elapsed_seconds": 0.0,
+            "message": "",
+        }
+
+    # Fast path for active jobs: avoid expensive ffprobe on every poll.
+    if job_id:
+        status = get_preview_status(resolved, job_id)
+        if status.get("state") in {"running", "error"}:
+            return status
+        if status.get("state") == "done" and status.get("ready"):
+            return status
+
+        meta = load_job_metadata(job_id)
+        if meta and (meta.get("browser_ready") or meta.get("preview_transcoded")):
+            return _done_status()
+
     try:
         probe = probe_file(resolved)
     except RuntimeError as e:
@@ -784,14 +831,7 @@ def cutter_preview_status(file_id: str):
         resolved,
         probe.get("video_codec", "") or "",
     ):
-        return {
-            "state": "done",
-            "ready": True,
-            "percent": 100.0,
-            "eta_seconds": 0.0,
-            "elapsed_seconds": 0.0,
-            "message": "",
-        }
+        return _done_status()
 
     if not job_id:
         raise HTTPException(status_code=400, detail="job_id required for transcoded preview")
@@ -803,6 +843,15 @@ def cutter_preview_status(file_id: str):
 @app.post("/cutter/upload")
 async def cutter_upload(request: Request):
     require_feature("cutter")
+
+    content_length = request.headers.get("content-length")
+    max_upload_size = 50 * 1024 * 1024 * 1024  # 50 GB
+    if content_length:
+        try:
+            if int(content_length) > max_upload_size:
+                raise HTTPException(status_code=413, detail="File exceeds 50 GB size limit")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length header")
 
     raw_name = request.headers.get("x-file-name") or "unnamed"
     raw_name = unquote(raw_name)
@@ -821,13 +870,12 @@ async def cutter_upload(request: Request):
             detail=f"Invalid file extension '{ext}'. Allowed: {', '.join(sorted(VALID_CUTTER_EXT))}",
         )
 
-    # Create a job for this upload
-    job_id = create_job("upload", "", filename)
+    # Create a job for this upload — mark as uploading until the stream completes
+    job_id = create_job("upload", "", filename, initial_status="uploading")
     job_dir = get_job_dir(job_id)
     input_dir = os.path.join(job_dir, "input")
     dest = os.path.join(input_dir, filename)
 
-    max_upload_size = 50 * 1024 * 1024 * 1024  # 50 GB
     try:
         bytes_written = 0
         with open(dest, "wb") as f:
@@ -849,26 +897,15 @@ async def cutter_upload(request: Request):
         delete_job(job_id)
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
 
-    try:
-        probe = probe_file(dest)
-        probe["needs_transcoding"] = needs_transcoding(
-            probe.get("audio_codec", "unknown"),
-            dest,
-            probe.get("video_codec", "") or "",
-        )
-        meta = load_job_metadata(job_id)
-        if meta:
-            meta["browser_ready"] = not probe["needs_transcoding"]
-            save_job_metadata(job_id, meta)
-    except RuntimeError as e:
-        delete_job(job_id)
-        raise HTTPException(status_code=500, detail=f"Probe failed: {e}")
+    meta = load_job_metadata(job_id)
+    if meta:
+        meta["status"] = "ready"
+        save_job_metadata(job_id, meta)
 
     return {
         "job_id": job_id,
         "file_id": encode_file_id("upload", filename, job_id),
         "filename": filename,
-        "probe": probe,
     }
 
 
@@ -992,7 +1029,10 @@ def cutter_save_to_source(job_id: str, filename: str):
         raise HTTPException(status_code=400, detail="Original directory no longer exists")
 
     dest_path = collision_safe_path(os.path.join(dest_dir, safe_name))
-    shutil.copy2(src_file, dest_path)
+    try:
+        shutil.copy2(src_file, dest_path)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save output file: {exc}") from exc
 
     return {"status": "saved", "filename": os.path.basename(dest_path)}
 
@@ -1028,6 +1068,27 @@ def cutter_cut(
             status_code=422, detail="out_point must be greater than in_point"
         )
 
+    valid_codecs = {
+        "aac", "flac", "opus", "ac3", "mp3", "vorbis", "pcm_s16le", "pcm_s24le",
+        "libx264", "libx265", "libvpx-vp9", "libaom-av1",
+    }
+    valid_audio_codecs = {
+        "", "copy", "aac", "flac", "opus", "ac3", "mp3", "vorbis", "pcm_s16le", "pcm_s24le",
+    }
+    valid_containers = {
+        "", "mp4", "mkv", "mov", "avi", "webm", "ogg", "mp3", "flac", "wav",
+        "aac", "ac3", "opus", "m4a", "mka", "ts", "mts",
+    }
+
+    if codec and codec not in valid_codecs:
+        raise HTTPException(status_code=422, detail=f"Invalid codec: {codec}")
+    if audio_codec and audio_codec not in valid_audio_codecs:
+        raise HTTPException(status_code=422, detail=f"Invalid audio codec: {audio_codec}")
+    if container and container not in valid_containers:
+        raise HTTPException(status_code=422, detail=f"Invalid container: {container}")
+
+    audio_codec = "" if audio_codec == "copy" else audio_codec
+
     # Validate against file duration
     try:
         file_info = probe_file(resolved)
@@ -1037,8 +1098,8 @@ def cutter_cut(
                 status_code=422,
                 detail=f"out_point ({out_point:.2f}s) exceeds file duration ({file_duration:.2f}s)",
             )
-    except RuntimeError:
-        pass  # If probe fails, let cut_file handle it
+    except RuntimeError as exc:
+        logger.warning("Could not probe source for cutter validation: %s", exc)
 
     # Determine output filename — use original name if no output_name given
     original_name = os.path.basename(resolved)

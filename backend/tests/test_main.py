@@ -315,3 +315,41 @@ class TestCutterDeleteJob:
 
         assert resp.status_code == 409
         assert "still busy" in resp.json()["detail"]
+
+
+class TestCutterValidation:
+    def test_cutter_cut_rejects_out_point_before_in_point(self, client, tmp_path, monkeypatch):
+        import app.main as main_mod
+
+        media_file = tmp_path / "clip.mp4"
+        media_file.write_bytes(b"demo")
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "get_job_dir", lambda _job_id: str(tmp_path))
+        monkeypatch.setattr(main_mod, "resolve_cutter_path", lambda *_args, **_kwargs: str(media_file))
+
+        resp = client.post(
+            "/cutter/cut",
+            data={
+                "path": "clip.mp4",
+                "source": "server",
+                "job_id": "11111111-1111-1111-1111-111111111111",
+                "in_point": "10",
+                "out_point": "5",
+                "stream_copy": "true",
+            },
+        )
+
+        assert resp.status_code == 422
+        assert "out_point" in resp.json()["detail"]
+
+    def test_resolve_cutter_path_blocks_server_traversal(self, tmp_path, monkeypatch):
+        import app.main as main_mod
+        from fastapi import HTTPException
+
+        monkeypatch.setattr(main_mod, "BASE_PATH", str(tmp_path))
+
+        with pytest.raises(HTTPException) as exc_info:
+            main_mod.resolve_cutter_path("../../../etc/passwd", "server")
+
+        assert exc_info.value.status_code == 400

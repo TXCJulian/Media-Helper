@@ -47,7 +47,10 @@ export default function App() {
   useEffect(() => {
     fetchConfig()
       .then((cfg) => setEnabledFeatures(cfg.features as PanelName[]))
-      .catch(() => setEnabledFeatures(['episodes', 'music']))
+      .catch((err) => {
+        console.warn('Failed to fetch enabled features config, falling back to defaults', err)
+        setEnabledFeatures(['episodes', 'music'])
+      })
   }, [])
 
   // Per-panel log + error state

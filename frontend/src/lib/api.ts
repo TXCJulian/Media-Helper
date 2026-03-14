@@ -77,7 +77,6 @@ export function uploadFile(
   job_id: string
   file_id: string
   filename: string
-  probe: import('@/types').ProbeResult
 }> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()

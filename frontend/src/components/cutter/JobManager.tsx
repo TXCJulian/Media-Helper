@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { listJobs, deleteJob, getDownloadUrl, saveToSource } from '@/lib/api'
 import type { CutterJob } from '@/types'
 
@@ -14,6 +14,7 @@ function relativeTime(iso: string): string {
 }
 
 const STATUS_COLORS: Record<string, string> = {
+  uploading: 'bg-cyan-400/15 text-cyan-300',
   ready: 'bg-white/10 text-white/50',
   cutting: 'bg-amber-400/15 text-amber-300',
   transcoding: 'bg-blue-400/15 text-blue-300',
@@ -26,14 +27,23 @@ export default function JobManager({ activeJobId, onLog, onOpenJob }: { activeJo
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
   const [savingFile, setSavingFile] = useState<string | null>(null)
+  const [refreshError, setRefreshError] = useState<string>('')
+  const onLogRef = useRef(onLog)
+
+  useEffect(() => {
+    onLogRef.current = onLog
+  }, [onLog])
 
   const refresh = useCallback(async () => {
     setLoading(true)
+    setRefreshError('')
     try {
       const data = await listJobs()
       setJobs(data.jobs ?? [])
-    } catch {
-      // silently fail
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setRefreshError(message)
+      onLogRef.current?.(`Failed to refresh jobs: ${message}`)
     } finally {
       setLoading(false)
     }
@@ -61,21 +71,31 @@ export default function JobManager({ activeJobId, onLog, onOpenJob }: { activeJo
       >
         <span className={`inline-block transition-transform ${open ? 'rotate-90' : ''}`}>&#9654;</span>
         Jobs {jobs.length > 0 && `(${jobs.length})`}
-        {loading && <span className="spinner-sm ml-auto" />}
-        {open && !loading && (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); void refresh() }}
-            className="ml-auto flex h-[26px] w-[26px] cursor-pointer items-center justify-center rounded-[7px] border border-[var(--border)] bg-[var(--bg-input)] text-[0.8rem] text-[var(--text-secondary)] transition-all duration-200 hover:border-[var(--glass-border-hover)] hover:bg-[var(--bg-glass-hover)] hover:text-[var(--text-primary)]"
-            title="Refresh jobs"
-          >
-            ↻
-          </button>
+        {open && (
+          <span className="ml-auto flex h-[26px] w-[26px] items-center justify-center">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                if (!loading) void refresh()
+              }}
+              disabled={loading}
+              className="flex h-[26px] w-[26px] cursor-pointer items-center justify-center rounded-[7px] border border-[var(--border)] bg-[var(--bg-input)] text-[0.8rem] text-[var(--text-secondary)] transition-all duration-200 hover:border-[var(--glass-border-hover)] hover:bg-[var(--bg-glass-hover)] hover:text-[var(--text-primary)] disabled:cursor-wait disabled:opacity-80"
+              title={loading ? 'Refreshing jobs...' : 'Refresh jobs'}
+            >
+                  {loading ? <span className="spinner-xs" /> : '\u21BB'}
+            </button>
+          </span>
         )}
       </button>
 
       {open && (
         <div className="max-h-[320px] overflow-y-auto rounded-b-xl border border-t-0 border-[var(--glass-border)] bg-black/20">
+          {refreshError && (
+            <div className="border-b border-red-500/20 bg-red-500/10 px-4 py-2 text-[0.72rem] text-red-300">
+              Failed to refresh jobs: {refreshError}
+            </div>
+          )}
           {jobs.length === 0 ? (
             <div className="px-4 py-6 text-center text-[0.78rem] text-white/30">
               No jobs found
@@ -94,12 +114,20 @@ export default function JobManager({ activeJobId, onLog, onOpenJob }: { activeJo
                     <span className={`shrink-0 rounded px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase ${STATUS_COLORS[job.status] ?? STATUS_COLORS.ready}`}>
                       {job.status}
                     </span>
-                    {job.status === 'ready' && (job.preview_transcoded || job.browser_ready) && (
+                    {job.status === 'ready' && job.browser_ready && (
                       <span
                         className="shrink-0 rounded bg-emerald-400/15 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase text-emerald-300"
-                        title={job.preview_transcoded ? 'Transcoded preview is ready for browser playback' : 'File is already browser-compatible'}
+                        title="File is already browser-compatible"
                       >
                         browser ready
+                      </span>
+                    )}
+                    {job.status === 'ready' && !job.browser_ready && job.preview_transcoded && (
+                      <span
+                        className="shrink-0 rounded bg-sky-400/15 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase text-sky-300"
+                        title="Transcoded preview exists on disk; player may still be preparing the stream"
+                      >
+                        preview cached
                       </span>
                     )}
                     {job.transcode_error && (

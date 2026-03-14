@@ -87,7 +87,7 @@ export interface ProbeResult {
   bitrate: number
   width: number | null
   height: number | null
-  display_aspect_ratio?: string | null
+  display_aspect_ratio: string | null
   sample_rate: number
   needs_transcoding: boolean
   audio_streams: AudioStreamInfo[]
@@ -133,11 +133,11 @@ export interface CutJobSettings {
 
 export interface CutterJob {
   job_id: string
-  source: string
+  source: 'server' | 'upload'
   original_name: string
   original_path: string
   created_at: string
-  status: string
+  status: 'uploading' | 'ready' | 'transcoding' | 'cutting' | 'done' | 'error'
   output_files: string[]
   cut_settings?: CutJobSettings | null
   preview_transcoded?: boolean

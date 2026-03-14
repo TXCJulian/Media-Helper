@@ -57,6 +57,8 @@ export default function CutterPanel({
   persisted,
   onPersistedChange,
 }: CutterPanelProps) {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
   // Shared state
   const { form, directories, search } = persisted
 
@@ -205,8 +207,9 @@ export default function CutterPanel({
         if (signal.cancelled) return
         setSource({ files: data.files ?? [] })
       })
-      .catch(() => {
+      .catch((err) => {
         if (signal.cancelled) return
+        onError(`Error loading files: ${err instanceof Error ? err.message : String(err)}`)
         setSource({ files: [] })
       })
       .finally(() => {
@@ -276,7 +279,10 @@ export default function CutterPanel({
   // ── Reopen job from job manager ───────────────────────────────
   const handleOpenJob = useCallback(
     async (job: CutterJob) => {
-      const source = job.source as CutterForm['source']
+      const shouldAutoUseTranscodedPreview =
+        job.status === 'ready' && !job.browser_ready && !!job.preview_transcoded
+
+      const source: CutterForm['source'] = job.source
       const filePath = source === 'server' ? job.original_path : job.original_name
       const directory = job.original_path
         ? job.original_path.substring(0, job.original_path.lastIndexOf('/'))
@@ -314,6 +320,9 @@ export default function CutterPanel({
       setTranscodePreviewEnabled(false)
       try {
         await loadFileData(filePath, source, job.job_id)
+        if (shouldAutoUseTranscodedPreview) {
+          setTranscodePreviewEnabled(true)
+        }
         // Restore saved in/out points — loadFileData resets them to 0/duration
         if (settings) {
           setPersisted((prev) => ({
@@ -338,15 +347,39 @@ export default function CutterPanel({
       })
       try {
         const result = await uploadFile(file, setUploadProgress)
-        const waveData = await fetchWaveform(result.filename, 'upload', 800, result.job_id)
+        // Network upload is complete at this point; switch UI out of upload-progress mode.
+        setUploadProgress(-1)
+
+        let probeData: Awaited<ReturnType<typeof fetchProbe>> | null = null
+        let lastProbeError: unknown = null
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            probeData = await fetchProbe(result.filename, 'upload', result.job_id)
+            break
+          } catch (err) {
+            lastProbeError = err
+            if (attempt < 2) {
+              await sleep(200 * (attempt + 1))
+            }
+          }
+        }
+
+        if (!probeData) {
+          throw new Error(
+            `Upload completed, but loading file metadata failed: ${lastProbeError instanceof Error ? lastProbeError.message : String(lastProbeError)}`,
+          )
+        }
+
+        const targetJobId = result.job_id
+
         setSource({
-          probe: result.probe,
+          probe: probeData,
           filePath: result.filename,
           fileId: result.file_id,
           jobId: result.job_id,
-          peaks: waveData.peaks,
+          peaks: [],
           thumbnailUrl:
-            result.probe.video_codec != null
+            probeData.video_codec != null
               ? getThumbnailUrl(result.filename, 'upload', result.job_id)
               : '',
           isLoadingFile: false,
@@ -356,14 +389,24 @@ export default function CutterPanel({
             ...prev.form,
             filename: result.filename,
             inPoint: 0,
-            outPoint: result.probe.duration,
+            outPoint: probeData.duration,
             audioStreamIndex: null,
           },
         }))
         setPreviewStatus(null)
         setTranscodePreviewEnabled(false)
+
+        // Generate waveform lazily after UI is ready so uploads feel instant.
+        void fetchWaveform(result.filename, 'upload', 800, result.job_id)
+          .then((waveData) => {
+            setSource((prev) => (prev.jobId === targetJobId ? { peaks: waveData.peaks } : {}))
+          })
+          .catch(() => {
+            // Keep upload successful even if waveform extraction fails.
+          })
       } catch (err) {
-        onError(`Upload failed: ${err instanceof Error ? err.message : String(err)}`)
+        const message = err instanceof Error ? err.message : String(err)
+        onError(message.startsWith('Upload completed,') ? message : `Upload failed: ${message}`)
         setSource({ isLoadingFile: false })
       } finally {
         setUploadProgress(-1)
@@ -487,9 +530,22 @@ export default function CutterPanel({
   })()
 
   const compatibilityReport = hasFile ? getBrowserCompatibilityReport(filePath, probe) : null
-  const compatibilityMessage = compatibilityReport?.hasIssues
-    ? getBrowserCompatibilityMessage(compatibilityReport)
-    : null
+  const compatibilityMessage = (() => {
+    if (!hasFile || !probe) return null
+
+    if (compatibilityReport?.hasIssues) {
+      return getBrowserCompatibilityMessage(compatibilityReport)
+    }
+
+    // Backend compatibility rules are authoritative for whether original
+    // playback may fail. Show a clear warning even if frontend heuristics
+    // did not classify this file as problematic.
+    if (probe.needs_transcoding && !transcodePreviewEnabled) {
+      return 'This file is likely not browser-compatible in original playback mode. Enable Transcoded Preview for reliable playback.'
+    }
+
+    return null
+  })()
 
   useEffect(() => {
     if (!hasFile || !probe?.needs_transcoding || !fileId || !transcodePreviewEnabled) {

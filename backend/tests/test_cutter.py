@@ -182,3 +182,51 @@ def test_cleanup_old_jobs_skips_active_jobs_and_deletes_inactive_expired(tmp_pat
 
     cutter._end_job_operation(active_job, cancel_event)
     cutter._clear_job_runtime_state(active_job)
+
+
+def test_encode_decode_file_id_round_trip():
+    encoded = cutter.encode_file_id(
+        "server",
+        "Movies/Show Name/Season 01/Episode:01.mkv",
+        "11111111-1111-1111-1111-111111111111",
+    )
+
+    source, job_id, path = cutter.decode_file_id(encoded)
+    assert source == "server"
+    assert job_id == "11111111-1111-1111-1111-111111111111"
+    assert path == "Movies/Show Name/Season 01/Episode:01.mkv"
+
+
+def test_decode_file_id_rejects_malformed_input():
+    with pytest.raises(ValueError, match="Invalid file_id"):
+        cutter.decode_file_id("!!!not-base64!!!")
+
+
+def test_decode_file_id_handles_unpadded_base64():
+    encoded = cutter.encode_file_id("upload", "clip.mp4", "")
+    unpadded = encoded.rstrip("=")
+
+    source, job_id, path = cutter.decode_file_id(unpadded)
+    assert source == "upload"
+    assert job_id == ""
+    assert path == "clip.mp4"
+
+
+@pytest.mark.parametrize(
+    ("audio_codec", "filepath", "video_codec", "expected"),
+    [
+        ("aac", "clip.mkv", "h264", True),
+        ("aac", "clip.mp4", "h264", False),
+        ("dts", "clip.mp4", "h264", True),
+        ("unknown", "clip.mp4", "h264", True),
+    ],
+)
+def test_needs_transcoding_cases(audio_codec, filepath, video_codec, expected):
+    assert cutter.needs_transcoding(audio_codec, filepath, video_codec) is expected
+
+
+def test_get_job_dir_rejects_non_uuid(tmp_path, monkeypatch):
+    monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
+
+    with pytest.raises(ValueError, match="Invalid job_id format"):
+        cutter.get_job_dir("not-a-uuid")

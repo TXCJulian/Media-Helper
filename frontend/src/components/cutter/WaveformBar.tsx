@@ -16,6 +16,8 @@ interface WaveformBarProps {
 type DragTarget = 'in' | 'out' | null
 
 const HANDLE_HIT_PX = 8
+const PLAYHEAD_OUTLINE = 'rgba(0, 0, 0, 0.75)'
+const PLAYHEAD_CORE = '#ffffff'
 const HANDLE_TAB_WIDTH = 6
 const HANDLE_TAB_HEIGHT = 14
 
@@ -52,6 +54,7 @@ export default function WaveformBar({
 }: WaveformBarProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
+  const overlaySizeRef = useRef<{ width: number; height: number; dpr: number } | null>(null)
   const dragRef = useRef<DragTarget>(null)
   const isDraggingRef = useRef(false)
 
@@ -166,25 +169,51 @@ export default function WaveformBar({
 
     const dpr = window.devicePixelRatio || 1
     const rect = overlay.getBoundingClientRect()
-    const w = rect.width * dpr
-    const h = rect.height * dpr
-
-    overlay.width = w
-    overlay.height = h
-    ctx.scale(dpr, dpr)
-
     const cssW = rect.width
     const cssH = rect.height
+    if (cssW <= 0 || cssH <= 0) return
+
+    const width = Math.max(1, Math.round(cssW * dpr))
+    const height = Math.max(1, Math.round(cssH * dpr))
+    const prev = overlaySizeRef.current
+    if (!prev || prev.width !== width || prev.height !== height || prev.dpr !== dpr) {
+      overlay.width = width
+      overlay.height = height
+      overlaySizeRef.current = { width, height, dpr }
+    }
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
     ctx.clearRect(0, 0, cssW, cssH)
 
     const playX = timeToX(currentTime, cssW)
-    ctx.strokeStyle = '#ffffff'
+
+    // Dual-layer cursor keeps the playhead readable on both bright and dark content.
+    ctx.strokeStyle = PLAYHEAD_OUTLINE
+    ctx.lineWidth = 3.5
+    ctx.beginPath()
+    ctx.moveTo(playX, 0)
+    ctx.lineTo(playX, cssH)
+    ctx.stroke()
+
+    ctx.strokeStyle = PLAYHEAD_CORE
     ctx.lineWidth = 1.5
     ctx.beginPath()
     ctx.moveTo(playX, 0)
     ctx.lineTo(playX, cssH)
     ctx.stroke()
+
+    ctx.fillStyle = PLAYHEAD_OUTLINE
+    ctx.beginPath()
+    ctx.roundRect(playX - 4, 0, 8, 6, [0, 0, 4, 4])
+    ctx.roundRect(playX - 4, cssH - 6, 8, 6, [4, 4, 0, 0])
+    ctx.fill()
+
+    ctx.fillStyle = PLAYHEAD_CORE
+    ctx.beginPath()
+    ctx.roundRect(playX - 2, 0, 4, 4, [0, 0, 2, 2])
+    ctx.roundRect(playX - 2, cssH - 4, 4, 4, [2, 2, 0, 0])
+    ctx.fill()
   }, [currentTime, timeToX])
 
   // ── Hit-test which handle (if any) is near an x position ──────

@@ -12,6 +12,8 @@ const BROWSER_CONTAINER_EXTENSIONS = new Set([
 ])
 
 const BROWSER_VIDEO_CODECS = new Set(['h264', 'avc1', 'vp8', 'vp9', 'av1', 'theora'])
+// Keep this frontend advisory list intentionally permissive; backend preview
+// transcoding policy may diverge (e.g. HEVC/theora handling by browser target).
 const SUPPORTED_AUDIO_CODECS = new Set([
   'aac', 'mp3', 'opus', 'vorbis', 'flac', 'pcm_s16le', 'pcm_s24le', 'pcm_s32le', 'pcm_f32le',
 ])
