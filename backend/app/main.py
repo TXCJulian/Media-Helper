@@ -44,6 +44,7 @@ from app.cutter import (
     start_background_transcode,
     wait_for_preview,
     get_track_preview,
+    get_track_remux,
     cut_file,
     encode_file_id,
     decode_file_id,
@@ -634,7 +635,9 @@ def cutter_stream(
                 ),
             )
 
-    if transcode and needs_transcoding(probe.get("audio_codec", "unknown"), resolved):
+    needs_tx = needs_transcoding(probe.get("audio_codec", "unknown"), resolved)
+
+    if transcode and needs_tx:
         if not job_id:
             raise HTTPException(status_code=400, detail="job_id required for transcoded preview")
 
@@ -662,6 +665,11 @@ def cutter_stream(
                 raise HTTPException(status_code=500, detail=str(e))
         else:
             resolved = master_path
+    elif audio_stream is not None and job_id:
+        try:
+            resolved = get_track_remux(resolved, audio_stream, job_id)
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
     # Serve raw file with HTTP Range support
     file_size = os.path.getsize(resolved)
@@ -814,6 +822,10 @@ async def cutter_upload(file: UploadFile):
         probe["needs_transcoding"] = needs_transcoding(
             probe.get("audio_codec", "unknown"), dest
         )
+        meta = load_job_metadata(job_id)
+        if meta:
+            meta["browser_ready"] = not probe["needs_transcoding"]
+            save_job_metadata(job_id, meta)
     except RuntimeError as e:
         delete_job(job_id)
         raise HTTPException(status_code=500, detail=f"Probe failed: {e}")
@@ -838,6 +850,17 @@ def cutter_create_job(
         raise HTTPException(status_code=404, detail="File not found")
     filename = os.path.basename(resolved)
     job_id = create_job(source, path, filename)
+
+    try:
+        probe = probe_file(resolved)
+        browser_ready = not needs_transcoding(probe.get("audio_codec", "unknown"), resolved)
+        meta = load_job_metadata(job_id)
+        if meta:
+            meta["browser_ready"] = browser_ready
+            save_job_metadata(job_id, meta)
+    except RuntimeError:
+        logger.warning("Could not evaluate browser compatibility for job %s", job_id)
+
     return {"job_id": job_id}
 
 

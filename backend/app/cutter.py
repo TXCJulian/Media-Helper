@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from app.config import CUTTER_JOBS_DIR, CUTTER_JOB_TTL
+from app.config import BASE_PATH, CUTTER_JOBS_DIR, CUTTER_JOB_TTL
 from app.fs_utils import collision_safe_path
 
 logger = logging.getLogger(__name__)
@@ -564,7 +564,7 @@ def get_or_transcode_preview(
             cmd = ["ffmpeg", "-loglevel", "warning", "-stats", "-y", "-i", filepath]
 
             if has_video:
-                cmd += ["-map", "0:v:0", "-map", "0:a", "-c:v", "copy"]
+                cmd += ["-map", "0:v:0", "-map", "0:a?", "-c:v", "copy"]
             else:
                 cmd += ["-map", "0:a", "-vn"]
 
@@ -877,6 +877,104 @@ def get_track_preview(
         _end_job_operation(job_id, cancel_event)
 
 
+def get_track_remux(
+    filepath: str,
+    audio_stream_index: int,
+    job_id: str,
+) -> str:
+    """Stream-copy remux selecting a single audio track from the original file.
+
+    Keeps the original container/extension for browser-compatible sources and
+    caches the output per track to avoid repeated work.
+    """
+    cancel_event = threading.Event()
+    _begin_job_operation(job_id, cancel_event)
+    try:
+        suffix = _preview_cache_key(filepath)
+        rel = _audio_relative_index(filepath, audio_stream_index)
+        job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
+
+        ext = os.path.splitext(filepath)[1].lower()
+        force_format: str | None = None
+        if not ext:
+            ext = ".mp4"
+            force_format = "mp4"
+
+        track_path = os.path.join(
+            job_dir, f"preview_{suffix}_trackabs{audio_stream_index}{ext}"
+        )
+
+        if os.path.isfile(track_path):
+            return track_path
+
+        with _get_preview_build_lock(track_path):
+            if os.path.isfile(track_path):
+                return track_path
+
+            tmp_path = f"{track_path}.{uuid.uuid4().hex}.tmp{ext}"
+            cmd = [
+                "ffmpeg", "-loglevel", "warning", "-y",
+                "-i", filepath,
+                "-map", "0:v?", "-map", f"0:a:{rel}",
+                "-c", "copy",
+                "-sn",
+            ]
+            if ext in {".mp4", ".m4a", ".m4v", ".mov"}:
+                cmd += ["-movflags", "+faststart"]
+            if force_format:
+                cmd += ["-f", force_format]
+            cmd.append(tmp_path)
+
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            _register_job_process(job_id, proc)
+            stdout_blob = b""
+            stderr_blob = b""
+            try:
+                while True:
+                    if cancel_event.is_set() and proc.poll() is None:
+                        proc.terminate()
+                    try:
+                        stdout_blob, stderr_blob = proc.communicate(timeout=0.2)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+            finally:
+                _unregister_job_process(job_id, proc)
+                _close_pipe(proc.stdout)
+                _close_pipe(proc.stderr)
+
+            if cancel_event.is_set():
+                _safe_remove_file(tmp_path)
+                raise RuntimeError(
+                    f"Track remux cancelled because job {job_id} is being deleted"
+                )
+
+            if proc.returncode != 0:
+                _safe_remove_file(tmp_path)
+                raise RuntimeError(
+                    f"Track remux failed: {stderr_blob.decode(errors='replace')}"
+                )
+
+            for attempt in range(5):
+                try:
+                    os.replace(tmp_path, track_path)
+                    return track_path
+                except PermissionError as exc:
+                    if os.path.isfile(track_path):
+                        _safe_remove_file(tmp_path)
+                        return track_path
+                    if attempt == 4:
+                        _safe_remove_file(tmp_path)
+                        raise RuntimeError(
+                            f"Track remux finalize failed for {track_path}: {exc}"
+                        ) from exc
+                    time.sleep(0.1 * (attempt + 1))
+
+        return track_path
+    finally:
+        _end_job_operation(job_id, cancel_event)
+
+
 # Track in-progress background transcodes to avoid duplicates
 _transcode_locks: dict[str, threading.Event] = {}
 _transcode_lock_guard = threading.Lock()
@@ -1154,7 +1252,8 @@ def cut_file(
         duration = out_point - in_point
         stderr_lines: list[str] = []
 
-        for line in iter(proc.stderr.readline, ""):
+        stderr_iter = iter(proc.stderr.readline, "") if proc.stderr else iter([])
+        for line in stderr_iter:
             if cancel_event and cancel_event.is_set():
                 proc.terminate()
                 proc.wait(timeout=10)
@@ -1249,6 +1348,7 @@ def create_job(source: str, original_path: str, original_name: str) -> str:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": "ready",
         "preview_transcoded": False,
+        "browser_ready": False,
         "cut_settings": None,
         "output_files": [],
     }
@@ -1291,6 +1391,38 @@ def load_job_metadata(job_id: str) -> dict | None:
         return json.load(f)
 
 
+def _resolve_job_source_path(meta: dict) -> str | None:
+    source = meta.get("source")
+    if source == "upload":
+        job_id = meta.get("job_id", "")
+        original_name = meta.get("original_name", "")
+        if not job_id or not original_name:
+            return None
+        try:
+            job_dir = get_job_dir(job_id)
+        except ValueError:
+            return None
+        return os.path.join(job_dir, "input", original_name)
+
+    if source == "server":
+        original_path = meta.get("original_path", "")
+        if not original_path:
+            return None
+        if os.path.isabs(original_path):
+            return original_path
+        return os.path.join(BASE_PATH, original_path)
+
+    return None
+
+
+def _infer_browser_ready(meta: dict) -> bool:
+    source_path = _resolve_job_source_path(meta)
+    if not source_path or not os.path.isfile(source_path):
+        return False
+    info = probe_file(source_path)
+    return not needs_transcoding(info.get("audio_codec", "unknown"), source_path)
+
+
 def list_jobs() -> list[dict]:
     """List all jobs sorted by created_at descending."""
     jobs = []
@@ -1301,6 +1433,12 @@ def list_jobs() -> list[dict]:
             continue
         meta = load_job_metadata(name)
         if meta:
+            if "browser_ready" not in meta:
+                try:
+                    meta["browser_ready"] = _infer_browser_ready(meta)
+                    save_job_metadata(name, meta)
+                except Exception:
+                    meta["browser_ready"] = False
             jobs.append(meta)
     jobs.sort(key=lambda j: j.get("created_at", ""), reverse=True)
     return jobs

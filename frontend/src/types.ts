@@ -140,6 +140,7 @@ export interface CutterJob {
   output_files: string[]
   cut_settings?: CutJobSettings | null
   preview_transcoded?: boolean
+  browser_ready?: boolean
   transcode_error?: string | null
 }
 

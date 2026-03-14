@@ -94,10 +94,10 @@ export default function JobManager({ activeJobId, onLog, onOpenJob }: { activeJo
                     <span className={`shrink-0 rounded px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase ${STATUS_COLORS[job.status] ?? STATUS_COLORS.ready}`}>
                       {job.status}
                     </span>
-                    {job.status === 'ready' && job.preview_transcoded && (
+                    {job.status === 'ready' && (job.preview_transcoded || job.browser_ready) && (
                       <span
                         className="shrink-0 rounded bg-emerald-400/15 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase text-emerald-300"
-                        title="Transcoded preview is ready for browser playback"
+                        title={job.preview_transcoded ? 'Transcoded preview is ready for browser playback' : 'File is already browser-compatible'}
                       >
                         browser ready
                       </span>
