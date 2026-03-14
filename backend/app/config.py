@@ -28,7 +28,7 @@ CUTTER_MAX_DIRECT_REMUX_BYTES = int(
 )
 
 _VALID_FEATURES = {"episodes", "music", "lyrics", "cutter"}
-_features_raw = os.getenv("ENABLED_FEATURES", "episodes,music")
+_features_raw = os.getenv("ENABLED_FEATURES", "episodes,music,cutter")
 _parsed_features: set[str] = {
     f.strip().lower()
     for f in _features_raw.split(",")

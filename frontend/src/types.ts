@@ -65,9 +65,9 @@ export interface CutterForm {
   outputName: string
   streamCopy: boolean
   codec: string
-  audioCodec: string
   container: string
-  audioStreamIndex: number | null
+  audioTracks: AudioTrackConfig[]
+  keepQuality: boolean
 }
 
 export interface AudioStreamInfo {
@@ -75,8 +75,15 @@ export interface AudioStreamInfo {
   codec: string
   channels: number
   sample_rate: number
+  bit_rate: number
   language: string
   title: string
+}
+
+export interface AudioTrackConfig {
+  streamIndex: number
+  mode: 'passthru' | 'reencode' | 'remove'
+  codec: string
 }
 
 export interface ProbeResult {
@@ -85,6 +92,7 @@ export interface ProbeResult {
   audio_codec: string
   container: string
   bitrate: number
+  video_bitrate: number | null
   width: number | null
   height: number | null
   display_aspect_ratio: string | null
@@ -125,10 +133,10 @@ export interface CutJobSettings {
   out_point: number
   stream_copy: boolean
   codec: string | null
-  audio_codec: string | null
   container: string | null
+  audio_tracks: { index: number; mode: string; codec: string | null }[]
+  keep_quality: boolean
   output_name: string | null
-  audio_stream_index: number | null
 }
 
 export interface CutterJob {

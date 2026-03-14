@@ -1,4 +1,5 @@
 """Tests for FastAPI endpoints."""
+import json
 import os
 import pytest
 from unittest.mock import patch
@@ -353,3 +354,34 @@ class TestCutterValidation:
             main_mod.resolve_cutter_path("../../../etc/passwd", "server")
 
         assert exc_info.value.status_code == 400
+
+    def test_cutter_cut_rejects_invalid_audio_track_codec(self, client, tmp_path, monkeypatch):
+        import app.main as main_mod
+
+        media_file = tmp_path / "test.mp4"
+        media_file.write_bytes(b"demo")
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "get_job_dir", lambda _job_id: str(tmp_path))
+        monkeypatch.setattr(main_mod, "resolve_cutter_path", lambda *_args, **_kwargs: str(media_file))
+
+        audio_tracks = json.dumps([
+            {"index": 1, "mode": "reencode", "codec": "evil_codec"}
+        ])
+        response = client.post(
+            "/cutter/cut",
+            data={
+                "path": "test.mp4",
+                "source": "server",
+                "job_id": "11111111-1111-1111-1111-111111111111",
+                "in_point": "0",
+                "out_point": "30",
+                "stream_copy": "false",
+                "codec": "libx264",
+                "container": "mp4",
+                "audio_tracks": audio_tracks,
+                "keep_quality": "false",
+            },
+        )
+        assert response.status_code == 422
+        assert "Invalid audio track codec" in response.json()["detail"]

@@ -37,9 +37,30 @@ import type {
   CutterSourceState,
   CutterPreviewStatus,
   DirectoriesResponse,
+  AudioTrackConfig,
 } from '@/types'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const SOURCE_CODEC_TO_ENCODER: Record<string, string> = {
+  h264: 'libx264',
+  hevc: 'libx265',
+  h265: 'libx265',
+  vp9: 'libvpx-vp9',
+  av1: 'libaom-av1',
+}
+
+const EXT_TO_CONTAINER: Record<string, string> = {
+  '.mp4': 'mp4',
+  '.mkv': 'mkv',
+  '.webm': 'webm',
+  '.mov': 'mov',
+  '.mka': 'mka',
+  '.flac': 'flac',
+  '.ogg': 'ogg',
+  '.mp3': 'mp3',
+  '.m4a': 'mp4',
+}
 
 function encodeFileId(source: string, path: string, jid = ''): string {
   const bytes = new TextEncoder().encode(`${source}:${jid}:${path}`)
@@ -131,6 +152,7 @@ export default function CutterPanel({
   const [isDragOver, setIsDragOver] = useState(false)
   const [previewStatus, setPreviewStatus] = useState<CutterPreviewStatus | null>(null)
   const [transcodePreviewEnabled, setTranscodePreviewEnabled] = useState(false)
+  const [previewAudioStreamIndex, setPreviewAudioStreamIndex] = useState<number | null>(null)
 
   const debouncedSearch = useDebounce(search, 500)
   const abortSSERef = useRef<(() => void) | null>(null)
@@ -138,6 +160,23 @@ export default function CutterPanel({
 
   const update = <K extends keyof CutterForm>(key: K, value: CutterForm[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }))
+
+  const buildProbeSelectionPatch = useCallback((path: string, duration: number, probeData: any) => {
+    const ext = path.substring(path.lastIndexOf('.')).toLowerCase()
+    const sourceVideoCodec = probeData.video_codec?.toLowerCase() ?? ''
+    return {
+      inPoint: 0,
+      outPoint: duration,
+      codec: SOURCE_CODEC_TO_ENCODER[sourceVideoCodec] ?? 'libx264',
+      container: EXT_TO_CONTAINER[ext] ?? 'mp4',
+      audioTracks: (probeData.audio_streams ?? []).map((stream: { index: number }) => ({
+        streamIndex: stream.index,
+        mode: 'passthru' as const,
+        codec: 'aac',
+      })),
+      keepQuality: false,
+    }
+  }, [])
 
   // ── Fetch directories with optional search filter ──────────
   const fetchDirs = useCallback(
@@ -247,19 +286,22 @@ export default function CutterPanel({
           isLoadingFile: false,
           thumbnailUrl: probeData.video_codec != null ? getThumbnailUrl(path, source, jid) : '',
         })
+        const probePatch = buildProbeSelectionPatch(path, probeData.duration, probeData)
         setPersisted((prev) => ({
-          form: { ...prev.form, inPoint: 0, outPoint: probeData.duration, audioStreamIndex: null },
+          form: { ...prev.form, ...probePatch },
         }))
         setPreviewStatus(null)
         setTranscodePreviewEnabled(false)
+        setPreviewAudioStreamIndex(null)
       } catch (err) {
         onError(`Error loading file: ${err instanceof Error ? err.message : String(err)}`)
         setSource({ isLoadingFile: false })
         setPreviewStatus(null)
         setTranscodePreviewEnabled(false)
+        setPreviewAudioStreamIndex(null)
       }
     },
-    [onError, setSource, setPersisted],
+    [onError, setSource, setPersisted, buildProbeSelectionPatch],
   )
 
   // ── Server file selection ─────────────────────────────────────
@@ -271,7 +313,7 @@ export default function CutterPanel({
         const { job_id } = await createJob(path, 'server')
         setSource({ filePath: path, fileId: encodeFileId('server', path, job_id), jobId: job_id })
         setPersisted((prev) => ({
-          form: { ...prev.form, filename: file.name, audioStreamIndex: null },
+          form: { ...prev.form, filename: file.name },
         }))
         await loadFileData(path, 'server', job_id)
       } catch (err) {
@@ -284,7 +326,7 @@ export default function CutterPanel({
 
   // ── Directory selection from DirectorySelect ─────────────────
   const handleDirectoryChange = (dir: string) => {
-    setPersisted({ form: { ...form, directory: dir, filename: '', audioStreamIndex: null } })
+    setPersisted({ form: { ...form, directory: dir, filename: '' } })
     setSource({
       probe: null,
       peaks: [],
@@ -296,6 +338,7 @@ export default function CutterPanel({
     })
     setPreviewStatus(null)
     setTranscodePreviewEnabled(false)
+    setPreviewAudioStreamIndex(null)
     // Reset prevDir so the files effect fires
     prevDir.current = ''
   }
@@ -331,11 +374,17 @@ export default function CutterPanel({
           inPoint: settings?.in_point ?? 0,
           outPoint: settings?.out_point ?? 0,
           streamCopy: settings?.stream_copy ?? true,
-          codec: settings?.codec ?? 'aac',
-          audioCodec: settings?.audio_codec ?? 'copy',
+          codec: settings?.codec ?? 'libx264',
           container: settings?.container ?? 'mp4',
           outputName: settings?.output_name ?? '',
-          audioStreamIndex: settings?.audio_stream_index ?? null,
+          audioTracks: (settings?.audio_tracks ?? []).map(
+            (track: { index: number; mode: string; codec: string | null }) => ({
+              streamIndex: track.index,
+              mode: track.mode as AudioTrackConfig['mode'],
+              codec: track.codec ?? 'aac',
+            }),
+          ),
+          keepQuality: settings?.keep_quality ?? false,
         },
         serverState:
           source === 'server' ? { ...prev.serverState, ...sourceStatePatch } : prev.serverState,
@@ -344,6 +393,7 @@ export default function CutterPanel({
       }))
       setPreviewStatus(null)
       setTranscodePreviewEnabled(false)
+      setPreviewAudioStreamIndex(null)
       try {
         await loadFileData(filePath, source, job.job_id)
         if (shouldAutoUseTranscodedPreview) {
@@ -420,13 +470,12 @@ export default function CutterPanel({
           form: {
             ...prev.form,
             filename: result.filename,
-            inPoint: 0,
-            outPoint: probeData.duration,
-            audioStreamIndex: null,
+            ...buildProbeSelectionPatch(result.filename, probeData.duration, probeData),
           },
         }))
         setPreviewStatus(null)
         setTranscodePreviewEnabled(false)
+        setPreviewAudioStreamIndex(null)
 
         // Generate waveform lazily after UI is ready so uploads feel instant.
         void fetchWaveform(result.filename, 'upload', 800, result.job_id)
@@ -444,7 +493,7 @@ export default function CutterPanel({
         setUploadProgress(-1)
       }
     },
-    [onError, setSource, setPersisted],
+    [onError, setSource, setPersisted, buildProbeSelectionPatch],
   )
 
   const handleDrop = useCallback(
@@ -491,14 +540,18 @@ export default function CutterPanel({
       stream_copy: String(form.streamCopy),
     }
     if (form.outputName) params.output_name = form.outputName
-    if (!form.streamCopy) {
+    if (!form.streamCopy && form.codec) {
       params.codec = form.codec
-      params.container = form.container
-      if (form.audioCodec && form.audioCodec !== 'copy') {
-        params.audio_codec = form.audioCodec
-      }
     }
-    if (selectedAudioStreamIndex != null) params.audio_stream = String(selectedAudioStreamIndex)
+    params.container = form.container
+    params.keep_quality = String(form.keepQuality)
+    params.audio_tracks = JSON.stringify(
+      form.audioTracks.map((track) => ({
+        index: track.streamIndex,
+        mode: track.mode,
+        codec: track.mode === 'reencode' ? track.codec : null,
+      })),
+    )
 
     abortSSERef.current?.()
     abortSSERef.current = connectSSE('/cutter/cut', params, {
@@ -547,22 +600,22 @@ export default function CutterPanel({
   const isVideo = probe?.video_codec != null
   const hasFile = !!probe && !!filePath
   const defaultAudioStreamIndex = probe?.audio_streams?.[0]?.index ?? null
-  const selectedAudioStreamIndex = (() => {
+  const selectedPreviewAudioStreamIndex = (() => {
     if (!probe?.audio_streams?.length) return null
     if (
-      form.audioStreamIndex != null &&
-      probe.audio_streams.some((s) => s.index === form.audioStreamIndex)
+      previewAudioStreamIndex != null &&
+      probe.audio_streams.some((stream) => stream.index === previewAudioStreamIndex)
     ) {
-      return form.audioStreamIndex
+      return previewAudioStreamIndex
     }
     return defaultAudioStreamIndex
   })()
   const streamAudioIndex = (() => {
-    if (selectedAudioStreamIndex == null) return null
-    // For original playback, skip audio_stream on default track to avoid costly remux.
-    if (!transcodePreviewEnabled && selectedAudioStreamIndex === defaultAudioStreamIndex)
+    if (selectedPreviewAudioStreamIndex == null) return null
+    if (!transcodePreviewEnabled && selectedPreviewAudioStreamIndex === defaultAudioStreamIndex) {
       return null
-    return selectedAudioStreamIndex
+    }
+    return selectedPreviewAudioStreamIndex
   })()
 
   const compatibilityReport = hasFile ? getBrowserCompatibilityReport(filePath, probe) : null
@@ -833,12 +886,12 @@ export default function CutterPanel({
               />
             </FormSection>
 
-            {probe.audio_streams && probe.audio_streams.length > 1 && (
-              <FormSection label="Audio Track">
+            {probe.audio_streams && probe.audio_streams.length > 1 && selectedPreviewAudioStreamIndex != null && (
+              <FormSection label="Preview Audio Track">
                 <AudioTrackSelect
                   streams={probe.audio_streams}
-                  value={selectedAudioStreamIndex ?? probe.audio_streams[0]!.index}
-                  onChange={(index) => update('audioStreamIndex', index)}
+                  value={selectedPreviewAudioStreamIndex}
+                  onChange={setPreviewAudioStreamIndex}
                   disabled={locked}
                 />
               </FormSection>
@@ -858,14 +911,21 @@ export default function CutterPanel({
               outputName={form.outputName}
               streamCopy={form.streamCopy}
               codec={form.codec}
-              audioCodec={form.audioCodec}
               container={form.container}
+              keepQuality={form.keepQuality}
+              audioTracks={form.audioTracks}
+              audioStreams={probe.audio_streams ?? []}
               isVideo={isVideo}
+              sourceVideoBitrate={probe.video_bitrate ?? null}
               onOutputNameChange={(v) => update('outputName', v)}
-              onStreamCopyChange={(v) => update('streamCopy', v)}
+              onStreamCopyChange={(v) => {
+                update('streamCopy', v)
+                if (v) update('keepQuality', false)
+              }}
               onCodecChange={(v) => update('codec', v)}
-              onAudioCodecChange={(v) => update('audioCodec', v)}
               onContainerChange={(v) => update('container', v)}
+              onKeepQualityChange={(v) => update('keepQuality', v)}
+              onAudioTracksChange={(v) => update('audioTracks', v)}
             />
 
             <button type="submit" disabled={busy || !hasFile} className="btn-submit btn-emerald">

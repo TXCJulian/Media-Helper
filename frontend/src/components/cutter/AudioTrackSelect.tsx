@@ -11,7 +11,7 @@ interface AudioTrackSelectProps {
 function formatTrack(stream: AudioStreamInfo, i: number): string {
   let label = `Track ${i + 1}: ${stream.codec.toUpperCase()} ${stream.channels}ch`
   if (stream.language) label += ` (${stream.language})`
-  if (stream.title) label += ` — ${stream.title}`
+  if (stream.title) label += ` - ${stream.title}`
   return label
 }
 
@@ -27,7 +27,6 @@ export default function AudioTrackSelect({
   const listRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
 
-  // Close on outside click
   useEffect(() => {
     if (!isOpen) return
     const handler = (e: MouseEvent) => {
@@ -39,7 +38,6 @@ export default function AudioTrackSelect({
     return () => document.removeEventListener('mousedown', handler)
   }, [isOpen])
 
-  // Scroll focused item into view
   useEffect(() => {
     if (!isOpen || focusedIndex < 0 || !listRef.current) return
     const items = listRef.current.children
@@ -125,7 +123,7 @@ export default function AudioTrackSelect({
           disabled ? 'cursor-not-allowed opacity-50' : ''
         } ${
           isOpen
-            ? 'bg-[var(--bg-input-focus)] border-[var(--accent-4)] shadow-[0_0_0_3px_var(--accent-4-glow),0_0_20px_rgba(52,211,153,0.08)]'
+            ? 'border-[var(--accent-4)] bg-[var(--bg-input-focus)] shadow-[0_0_0_3px_var(--accent-4-glow),0_0_20px_rgba(52,211,153,0.08)]'
             : 'border-[var(--border)] hover:border-[var(--glass-border-hover)]'
         }`}
       >
@@ -156,7 +154,7 @@ export default function AudioTrackSelect({
                 onClick={() => handleSelect(stream.index)}
                 onMouseEnter={() => setFocusedIndex(i)}
                 className={`cursor-pointer truncate rounded-lg px-[0.75rem] py-[0.5rem] text-[0.84rem] transition-colors duration-100 ${
-                  isSelected ? 'text-[var(--accent-4)] font-medium' : 'text-[var(--text-primary)]'
+                  isSelected ? 'font-medium text-[var(--accent-4)]' : 'text-[var(--text-primary)]'
                 } ${isFocused ? 'bg-[var(--bg-glass-hover)]' : ''}`}
               >
                 {formatTrack(stream, i)}

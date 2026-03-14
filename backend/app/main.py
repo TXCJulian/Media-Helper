@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 import asyncio
+import json
 import mimetypes
 import os
 import logging
@@ -1078,9 +1079,9 @@ def cutter_cut(
     output_name: str = Form("", max_length=300),
     stream_copy: bool = Form(True),
     codec: str = Form("", max_length=20),
-    audio_codec: str = Form("", max_length=20),
     container: str = Form("", max_length=20),
-    audio_stream: int | None = Form(None),
+    audio_tracks_json: str = Form("[]", alias="audio_tracks", max_length=5000),
+    keep_quality: bool = Form(False),
 ):
     require_feature("cutter")
 
@@ -1114,8 +1115,6 @@ def cutter_cut(
         "libaom-av1",
     }
     valid_audio_codecs = {
-        "",
-        "copy",
         "aac",
         "flac",
         "opus",
@@ -1147,14 +1146,32 @@ def cutter_cut(
 
     if codec and codec not in valid_codecs:
         raise HTTPException(status_code=422, detail=f"Invalid codec: {codec}")
-    if audio_codec and audio_codec not in valid_audio_codecs:
-        raise HTTPException(
-            status_code=422, detail=f"Invalid audio codec: {audio_codec}"
-        )
     if container and container not in valid_containers:
         raise HTTPException(status_code=422, detail=f"Invalid container: {container}")
 
-    audio_codec = "" if audio_codec == "copy" else audio_codec
+    try:
+        audio_tracks_parsed = json.loads(audio_tracks_json)
+        if not isinstance(audio_tracks_parsed, list):
+            raise ValueError("audio_tracks must be a JSON array")
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid audio_tracks: {exc}")
+
+    valid_modes = {"passthru", "reencode", "remove"}
+    for track in audio_tracks_parsed:
+        if not isinstance(track, dict):
+            raise HTTPException(status_code=422, detail="Each audio track must be an object")
+        if track.get("mode") not in valid_modes:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid audio track mode: {track.get('mode')}",
+            )
+        if track["mode"] == "reencode":
+            track_codec = track.get("codec", "")
+            if track_codec and track_codec not in valid_audio_codecs:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid audio track codec: {track_codec}",
+                )
 
     # Validate against file duration
     try:
@@ -1167,6 +1184,14 @@ def cutter_cut(
             )
     except RuntimeError as exc:
         logger.warning("Could not probe source for cutter validation: %s", exc)
+        file_info = {}
+
+    source_video_bitrate = file_info.get("video_bitrate") if keep_quality else None
+    source_audio_bitrates = {}
+    probe_audio_streams = file_info.get("audio_streams", [])
+    if keep_quality:
+        for stream in probe_audio_streams:
+            source_audio_bitrates[stream["index"]] = stream.get("bit_rate", 0)
 
     # Determine output filename — use original name if no output_name given
     original_name = os.path.basename(resolved)
@@ -1203,8 +1228,8 @@ def cutter_cut(
                 "stream_copy": stream_copy,
                 "codec": codec or None,
                 "container": container or None,
-                "audio_codec": audio_codec or None,
-                "audio_stream_index": audio_stream,
+                "audio_tracks": audio_tracks_parsed,
+                "keep_quality": keep_quality,
                 "output_name": output_name or None,
             }
             save_job_metadata(job_id, meta)
@@ -1229,10 +1254,13 @@ def cutter_cut(
                 output_path=output_path,
                 stream_copy=stream_copy,
                 codec=codec or None,
-                audio_codec=audio_codec or None,
+                audio_tracks=audio_tracks_parsed if audio_tracks_parsed else None,
                 container=container or None,
                 progress_cb=progress_cb,
-                audio_stream_index=audio_stream,
+                keep_quality=keep_quality,
+                source_video_bitrate=source_video_bitrate,
+                source_audio_bitrates=source_audio_bitrates if source_audio_bitrates else None,
+                audio_streams=probe_audio_streams,
                 job_id=job_id,
                 cancel_event=cancel_event,
             )

@@ -8,20 +8,66 @@ import pytest
 from app import cutter
 
 
-def test_audio_relative_index_raises_for_unknown_stream(monkeypatch):
+def test_audio_relative_index_raises_for_unknown_stream():
+    audio_streams = [{"index": 1}, {"index": 3}]
+    with pytest.raises(RuntimeError, match="Audio stream index 2 not found"):
+        cutter._audio_relative_index(audio_streams, 2)
+
+
+def test_audio_relative_index_returns_correct_relative_index():
+    audio_streams = [{"index": 1}, {"index": 3}, {"index": 5}]
+    assert cutter._audio_relative_index(audio_streams, 1) == 0
+    assert cutter._audio_relative_index(audio_streams, 3) == 1
+    assert cutter._audio_relative_index(audio_streams, 5) == 2
+
+
+def test_probe_file_includes_audio_bitrate(monkeypatch):
+    fake_output = json.dumps(
+        {
+            "format": {
+                "duration": "60.0",
+                "bit_rate": "1000000",
+                "format_name": "matroska",
+            },
+            "streams": [
+                {
+                    "index": 0,
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "width": 1920,
+                    "height": 1080,
+                },
+                {
+                    "index": 1,
+                    "codec_type": "audio",
+                    "codec_name": "aac",
+                    "channels": 2,
+                    "sample_rate": "48000",
+                    "bit_rate": "192000",
+                    "tags": {},
+                },
+                {
+                    "index": 2,
+                    "codec_type": "audio",
+                    "codec_name": "ac3",
+                    "channels": 6,
+                    "sample_rate": "48000",
+                    "bit_rate": "384000",
+                    "tags": {"language": "ger"},
+                },
+            ],
+        }
+    )
     monkeypatch.setattr(
-        cutter,
-        "probe_file",
-        lambda _path: {
-            "audio_streams": [
-                {"index": 1},
-                {"index": 3},
-            ]
-        },
+        cutter.subprocess,
+        "run",
+        lambda *a, **kw: types.SimpleNamespace(returncode=0, stdout=fake_output, stderr=""),
     )
 
-    with pytest.raises(RuntimeError, match="Audio stream index 2 not found"):
-        cutter._audio_relative_index("demo.mkv", 2)
+    info = cutter.probe_file("/fake/file.mkv")
+    assert info["audio_streams"][0]["bit_rate"] == 192000
+    assert info["audio_streams"][1]["bit_rate"] == 384000
+    assert info["video_bitrate"] == 0
 
 
 def test_get_track_preview_uses_mp4_output_and_absolute_track_cache_key(tmp_path, monkeypatch):
@@ -31,7 +77,8 @@ def test_get_track_preview_uses_mp4_output_and_absolute_track_cache_key(tmp_path
 
     monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
     monkeypatch.setattr(cutter, "_preview_cache_key", lambda _path: "abc123")
-    monkeypatch.setattr(cutter, "_audio_relative_index", lambda _path, _idx: 1)
+    monkeypatch.setattr(cutter, "_audio_relative_index", lambda _streams, _idx: 1)
+    monkeypatch.setattr(cutter, "probe_file", lambda _path: {"audio_streams": [{"index": 7}]})
 
     def fake_isfile(_path):
         return False
@@ -230,3 +277,313 @@ def test_get_job_dir_rejects_non_uuid(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="Invalid job_id format"):
         cutter.get_job_dir("not-a-uuid")
+
+
+def test_cut_file_multi_track_mapping(tmp_path, monkeypatch):
+    monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
+    monkeypatch.setattr(cutter, "collision_safe_path", lambda p: p)
+
+    captured_cmd = {}
+
+    class FakeProc:
+        returncode = 0
+        stderr = None
+        stdout = None
+
+        def wait(self, timeout=None):
+            return None
+
+        def poll(self):
+            return 0
+
+    def fake_popen(cmd, **_kw):
+        captured_cmd["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(cutter.subprocess, "Popen", fake_popen)
+
+    audio_streams = [
+        {"index": 1, "bit_rate": 192000},
+        {"index": 3, "bit_rate": 384000},
+        {"index": 5, "bit_rate": 128000},
+    ]
+    audio_tracks = [
+        {"index": 1, "mode": "passthru", "codec": None},
+        {"index": 3, "mode": "reencode", "codec": "aac"},
+        {"index": 5, "mode": "remove", "codec": None},
+    ]
+
+    out = tmp_path / "output.mkv"
+    out.touch()
+
+    cutter.cut_file(
+        filepath="/fake/input.mkv",
+        in_point=10.0,
+        out_point=40.0,
+        output_path=str(out),
+        stream_copy=True,
+        codec=None,
+        audio_tracks=audio_tracks,
+        container="mkv",
+        progress_cb=lambda _msg: None,
+        audio_streams=audio_streams,
+    )
+
+    cmd = captured_cmd["cmd"]
+    assert "-map" in cmd
+    map_args = [cmd[i + 1] for i, v in enumerate(cmd) if v == "-map"]
+    assert "0:v?" in map_args
+    assert "0:a:0" in map_args
+    assert "0:a:1" in map_args
+    assert "0:a:2" not in map_args
+
+    v_idx = cmd.index("-c:v")
+    assert cmd[v_idx + 1] == "copy"
+
+    a0_idx = cmd.index("-c:a:0")
+    assert cmd[a0_idx + 1] == "copy"
+
+    a1_idx = cmd.index("-c:a:1")
+    assert cmd[a1_idx + 1] == "aac"
+
+
+def test_cut_file_keep_quality_adds_bitrate_flags(tmp_path, monkeypatch):
+    monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
+    monkeypatch.setattr(cutter, "collision_safe_path", lambda p: p)
+
+    captured_cmd = {}
+
+    class FakeProc:
+        returncode = 0
+        stderr = None
+        stdout = None
+
+        def wait(self, timeout=None):
+            return None
+
+        def poll(self):
+            return 0
+
+    def fake_popen(cmd, **_kw):
+        captured_cmd["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(cutter.subprocess, "Popen", fake_popen)
+
+    audio_streams = [{"index": 1, "bit_rate": 192000}]
+    audio_tracks = [{"index": 1, "mode": "reencode", "codec": "aac"}]
+
+    out = tmp_path / "output.mp4"
+    out.touch()
+
+    cutter.cut_file(
+        filepath="/fake/input.mp4",
+        in_point=0.0,
+        out_point=30.0,
+        output_path=str(out),
+        stream_copy=False,
+        codec="libx264",
+        audio_tracks=audio_tracks,
+        container="mp4",
+        progress_cb=lambda _msg: None,
+        keep_quality=True,
+        source_video_bitrate=5000000,
+        source_audio_bitrates={1: 192000},
+        audio_streams=audio_streams,
+    )
+
+    cmd = captured_cmd["cmd"]
+    bv_idx = cmd.index("-b:v")
+    assert cmd[bv_idx + 1] == "5000000"
+    ba_idx = cmd.index("-b:a:0")
+    assert cmd[ba_idx + 1] == "192000"
+
+
+def test_cut_file_keep_quality_skips_zero_bitrate(tmp_path, monkeypatch):
+    monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
+    monkeypatch.setattr(cutter, "collision_safe_path", lambda p: p)
+
+    captured_cmd = {}
+
+    class FakeProc:
+        returncode = 0
+        stderr = None
+        stdout = None
+
+        def wait(self, timeout=None):
+            return None
+
+        def poll(self):
+            return 0
+
+    def fake_popen(cmd, **_kw):
+        captured_cmd["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(cutter.subprocess, "Popen", fake_popen)
+
+    audio_streams = [{"index": 1, "bit_rate": 0}]
+    audio_tracks = [{"index": 1, "mode": "reencode", "codec": "aac"}]
+
+    out = tmp_path / "output.mp4"
+    out.touch()
+
+    cutter.cut_file(
+        filepath="/fake/input.mp4",
+        in_point=0.0,
+        out_point=30.0,
+        output_path=str(out),
+        stream_copy=False,
+        codec="libx264",
+        audio_tracks=audio_tracks,
+        container="mp4",
+        progress_cb=lambda _msg: None,
+        keep_quality=True,
+        source_video_bitrate=0,
+        source_audio_bitrates={1: 0},
+        audio_streams=audio_streams,
+    )
+
+    cmd = captured_cmd["cmd"]
+    assert "-b:v" not in cmd
+    assert "-b:a:0" not in cmd
+
+
+def test_cut_file_all_tracks_removed(tmp_path, monkeypatch):
+    monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
+    monkeypatch.setattr(cutter, "collision_safe_path", lambda p: p)
+
+    captured_cmd = {}
+
+    class FakeProc:
+        returncode = 0
+        stderr = None
+        stdout = None
+
+        def wait(self, timeout=None):
+            return None
+
+        def poll(self):
+            return 0
+
+    def fake_popen(cmd, **_kw):
+        captured_cmd["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(cutter.subprocess, "Popen", fake_popen)
+
+    audio_streams = [{"index": 1, "bit_rate": 192000}]
+    audio_tracks = [{"index": 1, "mode": "remove", "codec": None}]
+
+    out = tmp_path / "output.mkv"
+    out.touch()
+
+    cutter.cut_file(
+        filepath="/fake/input.mkv",
+        in_point=0.0,
+        out_point=30.0,
+        output_path=str(out),
+        stream_copy=True,
+        codec=None,
+        audio_tracks=audio_tracks,
+        container="mkv",
+        progress_cb=lambda _msg: None,
+        audio_streams=audio_streams,
+    )
+
+    cmd = captured_cmd["cmd"]
+    map_args = [cmd[i + 1] for i, v in enumerate(cmd) if v == "-map"]
+    assert "0:v?" in map_args
+    assert not any(arg.startswith("0:a:") for arg in map_args)
+
+
+def test_cut_file_audio_only_per_track(tmp_path, monkeypatch):
+    monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
+    monkeypatch.setattr(cutter, "collision_safe_path", lambda p: p)
+
+    captured_cmd = {}
+
+    class FakeProc:
+        returncode = 0
+        stderr = None
+        stdout = None
+
+        def wait(self, timeout=None):
+            return None
+
+        def poll(self):
+            return 0
+
+    def fake_popen(cmd, **_kw):
+        captured_cmd["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(cutter.subprocess, "Popen", fake_popen)
+
+    audio_streams = [{"index": 0, "bit_rate": 320000}]
+    audio_tracks = [{"index": 0, "mode": "reencode", "codec": "aac"}]
+
+    out = tmp_path / "output.m4a"
+    out.touch()
+
+    cutter.cut_file(
+        filepath="/fake/input.flac",
+        in_point=0.0,
+        out_point=60.0,
+        output_path=str(out),
+        stream_copy=False,
+        codec=None,
+        audio_tracks=audio_tracks,
+        container="m4a",
+        progress_cb=lambda _msg: None,
+        audio_streams=audio_streams,
+    )
+
+    cmd = captured_cmd["cmd"]
+    map_args = [cmd[i + 1] for i, v in enumerate(cmd) if v == "-map"]
+    assert "0:v?" in map_args
+    a0_idx = cmd.index("-c:a:0")
+    assert cmd[a0_idx + 1] == "aac"
+    assert "-c:v" not in cmd
+
+
+def test_cut_file_backwards_compat_no_audio_tracks(tmp_path, monkeypatch):
+    monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
+    monkeypatch.setattr(cutter, "collision_safe_path", lambda p: p)
+
+    captured_cmd = {}
+
+    class FakeProc:
+        returncode = 0
+        stderr = None
+        stdout = None
+
+        def wait(self, timeout=None):
+            return None
+
+        def poll(self):
+            return 0
+
+    def fake_popen(cmd, **_kw):
+        captured_cmd["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(cutter.subprocess, "Popen", fake_popen)
+
+    out = tmp_path / "output.mp4"
+    out.touch()
+
+    cutter.cut_file(
+        filepath="/fake/input.mp4",
+        in_point=0.0,
+        out_point=30.0,
+        output_path=str(out),
+        stream_copy=True,
+        codec=None,
+        audio_tracks=None,
+        container="mp4",
+        progress_cb=lambda _msg: None,
+    )
+
+    cmd = captured_cmd["cmd"]
+    assert "-c" in cmd and cmd[cmd.index("-c") + 1] == "copy"

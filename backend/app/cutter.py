@@ -79,21 +79,18 @@ class _JobActivityState:
         self.processes: set[object] = set()
 
 
-def _audio_relative_index(filepath: str, absolute_index: int) -> int:
+def _audio_relative_index(audio_streams: list[dict], absolute_index: int) -> int:
     """Convert an absolute ffprobe stream index to an audio-type-relative index.
 
     e.g. if streams are [video(0), audio(1), sub(2), audio(3)],
     absolute_index=3 → audio-relative index 1 (second audio stream).
     """
-    info = probe_file(filepath)
-    audio_streams = info.get("audio_streams", [])
     for i, s in enumerate(audio_streams):
-        if s["index"] == absolute_index:
+        if int(s.get("index", -1)) == absolute_index:
             return i
-    available = ", ".join(str(s.get("index")) for s in audio_streams)
     raise RuntimeError(
-        f"Audio stream index {absolute_index} not found in {filepath}. "
-        f"Available audio stream indexes: [{available}]"
+        f"Audio stream index {absolute_index} not found in "
+        f"{[s.get('index') for s in audio_streams]}"
     )
 
 
@@ -129,6 +126,16 @@ _VALID_CONTAINERS = {
     "mka",
     "ts",
     "mts",
+}
+
+# ffmpeg muxer names that differ from the common file extension
+_CONTAINER_TO_FFMPEG_FORMAT: dict[str, str] = {
+    "mkv": "matroska",
+    "mka": "matroska",
+    "m4a": "ipod",
+    "mts": "mpegts",
+    "ts": "mpegts",
+    "aac": "adts",
 }
 
 
@@ -307,6 +314,7 @@ def probe_file(filepath: str) -> dict:
             "codec": s.get("codec_name", "unknown"),
             "channels": int(s.get("channels", 0)),
             "sample_rate": int(s.get("sample_rate", 0)),
+            "bit_rate": int(s.get("bit_rate", 0)),
             "language": s.get("tags", {}).get("language", ""),
             "title": s.get("tags", {}).get("title", ""),
         }
@@ -333,6 +341,7 @@ def probe_file(filepath: str) -> dict:
         ),
         "display_aspect_ratio": display_aspect_ratio,
         "sample_rate": first_audio["sample_rate"] if first_audio else 0,
+        "video_bitrate": int(video_stream.get("bit_rate", 0)) if video_stream else None,
         "audio_streams": audio_streams,
     }
     return info
@@ -409,7 +418,7 @@ def transcode_for_preview(
     if audio_stream_index is not None:
         if has_video:
             cmd += ["-map", "0:v:0"]
-        rel = _audio_relative_index(filepath, audio_stream_index)
+        rel = _audio_relative_index(audio_streams, audio_stream_index)
         cmd += ["-map", f"0:a:{rel}"]
     elif has_video:
         pass  # default mapping picks first video + first audio
@@ -1034,7 +1043,8 @@ def get_track_preview(
     _begin_job_operation(job_id, cancel_event)
     try:
         suffix = _preview_cache_key(filepath)
-        rel = _audio_relative_index(filepath, audio_stream_index)
+        info = probe_file(filepath)
+        rel = _audio_relative_index(info.get("audio_streams", []), audio_stream_index)
         job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
         os.makedirs(job_dir, exist_ok=True)
         track_path = os.path.join(
@@ -1134,7 +1144,8 @@ def get_track_remux(
     _begin_job_operation(job_id, cancel_event)
     try:
         suffix = _preview_cache_key(filepath)
-        rel = _audio_relative_index(filepath, audio_stream_index)
+        info = probe_file(filepath)
+        rel = _audio_relative_index(info.get("audio_streams", []), audio_stream_index)
         job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
         os.makedirs(job_dir, exist_ok=True)
 
@@ -1416,10 +1427,15 @@ def cut_file(
     output_path: str,
     stream_copy: bool,
     codec: Optional[str],
-    audio_codec: Optional[str],
+    audio_tracks: list[dict] | None,
     container: Optional[str],
     progress_cb: Callable[[str], None],
+    keep_quality: bool = False,
+    source_video_bitrate: int | None = None,
+    source_audio_bitrates: dict[int, int] | None = None,
+    audio_streams: list[dict] | None = None,
     audio_stream_index: int | None = None,
+    audio_codec: Optional[str] = None,
     job_id: str | None = None,
     cancel_event: Optional[threading.Event] = None,
 ) -> str:
@@ -1432,10 +1448,15 @@ def cut_file(
         output_path: Desired output file path.
         stream_copy: If True, use -c copy (no re-encoding).
         codec: Target codec name (video codec for video, audio codec for audio-only).
-        audio_codec: Target audio codec when re-encoding video (None = copy).
+        audio_tracks: Per-track audio output settings. If None, uses legacy behavior.
         container: Target container format (used for output extension).
         progress_cb: Callback for progress messages.
+        keep_quality: Preserve source bitrate when re-encoding where available.
+        source_video_bitrate: Optional source video bitrate from ffprobe.
+        source_audio_bitrates: Optional map of source audio stream index -> bitrate.
+        audio_streams: Optional source audio stream list from ffprobe.
         audio_stream_index: Absolute ffprobe audio stream index to map.
+        audio_codec: Legacy single audio codec for video re-encode path.
         job_id: Optional cutter job id for cancellation/cleanup tracking.
         cancel_event: Optional event used to cancel long-running ffmpeg tasks.
 
@@ -1450,6 +1471,13 @@ def cut_file(
         codec = "flac"
         if not container:
             container = "flac"
+        if audio_tracks:
+            audio_tracks = [
+                {**track, "mode": "reencode", "codec": "flac"}
+                if track.get("mode") == "passthru"
+                else track
+                for track in audio_tracks
+            ]
 
     output_path = collision_safe_path(output_path)
     duration = out_point - in_point
@@ -1469,19 +1497,24 @@ def cut_file(
         filepath,
     ]
 
-    if audio_stream_index is not None:
-        cmd += [
-            "-map",
-            "0:v?",
-            "-map",
-            f"0:a:{_audio_relative_index(filepath, audio_stream_index)}",
-        ]
+    if audio_tracks is not None:
+        cmd += ["-map", "0:v?"]
+
+        included_tracks = [track for track in audio_tracks if track.get("mode") != "remove"]
+        probe_streams = audio_streams or []
+
+        for track in included_tracks:
+            rel_idx = _audio_relative_index(probe_streams, int(track["index"]))
+            cmd += ["-map", f"0:a:{rel_idx}"]
+    elif audio_stream_index is not None:
+        rel_idx = _audio_relative_index(audio_streams or probe_file(filepath).get("audio_streams", []), audio_stream_index)
+        cmd += ["-map", "0:v?", "-map", f"0:a:{rel_idx}"]
 
     # Validate codec/container against allowlists
     _valid_codecs = set(_CODEC_TO_ENCODER.keys()) | _VIDEO_ENCODERS
     if codec and codec not in _valid_codecs:
         raise ValueError(f"Invalid codec: '{codec}'. Allowed: {sorted(_valid_codecs)}")
-    if audio_codec and audio_codec not in _CODEC_TO_ENCODER:
+    if audio_tracks is None and audio_codec and audio_codec not in _CODEC_TO_ENCODER:
         raise ValueError(
             f"Invalid audio codec: '{audio_codec}'. Allowed: {sorted(_CODEC_TO_ENCODER.keys())}"
         )
@@ -1490,24 +1523,49 @@ def cut_file(
             f"Invalid container: '{container}'. Allowed: {sorted(_VALID_CONTAINERS)}"
         )
 
-    if stream_copy:
-        cmd += ["-c", "copy"]
-    else:
-        if codec:
+    if audio_tracks is not None:
+        if stream_copy:
+            cmd += ["-c:v", "copy"]
+        elif codec:
             encoder = _CODEC_TO_ENCODER.get(codec, codec)
             if encoder in _VIDEO_ENCODERS:
                 cmd += ["-c:v", encoder]
-                # Audio codec for video re-encode: explicit or copy
-                if audio_codec:
-                    a_enc = _CODEC_TO_ENCODER.get(audio_codec, audio_codec)
-                    cmd += ["-c:a", a_enc]
+                if keep_quality and source_video_bitrate and source_video_bitrate > 0:
+                    cmd += ["-b:v", str(source_video_bitrate)]
+
+        bitrates = source_audio_bitrates or {}
+        for out_idx, track in enumerate(included_tracks):
+            mode = track.get("mode")
+            if mode == "passthru":
+                cmd += [f"-c:a:{out_idx}", "copy"]
+            elif mode == "reencode":
+                raw_codec = str(track.get("codec") or "aac")
+                enc = _CODEC_TO_ENCODER.get(raw_codec, raw_codec)
+                cmd += [f"-c:a:{out_idx}", enc]
+                if keep_quality:
+                    br = int(bitrates.get(int(track["index"]), 0) or 0)
+                    if br > 0:
+                        cmd += [f"-b:a:{out_idx}", str(br)]
+    else:
+        if stream_copy:
+            cmd += ["-c", "copy"]
+        else:
+            if codec:
+                encoder = _CODEC_TO_ENCODER.get(codec, codec)
+                if encoder in _VIDEO_ENCODERS:
+                    cmd += ["-c:v", encoder]
+                    # Audio codec for video re-encode: explicit or copy
+                    if audio_codec:
+                        a_enc = _CODEC_TO_ENCODER.get(audio_codec, audio_codec)
+                        cmd += ["-c:a", a_enc]
+                    else:
+                        cmd += ["-c:a", "copy"]
                 else:
-                    cmd += ["-c:a", "copy"]
-            else:
-                cmd += ["-c:a", encoder]
+                    cmd += ["-c:a", encoder]
 
     if container:
-        cmd += ["-f", container]
+        ffmpeg_fmt = _CONTAINER_TO_FFMPEG_FORMAT.get(container, container)
+        cmd += ["-f", ffmpeg_fmt]
 
     cmd += ["-y", output_path]
 
