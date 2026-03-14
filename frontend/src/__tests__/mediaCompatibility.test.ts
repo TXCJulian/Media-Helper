@@ -52,9 +52,30 @@ describe('mediaCompatibility', () => {
       'Z:/Movies/clip.mp4',
       probe({
         audio_streams: [
-          { index: 1, codec: 'dts', channels: 6, sample_rate: 48000, language: 'eng', title: 'Main' },
-          { index: 2, codec: 'aac', channels: 2, sample_rate: 48000, language: 'eng', title: 'Stereo' },
-          { index: 3, codec: 'ac3', channels: 6, sample_rate: 48000, language: 'eng', title: 'Surround' },
+          {
+            index: 1,
+            codec: 'dts',
+            channels: 6,
+            sample_rate: 48000,
+            language: 'eng',
+            title: 'Main',
+          },
+          {
+            index: 2,
+            codec: 'aac',
+            channels: 2,
+            sample_rate: 48000,
+            language: 'eng',
+            title: 'Stereo',
+          },
+          {
+            index: 3,
+            codec: 'ac3',
+            channels: 6,
+            sample_rate: 48000,
+            language: 'eng',
+            title: 'Surround',
+          },
         ],
       }),
     )
@@ -68,7 +89,9 @@ describe('mediaCompatibility', () => {
       'Z:/Movies/clip.mkv',
       probe({
         video_codec: 'hevc',
-        audio_streams: [{ index: 1, codec: 'dts', channels: 6, sample_rate: 48000, language: '', title: '' }],
+        audio_streams: [
+          { index: 1, codec: 'dts', channels: 6, sample_rate: 48000, language: '', title: '' },
+        ],
       }),
     )
 

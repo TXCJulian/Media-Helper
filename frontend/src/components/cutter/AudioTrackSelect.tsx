@@ -129,9 +129,7 @@ export default function AudioTrackSelect({
             : 'border-[var(--border)] hover:border-[var(--glass-border-hover)]'
         }`}
       >
-        <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">
-          {displayValue}
-        </span>
+        <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">{displayValue}</span>
         <svg
           className={`pointer-events-none absolute right-[0.85rem] h-3 w-3 text-[var(--text-secondary)] transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
           viewBox="0 0 16 16"
@@ -158,9 +156,7 @@ export default function AudioTrackSelect({
                 onClick={() => handleSelect(stream.index)}
                 onMouseEnter={() => setFocusedIndex(i)}
                 className={`cursor-pointer truncate rounded-lg px-[0.75rem] py-[0.5rem] text-[0.84rem] transition-colors duration-100 ${
-                  isSelected
-                    ? 'text-[var(--accent-4)] font-medium'
-                    : 'text-[var(--text-primary)]'
+                  isSelected ? 'text-[var(--accent-4)] font-medium' : 'text-[var(--text-primary)]'
                 } ${isFocused ? 'bg-[var(--bg-glass-hover)]' : ''}`}
               >
                 {formatTrack(stream, i)}

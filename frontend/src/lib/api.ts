@@ -146,10 +146,7 @@ export function fetchCutterFiles(
   return fetchJson<{ files: import('@/types').CutterFileInfo[] }>('/cutter/files', { directory })
 }
 
-export function createJob(
-  path: string,
-  source = 'server',
-): Promise<{ job_id: string }> {
+export function createJob(path: string, source = 'server'): Promise<{ job_id: string }> {
   return postForm<{ job_id: string }>('/cutter/jobs', { path, source })
 }
 
@@ -193,7 +190,10 @@ export async function listJobs(): Promise<{ jobs: import('@/types').CutterJob[] 
 
 export async function deleteJob(jobId: string): Promise<void> {
   const url = new URL(`/cutter/jobs/${encodeURIComponent(jobId)}`, API_BASE)
-  const res = await fetch(url, { method: 'DELETE', signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS) })
+  const res = await fetch(url, {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+  })
   if (!res.ok) throw new Error(await extractErrorMessage(res))
 }
 
@@ -201,8 +201,14 @@ export async function getJob(jobId: string): Promise<import('@/types').CutterJob
   return fetchJson<import('@/types').CutterJob>(`/cutter/jobs/${encodeURIComponent(jobId)}`)
 }
 
-export async function saveToSource(jobId: string, filename: string): Promise<{ status: string; filename: string }> {
-  const url = new URL(`/cutter/jobs/${encodeURIComponent(jobId)}/save/${encodeURIComponent(filename)}`, API_BASE)
+export async function saveToSource(
+  jobId: string,
+  filename: string,
+): Promise<{ status: string; filename: string }> {
+  const url = new URL(
+    `/cutter/jobs/${encodeURIComponent(jobId)}/save/${encodeURIComponent(filename)}`,
+    API_BASE,
+  )
   const res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS) })
   if (!res.ok) throw new Error(await extractErrorMessage(res))
   return res.json()

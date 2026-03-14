@@ -121,8 +121,8 @@ export default function MediaPlayer({
     sourceAspectRatio && sourceAspectRatio.trim().length > 0
       ? sourceAspectRatio
       : videoWidth != null && videoHeight != null && videoWidth > 0 && videoHeight > 0
-      ? `${videoWidth} / ${videoHeight}`
-      : '16 / 9'
+        ? `${videoWidth} / ${videoHeight}`
+        : '16 / 9'
   const videoAspectRatio = loadedAspectRatio ?? fallbackAspectRatio
 
   useEffect(() => {
@@ -235,7 +235,11 @@ export default function MediaPlayer({
       stopLoop()
     } else {
       // Only reset to inPoint if outside trim range or playback finished
-      if (el.currentTime < inPoint || el.currentTime >= outPoint - END_TOLERANCE_SECONDS || el.ended) {
+      if (
+        el.currentTime < inPoint ||
+        el.currentTime >= outPoint - END_TOLERANCE_SECONDS ||
+        el.ended
+      ) {
         el.currentTime = inPoint
         setCurrentTime(inPoint)
       }
@@ -326,7 +330,8 @@ export default function MediaPlayer({
       ? formatEta(transcodeEtaSeconds)
       : null
   const transcodingTitle = isPreparingPostTranscode ? 'Preparing stream' : 'Transcoding preview'
-  const transcodingDetailMessage = transcodeMessage?.trim() || 'Generating browser-compatible preview'
+  const transcodingDetailMessage =
+    transcodeMessage?.trim() || 'Generating browser-compatible preview'
 
   const handleMediaError = useCallback(() => {
     const el = mediaRef.current
@@ -347,15 +352,12 @@ export default function MediaPlayer({
   }, [streamUrl, stopLoop])
 
   // ── Seek from WaveformBar ─────────────────────────────────────
-  const handleSeek = useCallback(
-    (time: number) => {
-      const el = mediaRef.current
-      if (!el) return
-      el.currentTime = time
-      setCurrentTime(time)
-    },
-    [],
-  )
+  const handleSeek = useCallback((time: number) => {
+    const el = mediaRef.current
+    if (!el) return
+    el.currentTime = time
+    setCurrentTime(time)
+  }, [])
 
   // ── Controls bar ──────────────────────────────────────────────
   const controls = (
@@ -374,10 +376,7 @@ export default function MediaPlayer({
       <span className="font-mono text-xs text-white/60">
         {formatTime(currentTime)} / {formatTime(duration)}
       </span>
-      <div
-        ref={volumeControlRef}
-        className="ml-auto flex items-center gap-1.5"
-      >
+      <div ref={volumeControlRef} className="ml-auto flex items-center gap-1.5">
         <button
           type="button"
           onClick={() => setMuted((m) => !m)}
@@ -385,11 +384,49 @@ export default function MediaPlayer({
           aria-label={muted ? 'Unmute' : 'Mute'}
         >
           {muted || volume === 0 ? (
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M11 5L6 9H2v6h4l5 4V5z" />
+              <line x1="23" y1="9" x2="17" y2="15" />
+              <line x1="17" y1="9" x2="23" y2="15" />
+            </svg>
           ) : volume < 0.5 ? (
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg>
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M11 5L6 9H2v6h4l5 4V5z" />
+              <path d="M15.54 8.46a5 5 0 010 7.07" />
+            </svg>
           ) : (
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M19.07 4.93a10 10 0 010 14.14"/></svg>
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M11 5L6 9H2v6h4l5 4V5z" />
+              <path d="M15.54 8.46a5 5 0 010 7.07" />
+              <path d="M19.07 4.93a10 10 0 010 14.14" />
+            </svg>
           )}
         </button>
         <input
@@ -461,7 +498,9 @@ export default function MediaPlayer({
                     style={{ width: `${transcodingProgress}%` }}
                   />
                 </div>
-                <p className="mt-2 text-center text-[0.7rem] text-white/65">{transcodingDetailMessage}</p>
+                <p className="mt-2 text-center text-[0.7rem] text-white/65">
+                  {transcodingDetailMessage}
+                </p>
               </div>
             </div>
           )}
@@ -542,7 +581,9 @@ export default function MediaPlayer({
                 style={{ width: `${transcodingProgress}%` }}
               />
             </div>
-            <p className="mt-2 text-[0.68rem] text-[var(--text-tertiary)]">{transcodingDetailMessage}</p>
+            <p className="mt-2 text-[0.68rem] text-[var(--text-tertiary)]">
+              {transcodingDetailMessage}
+            </p>
           </div>
         </div>
       )}

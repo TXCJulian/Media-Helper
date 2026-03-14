@@ -21,13 +21,34 @@ logger = logging.getLogger(__name__)
 
 # Codecs that need transcoding for browser preview playback
 _TRANSCODE_CODECS = {"ac3", "eac3", "dts", "dts_hd", "truehd"}
-_PASSTHROUGH_CODECS = {"aac", "mp3", "opus", "vorbis", "flac", "pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_f32le"}
+_PASSTHROUGH_CODECS = {
+    "aac",
+    "mp3",
+    "opus",
+    "vorbis",
+    "flac",
+    "pcm_s16le",
+    "pcm_s24le",
+    "pcm_s32le",
+    "pcm_f32le",
+}
 _BROWSER_VIDEO_CODECS = {"h264", "hevc", "h265", "vp8", "vp9", "av1"}
 _PREVIEW_X264_PRESET = "superfast"
 _PREVIEW_MAX_THREADS = "2"
 
 # File extensions browsers can play natively
-_BROWSER_EXTENSIONS = {".mp4", ".m4a", ".m4v", ".mov", ".webm", ".ogg", ".mp3", ".wav", ".aac", ".flac"}
+_BROWSER_EXTENSIONS = {
+    ".mp4",
+    ".m4a",
+    ".m4v",
+    ".mov",
+    ".webm",
+    ".ogg",
+    ".mp3",
+    ".wav",
+    ".aac",
+    ".flac",
+}
 _FFMPEG_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
 _FFMPEG_PROGRESS_RE = re.compile(r"^frame=\s*\d+")
 _DELETE_WAIT_SECONDS = 15.0
@@ -75,6 +96,7 @@ def _audio_relative_index(filepath: str, absolute_index: int) -> int:
         f"Available audio stream indexes: [{available}]"
     )
 
+
 # Map user-facing codec names to ffmpeg encoder names
 _CODEC_TO_ENCODER = {
     "copy": "copy",
@@ -91,8 +113,22 @@ _CODEC_TO_ENCODER = {
 _VIDEO_ENCODERS = {"libx264", "libx265", "libvpx-vp9", "libaom-av1"}
 
 _VALID_CONTAINERS = {
-    "mp4", "mkv", "mov", "avi", "webm", "ogg", "mp3", "flac", "wav",
-    "aac", "ac3", "opus", "m4a", "mka", "ts", "mts",
+    "mp4",
+    "mkv",
+    "mov",
+    "avi",
+    "webm",
+    "ogg",
+    "mp3",
+    "flac",
+    "wav",
+    "aac",
+    "ac3",
+    "opus",
+    "m4a",
+    "mka",
+    "ts",
+    "mts",
 }
 
 
@@ -108,13 +144,20 @@ def _extract_window(filepath: str, position: float, window_secs: float = 5.0) ->
     """Extract a short audio window from a file using fast seek."""
     cmd = [
         "ffmpeg",
-        "-loglevel", "error",
-        "-ss", str(position),
-        "-t", str(window_secs),
-        "-i", filepath,
-        "-ac", "1",
-        "-ar", "8000",
-        "-f", "f32le",
+        "-loglevel",
+        "error",
+        "-ss",
+        str(position),
+        "-t",
+        str(window_secs),
+        "-i",
+        filepath,
+        "-ac",
+        "1",
+        "-ar",
+        "8000",
+        "-f",
+        "f32le",
         "pipe:1",
     ]
     try:
@@ -150,11 +193,16 @@ def _waveform_cached(filepath: str, mtime: float, num_peaks: int) -> list[float]
     if duration <= 120:
         cmd = [
             "ffmpeg",
-            "-loglevel", "warning",
-            "-i", filepath,
-            "-ac", "1",
-            "-ar", "8000",
-            "-f", "f32le",
+            "-loglevel",
+            "warning",
+            "-i",
+            filepath,
+            "-ac",
+            "1",
+            "-ar",
+            "8000",
+            "-f",
+            "f32le",
             "pipe:1",
         ]
         try:
@@ -162,7 +210,9 @@ def _waveform_cached(filepath: str, mtime: float, num_peaks: int) -> list[float]
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"ffmpeg waveform timed out for {filepath}") from exc
         if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg waveform failed: {result.stderr.decode(errors='replace')}")
+            raise RuntimeError(
+                f"ffmpeg waveform failed: {result.stderr.decode(errors='replace')}"
+            )
         raw = result.stdout
     else:
         # Sample N windows spread across the file using fast seek
@@ -177,7 +227,7 @@ def _waveform_cached(filepath: str, mtime: float, num_peaks: int) -> list[float]
     if num_samples == 0:
         return [0.0] * num_peaks
 
-    samples = struct.unpack(f"<{num_samples}f", raw[:num_samples * 4])
+    samples = struct.unpack(f"<{num_samples}f", raw[: num_samples * 4])
 
     bucket_size = max(1, num_samples // num_peaks)
     peaks: list[float] = []
@@ -202,8 +252,10 @@ def probe_file(filepath: str) -> dict:
     """Run ffprobe and return parsed media info."""
     cmd = [
         "ffprobe",
-        "-loglevel", "warning",
-        "-print_format", "json",
+        "-loglevel",
+        "warning",
+        "-print_format",
+        "json",
         "-show_format",
         "-show_streams",
         filepath,
@@ -218,13 +270,19 @@ def probe_file(filepath: str) -> dict:
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"ffprobe returned malformed JSON for {filepath}: {e}") from e
+        raise RuntimeError(
+            f"ffprobe returned malformed JSON for {filepath}: {e}"
+        ) from e
     fmt = data.get("format", {})
     streams = data.get("streams", [])
 
     video_stream = next(
-        (s for s in streams if s.get("codec_type") == "video"
-         and not s.get("disposition", {}).get("attached_pic", 0)),
+        (
+            s
+            for s in streams
+            if s.get("codec_type") == "video"
+            and not s.get("disposition", {}).get("attached_pic", 0)
+        ),
         None,
     )
 
@@ -263,8 +321,16 @@ def probe_file(filepath: str) -> dict:
         "audio_codec": first_audio["codec"] if first_audio else "unknown",
         "container": fmt.get("format_name", "unknown"),
         "bitrate": int(fmt.get("bit_rate", 0)),
-        "width": int(video_stream["width"]) if video_stream and "width" in video_stream else None,
-        "height": int(video_stream["height"]) if video_stream and "height" in video_stream else None,
+        "width": (
+            int(video_stream["width"])
+            if video_stream and "width" in video_stream
+            else None
+        ),
+        "height": (
+            int(video_stream["height"])
+            if video_stream and "height" in video_stream
+            else None
+        ),
         "display_aspect_ratio": display_aspect_ratio,
         "sample_rate": first_audio["sample_rate"] if first_audio else 0,
         "audio_streams": audio_streams,
@@ -284,7 +350,9 @@ def generate_waveform(filepath: str, num_peaks: int = 2000) -> list[float]:
     return _waveform_cached(filepath, mtime, num_peaks)
 
 
-def needs_transcoding(audio_codec: str, filepath: str = "", video_codec: str = "") -> bool:
+def needs_transcoding(
+    audio_codec: str, filepath: str = "", video_codec: str = ""
+) -> bool:
     """Return True if the file needs transcoding for browser preview.
 
     Checks file extension plus audio/video codecs. Browsers only
@@ -313,7 +381,9 @@ def needs_transcoding(audio_codec: str, filepath: str = "", video_codec: str = "
     return False
 
 
-def transcode_for_preview(filepath: str, audio_stream_index: int | None = None) -> subprocess.Popen:
+def transcode_for_preview(
+    filepath: str, audio_stream_index: int | None = None
+) -> subprocess.Popen:
     """Remux/transcode into fragmented MP4 for browser-compatible streaming.
 
     Video is stream-copied only when browser-compatible, otherwise re-encoded
@@ -327,7 +397,9 @@ def transcode_for_preview(filepath: str, audio_stream_index: int | None = None) 
     audio_streams = info.get("audio_streams", [])
     if audio_stream_index is not None and audio_streams:
         sel = next((s for s in audio_streams if s["index"] == audio_stream_index), None)
-        audio_codec = (sel["codec"] if sel else info.get("audio_codec", "unknown")).lower()
+        audio_codec = (
+            sel["codec"] if sel else info.get("audio_codec", "unknown")
+        ).lower()
     else:
         audio_codec = info.get("audio_codec", "unknown").lower()
 
@@ -348,11 +420,16 @@ def transcode_for_preview(filepath: str, audio_stream_index: int | None = None) 
             cmd += ["-c:v", "copy"]
         else:
             cmd += [
-                "-c:v", "libx264",
-                "-preset", _PREVIEW_X264_PRESET,
-                "-crf", "23",
-                "-threads", _PREVIEW_MAX_THREADS,
-                "-pix_fmt", "yuv420p",
+                "-c:v",
+                "libx264",
+                "-preset",
+                _PREVIEW_X264_PRESET,
+                "-crf",
+                "23",
+                "-threads",
+                _PREVIEW_MAX_THREADS,
+                "-pix_fmt",
+                "yuv420p",
             ]
     else:
         cmd += ["-vn"]
@@ -365,8 +442,10 @@ def transcode_for_preview(filepath: str, audio_stream_index: int | None = None) 
 
     cmd += [
         "-sn",  # Drop subtitles (ASS/SSA not MP4-compatible)
-        "-f", "mp4",
-        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        "-f",
+        "mp4",
+        "-movflags",
+        "frag_keyframe+empty_moov+default_base_moof",
         "pipe:1",
     ]
 
@@ -389,7 +468,9 @@ def _preview_status_key(filepath: str, job_id: str) -> str:
 
 
 def _compact_process_error(stderr: str, stdout: str) -> str:
-    merged = "\n".join(part for part in ((stderr or ""), (stdout or "")) if part).strip()
+    merged = "\n".join(
+        part for part in ((stderr or ""), (stdout or "")) if part
+    ).strip()
     if not merged:
         return "no stderr/stdout output from ffmpeg"
 
@@ -447,11 +528,18 @@ def _prune_job_activity_state(job_id: str, state: _JobActivityState) -> None:
         current = _job_activity.get(job_id)
         if current is not state:
             return
-        if state.active_operations == 0 and not state.cancel_events and not state.processes and not state.deleting:
+        if (
+            state.active_operations == 0
+            and not state.cancel_events
+            and not state.processes
+            and not state.deleting
+        ):
             _job_activity.pop(job_id, None)
 
 
-def _get_job_activity_state(job_id: str, create: bool = False) -> _JobActivityState | None:
+def _get_job_activity_state(
+    job_id: str, create: bool = False
+) -> _JobActivityState | None:
     with _job_activity_guard:
         state = _job_activity.get(job_id)
         if state is None and create:
@@ -460,7 +548,9 @@ def _get_job_activity_state(job_id: str, create: bool = False) -> _JobActivitySt
         return state
 
 
-def _begin_job_operation(job_id: str, cancel_event: threading.Event | None = None) -> None:
+def _begin_job_operation(
+    job_id: str, cancel_event: threading.Event | None = None
+) -> None:
     state = _get_job_activity_state(job_id, create=True)
     assert state is not None
     with state.condition:
@@ -471,7 +561,9 @@ def _begin_job_operation(job_id: str, cancel_event: threading.Event | None = Non
             state.cancel_events.add(cancel_event)
 
 
-def _end_job_operation(job_id: str, cancel_event: threading.Event | None = None) -> None:
+def _end_job_operation(
+    job_id: str, cancel_event: threading.Event | None = None
+) -> None:
     state = _get_job_activity_state(job_id)
     if state is None:
         return
@@ -545,7 +637,8 @@ def _clear_job_runtime_state(job_id: str) -> None:
     job_dir_prefix = os.path.normcase(os.path.join(CUTTER_JOBS_DIR, job_id) + os.sep)
     with _preview_build_lock_guard:
         stale_lock_keys = [
-            key for key in _preview_build_locks
+            key
+            for key in _preview_build_locks
             if os.path.normcase(key).startswith(job_dir_prefix)
         ]
         for key in stale_lock_keys:
@@ -601,7 +694,9 @@ def _cancel_job_operations(job_id: str, timeout: float = _DELETE_WAIT_SECONDS) -
                 return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise RuntimeError(f"Job {job_id} is still busy and could not be deleted")
+                raise RuntimeError(
+                    f"Job {job_id} is still busy and could not be deleted"
+                )
             state.condition.wait(timeout=min(0.25, remaining))
 
 
@@ -663,7 +758,16 @@ def get_or_transcode_preview(
             has_video = info.get("video_codec") is not None
             duration = max(0.0, float(info.get("duration", 0.0) or 0.0))
 
-            cmd = ["ffmpeg", "-nostdin", "-loglevel", "warning", "-stats", "-y", "-i", filepath]
+            cmd = [
+                "ffmpeg",
+                "-nostdin",
+                "-loglevel",
+                "warning",
+                "-stats",
+                "-y",
+                "-i",
+                filepath,
+            ]
 
             video_codec = str(info.get("video_codec") or "").lower()
             if has_video:
@@ -672,11 +776,16 @@ def get_or_transcode_preview(
                     cmd += ["-c:v", "copy"]
                 else:
                     cmd += [
-                        "-c:v", "libx264",
-                        "-preset", _PREVIEW_X264_PRESET,
-                        "-crf", "23",
-                        "-threads", _PREVIEW_MAX_THREADS,
-                        "-pix_fmt", "yuv420p",
+                        "-c:v",
+                        "libx264",
+                        "-preset",
+                        _PREVIEW_X264_PRESET,
+                        "-crf",
+                        "23",
+                        "-threads",
+                        _PREVIEW_MAX_THREADS,
+                        "-pix_fmt",
+                        "yuv420p",
                     ]
             else:
                 cmd += ["-map", "0:a", "-vn"]
@@ -798,7 +907,9 @@ def get_or_transcode_preview(
 
             if cancel_event.is_set():
                 _safe_remove_file(tmp_path)
-                message = f"Preview transcode cancelled because job {job_id} is being deleted"
+                message = (
+                    f"Preview transcode cancelled because job {job_id} is being deleted"
+                )
                 _set_preview_status(
                     status_key,
                     {
@@ -815,8 +926,15 @@ def get_or_transcode_preview(
 
             if proc.returncode != 0:
                 _safe_remove_file(tmp_path)
-                detail = _compact_process_error("\n".join(stderr_lines), "\n".join(stdout_lines))
-                logger.error("Preview transcode failed (exit %d): %s\nCommand: %s", proc.returncode, detail, subprocess.list2cmdline(cmd))
+                detail = _compact_process_error(
+                    "\n".join(stderr_lines), "\n".join(stdout_lines)
+                )
+                logger.error(
+                    "Preview transcode failed (exit %d): %s\nCommand: %s",
+                    proc.returncode,
+                    detail,
+                    subprocess.list2cmdline(cmd),
+                )
                 message = f"Preview transcode failed (exit {proc.returncode}): {detail}"
                 _set_preview_status(
                     status_key,
@@ -919,7 +1037,9 @@ def get_track_preview(
         rel = _audio_relative_index(filepath, audio_stream_index)
         job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
         os.makedirs(job_dir, exist_ok=True)
-        track_path = os.path.join(job_dir, f"preview_{suffix}_trackabs{audio_stream_index}.mp4")
+        track_path = os.path.join(
+            job_dir, f"preview_{suffix}_trackabs{audio_stream_index}.mp4"
+        )
 
         if os.path.isfile(track_path):
             return track_path
@@ -932,19 +1052,31 @@ def get_track_preview(
 
             tmp_path = f"{track_path}.{uuid.uuid4().hex}.tmp.mp4"
             cmd = [
-                "ffmpeg", "-loglevel", "warning", "-y",
-                "-i", master_path,
-                "-map", "0:v?", "-map", f"0:a:{rel}",
-                "-c", "copy",
-                "-f", "mp4",
-                "-movflags", "+faststart",
+                "ffmpeg",
+                "-loglevel",
+                "warning",
+                "-y",
+                "-i",
+                master_path,
+                "-map",
+                "0:v?",
+                "-map",
+                f"0:a:{rel}",
+                "-c",
+                "copy",
+                "-f",
+                "mp4",
+                "-movflags",
+                "+faststart",
                 tmp_path,
             ]
 
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             _register_job_process(job_id, proc)
             try:
-                monitor = threading.Thread(target=_monitor_cancel, args=(proc, cancel_event), daemon=True)
+                monitor = threading.Thread(
+                    target=_monitor_cancel, args=(proc, cancel_event), daemon=True
+                )
                 monitor.start()
                 try:
                     stdout_blob, stderr_blob = proc.communicate(timeout=300)
@@ -958,7 +1090,9 @@ def get_track_preview(
 
             if cancel_event.is_set():
                 _safe_remove_file(tmp_path)
-                raise RuntimeError(f"Track preview remux cancelled because job {job_id} is being deleted")
+                raise RuntimeError(
+                    f"Track preview remux cancelled because job {job_id} is being deleted"
+                )
 
             if proc.returncode != 0:
                 _safe_remove_file(tmp_path)
@@ -1023,10 +1157,18 @@ def get_track_remux(
 
             tmp_path = f"{track_path}.{uuid.uuid4().hex}.tmp{ext}"
             cmd = [
-                "ffmpeg", "-loglevel", "warning", "-y",
-                "-i", filepath,
-                "-map", "0:v?", "-map", f"0:a:{rel}",
-                "-c", "copy",
+                "ffmpeg",
+                "-loglevel",
+                "warning",
+                "-y",
+                "-i",
+                filepath,
+                "-map",
+                "0:v?",
+                "-map",
+                f"0:a:{rel}",
+                "-c",
+                "copy",
                 "-sn",
             ]
             if ext in {".mp4", ".m4a", ".m4v", ".mov"}:
@@ -1038,7 +1180,9 @@ def get_track_remux(
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             _register_job_process(job_id, proc)
             try:
-                monitor = threading.Thread(target=_monitor_cancel, args=(proc, cancel_event), daemon=True)
+                monitor = threading.Thread(
+                    target=_monitor_cancel, args=(proc, cancel_event), daemon=True
+                )
                 monitor.start()
                 try:
                     stdout_blob, stderr_blob = proc.communicate(timeout=300)
@@ -1152,7 +1296,6 @@ def start_background_transcode(
     job_id: str,
 ) -> None:
     """Kick off a background transcode so the master preview is ready for seeking."""
-    job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
     preview_path = _preview_file_path(filepath, job_id)
 
     # Already done
@@ -1314,25 +1457,38 @@ def cut_file(
     cmd = [
         "ffmpeg",
         "-nostdin",
-        "-loglevel", "warning",
+        "-loglevel",
+        "warning",
         "-stats",
         # Keep -ss before -i for fast input seeking on large files.
-        "-ss", str(in_point),
-        "-t", str(duration),
-        "-i", filepath,
+        "-ss",
+        str(in_point),
+        "-t",
+        str(duration),
+        "-i",
+        filepath,
     ]
 
     if audio_stream_index is not None:
-        cmd += ["-map", "0:v?", "-map", f"0:a:{_audio_relative_index(filepath, audio_stream_index)}"]
+        cmd += [
+            "-map",
+            "0:v?",
+            "-map",
+            f"0:a:{_audio_relative_index(filepath, audio_stream_index)}",
+        ]
 
     # Validate codec/container against allowlists
     _valid_codecs = set(_CODEC_TO_ENCODER.keys()) | _VIDEO_ENCODERS
     if codec and codec not in _valid_codecs:
         raise ValueError(f"Invalid codec: '{codec}'. Allowed: {sorted(_valid_codecs)}")
     if audio_codec and audio_codec not in _CODEC_TO_ENCODER:
-        raise ValueError(f"Invalid audio codec: '{audio_codec}'. Allowed: {sorted(_CODEC_TO_ENCODER.keys())}")
+        raise ValueError(
+            f"Invalid audio codec: '{audio_codec}'. Allowed: {sorted(_CODEC_TO_ENCODER.keys())}"
+        )
     if container and container not in _VALID_CONTAINERS:
-        raise ValueError(f"Invalid container: '{container}'. Allowed: {sorted(_VALID_CONTAINERS)}")
+        raise ValueError(
+            f"Invalid container: '{container}'. Allowed: {sorted(_VALID_CONTAINERS)}"
+        )
 
     if stream_copy:
         cmd += ["-c", "copy"]
@@ -1355,7 +1511,9 @@ def cut_file(
 
     cmd += ["-y", output_path]
 
-    progress_cb(f"Cutting {os.path.basename(filepath)} [{in_point:.2f}s - {out_point:.2f}s]")
+    progress_cb(
+        f"Cutting {os.path.basename(filepath)} [{in_point:.2f}s - {out_point:.2f}s]"
+    )
 
     if job_id is not None:
         _begin_job_operation(job_id, cancel_event)
@@ -1380,7 +1538,9 @@ def cut_file(
                 proc.wait(timeout=10)
                 if os.path.isfile(output_path):
                     _safe_remove_file(output_path)
-                raise RuntimeError("Cut cancelled because job was deleted or client disconnected")
+                raise RuntimeError(
+                    "Cut cancelled because job was deleted or client disconnected"
+                )
 
             match = time_pattern.search(line)
             if match:
@@ -1405,9 +1565,7 @@ def cut_file(
         if proc.returncode != 0:
             detail = "; ".join(stderr_lines[-5:]) if stderr_lines else "no details"
             _safe_remove_file(output_path)
-            raise RuntimeError(
-                f"ffmpeg cut failed (exit {proc.returncode}): {detail}"
-            )
+            raise RuntimeError(f"ffmpeg cut failed (exit {proc.returncode}): {detail}")
 
         progress_cb(f"Saved {os.path.basename(output_path)}")
         return output_path
@@ -1439,15 +1597,21 @@ def generate_thumbnail_strip(filepath: str, count: int = 30) -> bytes:
     # Scale each input and tile horizontally
     filters = []
     for i in range(count):
-        filters.append(f"[{i}:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=160:-1,setsar=1[t{i}]")
+        filters.append(
+            f"[{i}:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=160:-1,setsar=1[t{i}]"
+        )
     tile_inputs = "".join(f"[t{i}]" for i in range(count))
     filters.append(f"{tile_inputs}hstack=inputs={count}")
 
     cmd += [
-        "-filter_complex", ";".join(filters),
-        "-frames:v", "1",
-        "-f", "image2",
-        "-q:v", "5",
+        "-filter_complex",
+        ";".join(filters),
+        "-frames:v",
+        "1",
+        "-f",
+        "image2",
+        "-q:v",
+        "5",
         "pipe:1",
     ]
     try:
@@ -1497,7 +1661,9 @@ def generate_thumbnail_strip_cached(filepath: str, count: int, job_id: str) -> b
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
-def create_job(source: str, original_path: str, original_name: str, initial_status: str = "ready") -> str:
+def create_job(
+    source: str, original_path: str, original_name: str, initial_status: str = "ready"
+) -> str:
     """Create a new job directory structure and return the job_id."""
     job_id = str(uuid.uuid4())
     job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
@@ -1659,7 +1825,9 @@ def cleanup_old_jobs() -> None:
                     logger.info("Cleaned up expired job %s", name)
             else:
                 # No metadata — check dir mtime
-                mtime = datetime.fromtimestamp(os.path.getmtime(job_dir), tz=timezone.utc)
+                mtime = datetime.fromtimestamp(
+                    os.path.getmtime(job_dir), tz=timezone.utc
+                )
                 if (now - mtime).total_seconds() > CUTTER_JOB_TTL:
                     delete_job(name)
         except Exception:
@@ -1674,7 +1842,8 @@ def cleanup_old_jobs() -> None:
 
     with _preview_build_lock_guard:
         stale_keys = [
-            key for key in _preview_build_locks
+            key
+            for key in _preview_build_locks
             if not any(
                 os.path.normcase(key).startswith(
                     os.path.normcase(os.path.join(CUTTER_JOBS_DIR, jid) + os.sep)
@@ -1687,7 +1856,8 @@ def cleanup_old_jobs() -> None:
 
     with _preview_status_guard:
         stale_keys = [
-            key for key in _preview_status
+            key
+            for key in _preview_status
             if ":" in key and key.split(":", 1)[0] not in active_job_ids
         ]
         for key in stale_keys:
@@ -1695,7 +1865,8 @@ def cleanup_old_jobs() -> None:
 
     with _transcode_lock_guard:
         stale_keys = [
-            key for key in _transcode_locks
+            key
+            for key in _transcode_locks
             if not any(
                 os.path.normcase(key).startswith(
                     os.path.normcase(os.path.join(CUTTER_JOBS_DIR, jid) + os.sep)
@@ -1741,4 +1912,4 @@ def decode_file_id(file_id: str) -> tuple[str, str, str]:
     if len(parts) == 3:
         return parts[0], parts[1], parts[2]
 
-    raise ValueError(f"Invalid file_id format: expected 'source:job_id:path'")
+    raise ValueError("Invalid file_id format: expected 'source:job_id:path'")

@@ -43,8 +43,12 @@ export default function ThumbnailStrip({
   const [resizeKey, setResizeKey] = useState(0)
   const [spriteImg, setSpriteImg] = useState<HTMLImageElement | null>(null)
 
-  useEffect(() => { inPointRef.current = inPoint }, [inPoint])
-  useEffect(() => { outPointRef.current = outPoint }, [outPoint])
+  useEffect(() => {
+    inPointRef.current = inPoint
+  }, [inPoint])
+  useEffect(() => {
+    outPointRef.current = outPoint
+  }, [outPoint])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -110,11 +114,7 @@ export default function ThumbnailStrip({
       const thumbW = cssW / count
 
       for (let i = 0; i < count; i++) {
-        ctx.drawImage(
-          spriteImg,
-          i * frameW, 0, frameW, frameH,
-          i * thumbW, 0, thumbW, cssH,
-        )
+        ctx.drawImage(spriteImg, i * frameW, 0, frameW, frameH, i * thumbW, 0, thumbW, cssH)
       }
     }
 
@@ -142,7 +142,13 @@ export default function ThumbnailStrip({
 
       ctx.fillStyle = ACCENT
       ctx.beginPath()
-      ctx.roundRect(xPos - HANDLE_TAB_WIDTH / 2, 0, HANDLE_TAB_WIDTH, HANDLE_TAB_HEIGHT, [0, 0, 3, 3])
+      ctx.roundRect(
+        xPos - HANDLE_TAB_WIDTH / 2,
+        0,
+        HANDLE_TAB_WIDTH,
+        HANDLE_TAB_HEIGHT,
+        [0, 0, 3, 3],
+      )
       ctx.fill()
     }
 
@@ -283,7 +289,10 @@ export default function ThumbnailStrip({
   )
 
   return (
-    <div className="relative overflow-hidden rounded-lg border border-[var(--glass-border)]" style={{ height: STRIP_HEIGHT }}>
+    <div
+      className="relative overflow-hidden rounded-lg border border-[var(--glass-border)]"
+      style={{ height: STRIP_HEIGHT }}
+    >
       <canvas ref={canvasRef} className="absolute inset-0 block h-full w-full" />
       <canvas
         ref={overlayRef}

@@ -24,7 +24,10 @@ import {
   postRefresh,
   saveToSource,
 } from '@/lib/api'
-import { getBrowserCompatibilityMessage, getBrowserCompatibilityReport } from '@/lib/mediaCompatibility'
+import {
+  getBrowserCompatibilityMessage,
+  getBrowserCompatibilityReport,
+} from '@/lib/mediaCompatibility'
 import { useDebounce } from '@/hooks/useDebounce'
 import type {
   CutterForm,
@@ -79,7 +82,11 @@ export default function CutterPanel({
   persistedRef.current = persisted
 
   const setPersisted = useCallback(
-    (updater: Partial<CutterPersistedState> | ((prev: CutterPersistedState) => Partial<CutterPersistedState>)) => {
+    (
+      updater:
+        | Partial<CutterPersistedState>
+        | ((prev: CutterPersistedState) => Partial<CutterPersistedState>),
+    ) => {
       const current = persistedRef.current
       const partial = typeof updater === 'function' ? updater(current) : updater
       const next = { ...current, ...partial }
@@ -91,7 +98,11 @@ export default function CutterPanel({
 
   // Helper: update fields on the currently active source state
   const setSource = useCallback(
-    (updater: Partial<CutterSourceState> | ((prev: CutterSourceState) => Partial<CutterSourceState>)) => {
+    (
+      updater:
+        | Partial<CutterSourceState>
+        | ((prev: CutterSourceState) => Partial<CutterSourceState>),
+    ) => {
       const current = persistedRef.current
       const key = current.form.source === 'server' ? 'serverState' : 'uploadState'
       const prev = current[key]
@@ -230,7 +241,10 @@ export default function CutterPanel({
           fetchProbe(path, source, jid),
           fetchWaveform(path, source, 800, jid),
         ])
-        setSource({ probe: probeData, peaks: waveData.peaks, isLoadingFile: false,
+        setSource({
+          probe: probeData,
+          peaks: waveData.peaks,
+          isLoadingFile: false,
           thumbnailUrl: probeData.video_codec != null ? getThumbnailUrl(path, source, jid) : '',
         })
         setPersisted((prev) => ({
@@ -256,7 +270,9 @@ export default function CutterPanel({
       try {
         const { job_id } = await createJob(path, 'server')
         setSource({ filePath: path, fileId: encodeFileId('server', path, job_id), jobId: job_id })
-        setPersisted((prev) => ({ form: { ...prev.form, filename: file.name, audioStreamIndex: null } }))
+        setPersisted((prev) => ({
+          form: { ...prev.form, filename: file.name, audioStreamIndex: null },
+        }))
         await loadFileData(path, 'server', job_id)
       } catch (err) {
         onError(`Error creating job: ${err instanceof Error ? err.message : String(err)}`)
@@ -269,7 +285,15 @@ export default function CutterPanel({
   // ── Directory selection from DirectorySelect ─────────────────
   const handleDirectoryChange = (dir: string) => {
     setPersisted({ form: { ...form, directory: dir, filename: '', audioStreamIndex: null } })
-    setSource({ probe: null, peaks: [], filePath: '', fileId: '', thumbnailUrl: '', jobId: '', outputFiles: [] })
+    setSource({
+      probe: null,
+      peaks: [],
+      filePath: '',
+      fileId: '',
+      thumbnailUrl: '',
+      jobId: '',
+      outputFiles: [],
+    })
     setPreviewStatus(null)
     setTranscodePreviewEnabled(false)
     // Reset prevDir so the files effect fires
@@ -313,8 +337,10 @@ export default function CutterPanel({
           outputName: settings?.output_name ?? '',
           audioStreamIndex: settings?.audio_stream_index ?? null,
         },
-        serverState: source === 'server' ? { ...prev.serverState, ...sourceStatePatch } : prev.serverState,
-        uploadState: source === 'upload' ? { ...prev.uploadState, ...sourceStatePatch } : prev.uploadState,
+        serverState:
+          source === 'server' ? { ...prev.serverState, ...sourceStatePatch } : prev.serverState,
+        uploadState:
+          source === 'upload' ? { ...prev.uploadState, ...sourceStatePatch } : prev.uploadState,
       }))
       setPreviewStatus(null)
       setTranscodePreviewEnabled(false)
@@ -342,8 +368,14 @@ export default function CutterPanel({
       setUploadProgress(0)
       onError('')
       setSource({
-        probe: null, peaks: [], filePath: '', fileId: '', thumbnailUrl: '', isLoadingFile: true,
-        jobId: '', outputFiles: [],
+        probe: null,
+        peaks: [],
+        filePath: '',
+        fileId: '',
+        thumbnailUrl: '',
+        isLoadingFile: true,
+        jobId: '',
+        outputFiles: [],
       })
       try {
         const result = await uploadFile(file, setUploadProgress)
@@ -517,7 +549,10 @@ export default function CutterPanel({
   const defaultAudioStreamIndex = probe?.audio_streams?.[0]?.index ?? null
   const selectedAudioStreamIndex = (() => {
     if (!probe?.audio_streams?.length) return null
-    if (form.audioStreamIndex != null && probe.audio_streams.some((s) => s.index === form.audioStreamIndex)) {
+    if (
+      form.audioStreamIndex != null &&
+      probe.audio_streams.some((s) => s.index === form.audioStreamIndex)
+    ) {
       return form.audioStreamIndex
     }
     return defaultAudioStreamIndex
@@ -525,7 +560,8 @@ export default function CutterPanel({
   const streamAudioIndex = (() => {
     if (selectedAudioStreamIndex == null) return null
     // For original playback, skip audio_stream on default track to avoid costly remux.
-    if (!transcodePreviewEnabled && selectedAudioStreamIndex === defaultAudioStreamIndex) return null
+    if (!transcodePreviewEnabled && selectedAudioStreamIndex === defaultAudioStreamIndex)
+      return null
     return selectedAudioStreamIndex
   })()
 
@@ -568,14 +604,17 @@ export default function CutterPanel({
         }
       } catch (err) {
         if (cancelled) return
-        setPreviewStatus((prev) => prev ?? {
-          state: 'error',
-          ready: false,
-          percent: 0,
-          eta_seconds: null,
-          elapsed_seconds: 0,
-          message: err instanceof Error ? err.message : String(err),
-        })
+        setPreviewStatus(
+          (prev) =>
+            prev ?? {
+              state: 'error',
+              ready: false,
+              percent: 0,
+              eta_seconds: null,
+              elapsed_seconds: 0,
+              message: err instanceof Error ? err.message : String(err),
+            },
+        )
       } finally {
         if (!cancelled && lastState !== 'done' && lastState !== 'error') {
           timeoutId = setTimeout(poll, 1200)
@@ -829,11 +868,7 @@ export default function CutterPanel({
               onContainerChange={(v) => update('container', v)}
             />
 
-            <button
-              type="submit"
-              disabled={busy || !hasFile}
-              className="btn-submit btn-emerald"
-            >
+            <button type="submit" disabled={busy || !hasFile} className="btn-submit btn-emerald">
               {isCutting ? <span className="spinner-md" /> : 'Cut'}
             </button>
           </>
@@ -865,12 +900,25 @@ export default function CutterPanel({
                     onClick={() => {
                       saveToSource(jobId, file)
                         .then((r) => onLog([...log, `Saved ${r.filename} to source directory`]))
-                        .catch((err) => onError(`Save failed: ${err instanceof Error ? err.message : String(err)}`))
+                        .catch((err) =>
+                          onError(
+                            `Save failed: ${err instanceof Error ? err.message : String(err)}`,
+                          ),
+                        )
                     }}
                     className="inline-flex items-center gap-1 rounded-md border border-emerald-400/20 bg-emerald-400/5 px-2 py-0.5 text-[0.65rem] text-emerald-400/70 transition-colors hover:border-emerald-400/40 hover:bg-emerald-400/10 hover:text-emerald-400"
                     title="Save to original file directory"
                   >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
                       <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
                       <polyline points="17 21 17 13 7 13 7 21" />
                       <polyline points="7 3 7 8 15 8" />
@@ -883,7 +931,11 @@ export default function CutterPanel({
           </div>
         )}
       </form>
-      <JobManager activeJobId={jobId} onLog={(msg) => onLog([...log, msg])} onOpenJob={handleOpenJob} />
+      <JobManager
+        activeJobId={jobId}
+        onLog={(msg) => onLog([...log, msg])}
+        onOpenJob={handleOpenJob}
+      />
     </PanelLayout>
   )
 }

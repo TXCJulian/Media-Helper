@@ -8,7 +8,13 @@ interface PanelLayoutProps {
   children: ReactNode
 }
 
-export default function PanelLayout({ title, onBack, rightElement, maxWidth = '780px', children }: PanelLayoutProps) {
+export default function PanelLayout({
+  title,
+  onBack,
+  rightElement,
+  maxWidth = '780px',
+  children,
+}: PanelLayoutProps) {
   return (
     <div className="relative z-1 mx-auto min-h-screen px-6 py-8" style={{ maxWidth }}>
       <div className="mb-7 flex items-center gap-4">

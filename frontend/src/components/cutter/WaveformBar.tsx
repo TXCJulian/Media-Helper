@@ -61,8 +61,12 @@ export default function WaveformBar({
   const outPointRef = useRef(outPoint)
   const [resizeKey, setResizeKey] = useState(0)
 
-  useEffect(() => { inPointRef.current = inPoint }, [inPoint])
-  useEffect(() => { outPointRef.current = outPoint }, [outPoint])
+  useEffect(() => {
+    inPointRef.current = inPoint
+  }, [inPoint])
+  useEffect(() => {
+    outPointRef.current = outPoint
+  }, [outPoint])
 
   useEffect(() => {
     const canvas = canvasRef.current

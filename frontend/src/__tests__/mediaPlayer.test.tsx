@@ -36,11 +36,12 @@ const canvasCtxHandler: ProxyHandler<Record<string, unknown>> = {
     if (prop === 'canvas') return { width: 0, height: 0 }
     return noop
   },
-  set() { return true },
+  set() {
+    return true
+  },
 }
 HTMLCanvasElement.prototype.getContext = (() =>
-  new Proxy({}, canvasCtxHandler)
-) as unknown as typeof HTMLCanvasElement.prototype.getContext
+  new Proxy({}, canvasCtxHandler)) as unknown as typeof HTMLCanvasElement.prototype.getContext
 
 Object.defineProperty(HTMLMediaElement.prototype, 'pause', {
   configurable: true,

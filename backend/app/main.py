@@ -28,7 +28,11 @@ from app.config import (
 )
 from app.rename_episodes import rename_episodes
 from app.rename_music import rename_music, load_audio_file, get_first_tag_value
-from app.get_dirs import _get_all_dirs_cached, _get_music_dirs_cached, _get_cutter_dirs_cached
+from app.get_dirs import (
+    _get_all_dirs_cached,
+    _get_music_dirs_cached,
+    _get_cutter_dirs_cached,
+)
 from app.transcribe_lyrics import (
     check_transcriber_health,
     get_music_files,
@@ -507,7 +511,9 @@ def resolve_cutter_path(path: str, source: str, job_id: str = "") -> str:
         return validate_path(BASE_PATH, path)
     elif source == "upload":
         if not job_id:
-            raise HTTPException(status_code=400, detail="job_id required for upload source")
+            raise HTTPException(
+                status_code=400, detail="job_id required for upload source"
+            )
         job_dir = get_job_dir(job_id)
         input_dir = os.path.join(job_dir, "input")
         return validate_path(input_dir, path)
@@ -550,11 +556,13 @@ def list_cutter_files(
                 continue
             ext = os.path.splitext(entry.name)[1].lower()
             if ext in VALID_CUTTER_EXT:
-                files.append({
-                    "name": entry.name,
-                    "size": entry.stat().st_size,
-                    "extension": ext,
-                })
+                files.append(
+                    {
+                        "name": entry.name,
+                        "size": entry.stat().st_size,
+                        "extension": ext,
+                    }
+                )
         except OSError:
             # File may disappear/change between scandir and stat on network shares.
             continue
@@ -625,7 +633,9 @@ def cutter_thumbnails(
     try:
         if job_id:
             try:
-                jpeg_bytes = generate_thumbnail_strip_cached(resolved, count=count, job_id=job_id)
+                jpeg_bytes = generate_thumbnail_strip_cached(
+                    resolved, count=count, job_id=job_id
+                )
             except ValueError:
                 # Optional cache only; malformed/unknown job ids still get a thumbnail.
                 jpeg_bytes = generate_thumbnail_strip(resolved, count=count)
@@ -681,12 +691,17 @@ def cutter_stream(
 
     if transcode and needs_tx:
         if not job_id:
-            raise HTTPException(status_code=400, detail="job_id required for transcoded preview")
+            raise HTTPException(
+                status_code=400, detail="job_id required for transcoded preview"
+            )
 
         start_background_transcode(resolved, job_id)
         status = get_preview_status(resolved, job_id)
         if status.get("state") == "error":
-            raise HTTPException(status_code=500, detail=status.get("message") or "Preview transcode failed")
+            raise HTTPException(
+                status_code=500,
+                detail=status.get("message") or "Preview transcode failed",
+            )
 
         # Get or create the master preview (all audio tracks)
         master_path = get_preview_path_if_ready(resolved, job_id)
@@ -838,7 +853,9 @@ def cutter_preview_status(file_id: str):
         return _done_status()
 
     if not job_id:
-        raise HTTPException(status_code=400, detail="job_id required for transcoded preview")
+        raise HTTPException(
+            status_code=400, detail="job_id required for transcoded preview"
+        )
 
     start_background_transcode(resolved, job_id)
     return get_preview_status(resolved, job_id)
@@ -853,7 +870,9 @@ async def cutter_upload(request: Request):
     if content_length:
         try:
             if int(content_length) > max_upload_size:
-                raise HTTPException(status_code=413, detail="File exceeds 50 GB size limit")
+                raise HTTPException(
+                    status_code=413, detail="File exceeds 50 GB size limit"
+                )
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid Content-Length header")
 
@@ -863,7 +882,7 @@ async def cutter_upload(request: Request):
     # Sanitize filename: strip path components and non-printable characters
     filename = os.path.basename(raw_name)
     filename = "".join(c for c in filename if c.isprintable())
-    if not filename or filename in ('.', '..'):
+    if not filename or filename in (".", ".."):
         filename = "unnamed"
 
     # Validate file extension
@@ -1010,7 +1029,9 @@ def cutter_save_to_source(job_id: str, filename: str):
         raise HTTPException(status_code=404, detail="Job not found")
 
     if meta.get("source") != "server":
-        raise HTTPException(status_code=400, detail="Save to Source only available for server files")
+        raise HTTPException(
+            status_code=400, detail="Save to Source only available for server files"
+        )
 
     # Locate the output file in the job directory
     try:
@@ -1032,13 +1053,17 @@ def cutter_save_to_source(job_id: str, filename: str):
 
     dest_dir = os.path.dirname(resolved_original)
     if not os.path.isdir(dest_dir):
-        raise HTTPException(status_code=400, detail="Original directory no longer exists")
+        raise HTTPException(
+            status_code=400, detail="Original directory no longer exists"
+        )
 
     dest_path = collision_safe_path(os.path.join(dest_dir, safe_name))
     try:
         shutil.copy2(src_file, dest_path)
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to save output file: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Failed to save output file: {exc}"
+        ) from exc
 
     return {"status": "saved", "filename": os.path.basename(dest_path)}
 
@@ -1075,21 +1100,57 @@ def cutter_cut(
         )
 
     valid_codecs = {
-        "aac", "flac", "opus", "ac3", "mp3", "vorbis", "pcm_s16le", "pcm_s24le",
-        "libx264", "libx265", "libvpx-vp9", "libaom-av1",
+        "aac",
+        "flac",
+        "opus",
+        "ac3",
+        "mp3",
+        "vorbis",
+        "pcm_s16le",
+        "pcm_s24le",
+        "libx264",
+        "libx265",
+        "libvpx-vp9",
+        "libaom-av1",
     }
     valid_audio_codecs = {
-        "", "copy", "aac", "flac", "opus", "ac3", "mp3", "vorbis", "pcm_s16le", "pcm_s24le",
+        "",
+        "copy",
+        "aac",
+        "flac",
+        "opus",
+        "ac3",
+        "mp3",
+        "vorbis",
+        "pcm_s16le",
+        "pcm_s24le",
     }
     valid_containers = {
-        "", "mp4", "mkv", "mov", "avi", "webm", "ogg", "mp3", "flac", "wav",
-        "aac", "ac3", "opus", "m4a", "mka", "ts", "mts",
+        "",
+        "mp4",
+        "mkv",
+        "mov",
+        "avi",
+        "webm",
+        "ogg",
+        "mp3",
+        "flac",
+        "wav",
+        "aac",
+        "ac3",
+        "opus",
+        "m4a",
+        "mka",
+        "ts",
+        "mts",
     }
 
     if codec and codec not in valid_codecs:
         raise HTTPException(status_code=422, detail=f"Invalid codec: {codec}")
     if audio_codec and audio_codec not in valid_audio_codecs:
-        raise HTTPException(status_code=422, detail=f"Invalid audio codec: {audio_codec}")
+        raise HTTPException(
+            status_code=422, detail=f"Invalid audio codec: {audio_codec}"
+        )
     if container and container not in valid_containers:
         raise HTTPException(status_code=422, detail=f"Invalid container: {container}")
 
