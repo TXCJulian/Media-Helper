@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from 'react'
+import { useRef, useEffect, useCallback, useState } from 'react'
 
 interface WaveformBarProps {
   peaks: number[]
@@ -57,6 +57,20 @@ export default function WaveformBar({
   const overlaySizeRef = useRef<{ width: number; height: number; dpr: number } | null>(null)
   const dragRef = useRef<DragTarget>(null)
   const isDraggingRef = useRef(false)
+  const inPointRef = useRef(inPoint)
+  const outPointRef = useRef(outPoint)
+  const [resizeKey, setResizeKey] = useState(0)
+
+  useEffect(() => { inPointRef.current = inPoint }, [inPoint])
+  useEffect(() => { outPointRef.current = outPoint }, [outPoint])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const observer = new ResizeObserver(() => setResizeKey((n) => n + 1))
+    observer.observe(canvas)
+    return () => observer.disconnect()
+  }, [])
 
   const palette = COLORS.get(color) ?? DEFAULT_PALETTE
   const config = SIZE_CONFIG[size]
@@ -158,7 +172,7 @@ export default function WaveformBar({
 
     drawHandle(inX)
     drawHandle(outX)
-  }, [peaks, duration, inPoint, outPoint, size, color, palette, config, timeToX])
+  }, [peaks, duration, inPoint, outPoint, size, color, palette, config, timeToX, resizeKey])
 
   // ── Overlay canvas: playhead only (redraws at 60fps during playback) ──
   useEffect(() => {
@@ -214,7 +228,7 @@ export default function WaveformBar({
     ctx.roundRect(playX - 2, 0, 4, 4, [0, 0, 2, 2])
     ctx.roundRect(playX - 2, cssH - 4, 4, 4, [2, 2, 0, 0])
     ctx.fill()
-  }, [currentTime, timeToX])
+  }, [currentTime, timeToX, resizeKey])
 
   // ── Hit-test which handle (if any) is near an x position ──────
   const hitTest = useCallback(
@@ -235,9 +249,9 @@ export default function WaveformBar({
     [inPoint, outPoint, timeToX],
   )
 
-  // ── Mouse handlers ────────────────────────────────────────────
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
+  // ── Pointer handlers ─────────────────────────────────────────
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
       const target = hitTest(e.clientX)
       if (target) {
         dragRef.current = target
@@ -245,30 +259,30 @@ export default function WaveformBar({
         e.preventDefault()
 
         // Register window listeners only during drag
-        const handleMouseMove = (ev: MouseEvent) => {
+        const handlePointerMove = (ev: PointerEvent) => {
           const canvas = overlayRef.current
           if (!canvas) return
           const rect = canvas.getBoundingClientRect()
           const time = xToTime(ev.clientX - rect.left, rect)
 
           if (dragRef.current === 'in') {
-            const clamped = Math.max(0, Math.min(time, outPoint - 0.01))
+            const clamped = Math.max(0, Math.min(time, outPointRef.current - 0.01))
             onInPointChange(clamped)
           } else {
-            const clamped = Math.max(inPoint + 0.01, Math.min(time, duration))
+            const clamped = Math.max(inPointRef.current + 0.01, Math.min(time, duration))
             onOutPointChange(clamped)
           }
         }
 
-        const handleMouseUp = () => {
+        const handlePointerUp = () => {
           dragRef.current = null
           isDraggingRef.current = false
-          window.removeEventListener('mousemove', handleMouseMove)
-          window.removeEventListener('mouseup', handleMouseUp)
+          window.removeEventListener('pointermove', handlePointerMove)
+          window.removeEventListener('pointerup', handlePointerUp)
         }
 
-        window.addEventListener('mousemove', handleMouseMove)
-        window.addEventListener('mouseup', handleMouseUp)
+        window.addEventListener('pointermove', handlePointerMove)
+        window.addEventListener('pointerup', handlePointerUp)
       } else {
         // Click to seek (clamped to trim range)
         const canvas = overlayRef.current
@@ -282,8 +296,8 @@ export default function WaveformBar({
   )
 
   // ── Cursor management ─────────────────────────────────────────
-  const handleCanvasMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleCanvasPointerMove = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
       const canvas = overlayRef.current
       if (!canvas) return
 
@@ -309,8 +323,9 @@ export default function WaveformBar({
       <canvas
         ref={overlayRef}
         className="absolute inset-0 block h-full w-full"
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleCanvasMouseMove}
+        style={{ touchAction: 'none' }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handleCanvasPointerMove}
       />
     </div>
   )

@@ -36,6 +36,15 @@ import type {
   DirectoriesResponse,
 } from '@/types'
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function encodeFileId(source: string, path: string, jid = ''): string {
+  const bytes = new TextEncoder().encode(`${source}:${jid}:${path}`)
+  let bin = ''
+  for (const b of bytes) bin += String.fromCharCode(b)
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
 interface CutterPanelProps {
   onLog: (log: string[]) => void
   onError: (error: string) => void
@@ -57,8 +66,6 @@ export default function CutterPanel({
   persisted,
   onPersistedChange,
 }: CutterPanelProps) {
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
   // Shared state
   const { form, directories, search } = persisted
 
@@ -120,13 +127,6 @@ export default function CutterPanel({
 
   const update = <K extends keyof CutterForm>(key: K, value: CutterForm[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }))
-
-  function encodeFileId(source: string, path: string, jid = ''): string {
-    const bytes = new TextEncoder().encode(`${source}:${jid}:${path}`)
-    let bin = ''
-    for (const b of bytes) bin += String.fromCharCode(b)
-    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-  }
 
   // ── Fetch directories with optional search filter ──────────
   const fetchDirs = useCallback(

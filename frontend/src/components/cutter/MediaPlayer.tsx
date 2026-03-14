@@ -298,14 +298,20 @@ export default function MediaPlayer({
     setCurrentTime(start)
 
     const playPromise = el.play()
-    if (playPromise && typeof playPromise.catch === 'function') {
-      playPromise.catch(() => {
-        setIsPlaying(false)
-      })
+    if (playPromise && typeof playPromise.then === 'function') {
+      playPromise
+        .then(() => {
+          setIsPlaying(true)
+          startLoop()
+        })
+        .catch(() => {
+          setIsPlaying(false)
+          stopLoop()
+        })
+    } else {
+      setIsPlaying(true)
+      startLoop()
     }
-    setIsPlaying(true)
-    stopLoop()
-    startLoop()
   }, [startLoop, stopLoop])
 
   const [mediaError, setMediaError] = useState<string>('')

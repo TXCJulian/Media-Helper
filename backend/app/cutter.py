@@ -35,6 +35,18 @@ _DELETE_RETRY_ATTEMPTS = 8
 _DELETE_RETRY_DELAY = 0.2
 
 
+def _monitor_cancel(proc, cancel_event):
+    """Monitor cancel event and terminate process if triggered."""
+    while proc.poll() is None:
+        if cancel_event.is_set():
+            proc.terminate()
+            return
+        try:
+            cancel_event.wait(timeout=0.25)
+        except Exception:
+            pass
+
+
 class _JobActivityState:
     """Mutable synchronization state for long-running operations per cutter job."""
 
@@ -115,6 +127,12 @@ def _extract_window(filepath: str, position: float, window_secs: float = 5.0) ->
         )
         return b""
     if result.returncode != 0:
+        logger.warning(
+            "Waveform extraction failed at %.2fs for %s: %s",
+            position,
+            filepath,
+            result.stderr.decode(errors="replace").strip(),
+        )
         return b""  # Skip failed windows gracefully
     return result.stdout
 
@@ -139,7 +157,10 @@ def _waveform_cached(filepath: str, mtime: float, num_peaks: int) -> list[float]
             "-f", "f32le",
             "pipe:1",
         ]
-        result = subprocess.run(cmd, capture_output=True, timeout=120)
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=120)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"ffmpeg waveform timed out for {filepath}") from exc
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg waveform failed: {result.stderr.decode(errors='replace')}")
         raw = result.stdout
@@ -187,7 +208,10 @@ def probe_file(filepath: str) -> dict:
         "-show_streams",
         filepath,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ffprobe timed out for {filepath}") from exc
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe failed for {filepath}: {result.stderr}")
 
@@ -489,8 +513,10 @@ def _stop_process(proc: object, kill: bool = False) -> None:
     if callable(action):
         try:
             action()
-        except Exception:
+        except ProcessLookupError:
             pass
+        except Exception:
+            logger.warning("Error stopping process %s", proc, exc_info=True)
 
 
 def _wait_for_process_shutdown(proc: object, timeout: float) -> None:
@@ -498,8 +524,10 @@ def _wait_for_process_shutdown(proc: object, timeout: float) -> None:
     if callable(wait):
         try:
             wait(timeout=timeout)
-        except Exception:
+        except ProcessLookupError:
             pass
+        except Exception:
+            logger.warning("Error waiting for process %s shutdown", proc, exc_info=True)
 
 
 def _job_has_active_operations(job_id: str) -> bool:
@@ -528,6 +556,9 @@ def _clear_job_runtime_state(job_id: str) -> None:
         stale_keys = [key for key in _preview_status if key.startswith(status_prefix)]
         for key in stale_keys:
             _preview_status.pop(key, None)
+
+    with _job_meta_lock_guard:
+        _job_meta_locks.pop(job_id, None)
 
 
 def _cancel_job_operations(job_id: str, timeout: float = _DELETE_WAIT_SECONDS) -> None:
@@ -785,10 +816,8 @@ def get_or_transcode_preview(
             if proc.returncode != 0:
                 _safe_remove_file(tmp_path)
                 detail = _compact_process_error("\n".join(stderr_lines), "\n".join(stdout_lines))
-                message = (
-                    f"Preview transcode failed (exit {proc.returncode}): {detail}. "
-                    f"Command: {subprocess.list2cmdline(cmd)}"
-                )
+                logger.error("Preview transcode failed (exit %d): %s\nCommand: %s", proc.returncode, detail, subprocess.list2cmdline(cmd))
+                message = f"Preview transcode failed (exit {proc.returncode}): {detail}"
                 _set_preview_status(
                     status_key,
                     {
@@ -914,18 +943,14 @@ def get_track_preview(
 
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             _register_job_process(job_id, proc)
-            stdout_blob = b""
-            stderr_blob = b""
             try:
-                while proc.poll() is None:
-                    if cancel_event.is_set():
-                        proc.terminate()
-                        break
-                    try:
-                        proc.wait(timeout=0.25)
-                    except subprocess.TimeoutExpired:
-                        continue
-                stdout_blob, stderr_blob = proc.communicate()
+                monitor = threading.Thread(target=_monitor_cancel, args=(proc, cancel_event), daemon=True)
+                monitor.start()
+                try:
+                    stdout_blob, stderr_blob = proc.communicate(timeout=300)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    stdout_blob, stderr_blob = proc.communicate(timeout=10)
             finally:
                 _unregister_job_process(job_id, proc)
                 _close_pipe(proc.stdout)
@@ -1012,18 +1037,14 @@ def get_track_remux(
 
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             _register_job_process(job_id, proc)
-            stdout_blob = b""
-            stderr_blob = b""
             try:
-                while proc.poll() is None:
-                    if cancel_event.is_set():
-                        proc.terminate()
-                        break
-                    try:
-                        proc.wait(timeout=0.25)
-                    except subprocess.TimeoutExpired:
-                        continue
-                stdout_blob, stderr_blob = proc.communicate()
+                monitor = threading.Thread(target=_monitor_cancel, args=(proc, cancel_event), daemon=True)
+                monitor.start()
+                try:
+                    stdout_blob, stderr_blob = proc.communicate(timeout=300)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    stdout_blob, stderr_blob = proc.communicate(timeout=10)
             finally:
                 _unregister_job_process(job_id, proc)
                 _close_pipe(proc.stdout)
@@ -1070,6 +1091,15 @@ _preview_status: dict[str, dict] = {}
 _preview_status_guard = threading.Lock()
 _job_activity: dict[str, _JobActivityState] = {}
 _job_activity_guard = threading.Lock()
+_job_meta_locks: dict[str, threading.Lock] = {}
+_job_meta_lock_guard = threading.Lock()
+_transcode_semaphore = threading.Semaphore(3)
+
+
+def get_job_meta_lock(job_id: str) -> threading.Lock:
+    """Get or create a per-job lock for metadata access."""
+    with _job_meta_lock_guard:
+        return _job_meta_locks.setdefault(job_id, threading.Lock())
 
 
 def _set_preview_status(status_key: str, payload: dict) -> None:
@@ -1163,6 +1193,7 @@ def start_background_transcode(
         save_job_metadata(job_id, _jmeta)
 
     def _run():
+        _transcode_semaphore.acquire()
         try:
             get_or_transcode_preview(filepath, job_id)
             # Transcode succeeded — restore ready status
@@ -1195,6 +1226,7 @@ def start_background_transcode(
                 _meta["transcode_error"] = str(exc)
                 save_job_metadata(job_id, _meta)
         finally:
+            _transcode_semaphore.release()
             event.set()
             with _transcode_lock_guard:
                 _transcode_locks.pop(preview_path, None)
@@ -1363,9 +1395,16 @@ def cut_file(
                     stderr_lines.append(stripped)
                     progress_cb(f"[ffmpeg] {stripped}")
 
-        proc.wait()
+        try:
+            proc.wait(timeout=3600)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)
+            _safe_remove_file(output_path)
+            raise RuntimeError("ffmpeg cut timed out after 1 hour")
         if proc.returncode != 0:
             detail = "; ".join(stderr_lines[-5:]) if stderr_lines else "no details"
+            _safe_remove_file(output_path)
             raise RuntimeError(
                 f"ffmpeg cut failed (exit {proc.returncode}): {detail}"
             )
@@ -1547,7 +1586,11 @@ def _resolve_job_source_path(meta: dict) -> str | None:
             if path_real == base_real or path_real.startswith(base_real + os.sep):
                 return path_real
             return None
-        return os.path.join(BASE_PATH, original_path)
+        resolved = os.path.realpath(os.path.join(BASE_PATH, original_path))
+        base_real = os.path.realpath(BASE_PATH)
+        if resolved == base_real or resolved.startswith(base_real + os.sep):
+            return resolved
+        return None
 
     return None
 
@@ -1621,6 +1664,52 @@ def cleanup_old_jobs() -> None:
                     delete_job(name)
         except Exception:
             logger.warning("Error checking job %s for cleanup", name, exc_info=True)
+
+    # Clean up stale in-memory state for job IDs that no longer have directories
+    active_job_ids = set()
+    if os.path.isdir(CUTTER_JOBS_DIR):
+        for name in os.listdir(CUTTER_JOBS_DIR):
+            if _UUID_RE.match(name):
+                active_job_ids.add(name)
+
+    with _preview_build_lock_guard:
+        stale_keys = [
+            key for key in _preview_build_locks
+            if not any(
+                os.path.normcase(key).startswith(
+                    os.path.normcase(os.path.join(CUTTER_JOBS_DIR, jid) + os.sep)
+                )
+                for jid in active_job_ids
+            )
+        ]
+        for key in stale_keys:
+            _preview_build_locks.pop(key, None)
+
+    with _preview_status_guard:
+        stale_keys = [
+            key for key in _preview_status
+            if ":" in key and key.split(":", 1)[0] not in active_job_ids
+        ]
+        for key in stale_keys:
+            _preview_status.pop(key, None)
+
+    with _transcode_lock_guard:
+        stale_keys = [
+            key for key in _transcode_locks
+            if not any(
+                os.path.normcase(key).startswith(
+                    os.path.normcase(os.path.join(CUTTER_JOBS_DIR, jid) + os.sep)
+                )
+                for jid in active_job_ids
+            )
+        ]
+        for key in stale_keys:
+            _transcode_locks.pop(key, None)
+
+    with _job_meta_lock_guard:
+        stale_keys = [jid for jid in _job_meta_locks if jid not in active_job_ids]
+        for key in stale_keys:
+            _job_meta_locks.pop(key, None)
 
 
 def encode_file_id(source: str, path: str, job_id: str = "") -> str:

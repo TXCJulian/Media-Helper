@@ -20,7 +20,28 @@ function baseProps(overrides: Partial<ComponentProps<typeof MediaPlayer>> = {}) 
   }
 }
 
-// jsdom does not implement media playback primitives used by the component.
+// jsdom does not implement ResizeObserver, canvas context, or media playback primitives.
+globalThis.ResizeObserver = class ResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+} as unknown as typeof globalThis.ResizeObserver
+
+// Return a proxy that accepts any property access / method call.
+const noop = () => undefined
+const canvasCtxHandler: ProxyHandler<Record<string, unknown>> = {
+  get(_target, prop) {
+    if (prop === 'measureText') return () => ({ width: 0 })
+    if (prop === 'createLinearGradient') return () => new Proxy({}, canvasCtxHandler)
+    if (prop === 'canvas') return { width: 0, height: 0 }
+    return noop
+  },
+  set() { return true },
+}
+HTMLCanvasElement.prototype.getContext = (() =>
+  new Proxy({}, canvasCtxHandler)
+) as unknown as typeof HTMLCanvasElement.prototype.getContext
+
 Object.defineProperty(HTMLMediaElement.prototype, 'pause', {
   configurable: true,
   value: () => undefined,
@@ -41,7 +62,7 @@ describe('MediaPlayer', () => {
     fireEvent.error(video as HTMLVideoElement)
 
     expect(screen.queryByText(/Transcoding preview/)).toBeNull()
-    expect(screen.getByText('Unknown media error')).toBeTruthy()
+    expect(screen.getByText(/Playback failed/)).toBeTruthy()
   })
 
   it('resets error on source change and marks ready on canPlay', () => {
@@ -49,7 +70,7 @@ describe('MediaPlayer', () => {
 
     const firstVideo = container.querySelector('video')
     fireEvent.error(firstVideo as HTMLVideoElement)
-    expect(screen.getByText('Unknown media error')).toBeTruthy()
+    expect(screen.getByText(/Playback failed/)).toBeTruthy()
 
     rerender(<MediaPlayer {...baseProps({ streamUrl: '/cutter/stream/demo?audio_stream=2' })} />)
     expect(screen.queryByText('Unknown media error')).toBeNull()

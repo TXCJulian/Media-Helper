@@ -59,6 +59,7 @@ from app.cutter import (
     list_jobs,
     delete_job,
     cleanup_old_jobs,
+    get_job_meta_lock,
 )
 
 logging.basicConfig(
@@ -139,6 +140,8 @@ async def lifespan(app: FastAPI):
     cleanup_task = None
     if "cutter" in ENABLED_FEATURES:
         os.makedirs(CUTTER_JOBS_DIR, exist_ok=True)
+        if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+            logger.error("Cutter feature requires ffmpeg and ffprobe on PATH")
         cleanup_task = asyncio.create_task(_cleanup_cutter_jobs())
 
     yield
@@ -578,10 +581,11 @@ def cutter_probe(
         )
 
         if job_id:
-            meta = load_job_metadata(job_id)
-            if meta:
-                meta["browser_ready"] = not info["needs_transcoding"]
-                save_job_metadata(job_id, meta)
+            with get_job_meta_lock(job_id):
+                meta = load_job_metadata(job_id)
+                if meta:
+                    meta["browser_ready"] = not info["needs_transcoding"]
+                    save_job_metadata(job_id, meta)
 
         return info
     except RuntimeError as e:
@@ -897,10 +901,11 @@ async def cutter_upload(request: Request):
         delete_job(job_id)
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
 
-    meta = load_job_metadata(job_id)
-    if meta:
-        meta["status"] = "ready"
-        save_job_metadata(job_id, meta)
+    with get_job_meta_lock(job_id):
+        meta = load_job_metadata(job_id)
+        if meta:
+            meta["status"] = "ready"
+            save_job_metadata(job_id, meta)
 
     return {
         "job_id": job_id,
@@ -929,10 +934,11 @@ def cutter_create_job(
             resolved,
             probe.get("video_codec", "") or "",
         )
-        meta = load_job_metadata(job_id)
-        if meta:
-            meta["browser_ready"] = browser_ready
-            save_job_metadata(job_id, meta)
+        with get_job_meta_lock(job_id):
+            meta = load_job_metadata(job_id)
+            if meta:
+                meta["browser_ready"] = browser_ready
+                save_job_metadata(job_id, meta)
     except RuntimeError:
         logger.warning("Could not evaluate browser compatibility for job %s", job_id)
 
@@ -1126,20 +1132,21 @@ def cutter_cut(
     output_path = os.path.join(output_dir, out_filename)
 
     # Update job metadata
-    meta = load_job_metadata(job_id)
-    if meta:
-        meta["status"] = "cutting"
-        meta["cut_settings"] = {
-            "in_point": in_point,
-            "out_point": out_point,
-            "stream_copy": stream_copy,
-            "codec": codec or None,
-            "container": container or None,
-            "audio_codec": audio_codec or None,
-            "audio_stream_index": audio_stream,
-            "output_name": output_name or None,
-        }
-        save_job_metadata(job_id, meta)
+    with get_job_meta_lock(job_id):
+        meta = load_job_metadata(job_id)
+        if meta:
+            meta["status"] = "cutting"
+            meta["cut_settings"] = {
+                "in_point": in_point,
+                "out_point": out_point,
+                "stream_copy": stream_copy,
+                "codec": codec or None,
+                "container": container or None,
+                "audio_codec": audio_codec or None,
+                "audio_stream_index": audio_stream,
+                "output_name": output_name or None,
+            }
+            save_job_metadata(job_id, meta)
 
     msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
     cancel_event = threading.Event()
@@ -1172,23 +1179,25 @@ def cutter_cut(
             final_name = os.path.basename(final_path)
 
             # Update job metadata with output
-            meta = load_job_metadata(job_id)
-            if meta:
-                meta["status"] = "done"
-                existing = meta.get("output_files", [])
-                if final_name not in existing:
-                    existing.append(final_name)
-                meta["output_files"] = existing
-                save_job_metadata(job_id, meta)
+            with get_job_meta_lock(job_id):
+                meta = load_job_metadata(job_id)
+                if meta:
+                    meta["status"] = "done"
+                    existing = meta.get("output_files", [])
+                    if final_name not in existing:
+                        existing.append(final_name)
+                    meta["output_files"] = existing
+                    save_job_metadata(job_id, meta)
 
             msg_queue.put(("done", f"Output: {final_name}"))
         except Exception as e:
             logger.exception("Cut failed")
             # Update job status to error
-            meta = load_job_metadata(job_id)
-            if meta:
-                meta["status"] = "error"
-                save_job_metadata(job_id, meta)
+            with get_job_meta_lock(job_id):
+                meta = load_job_metadata(job_id)
+                if meta:
+                    meta["status"] = "error"
+                    save_job_metadata(job_id, meta)
             msg_queue.put(("error_msg", str(e)))
             msg_queue.put(("done", "Cut failed"))
 

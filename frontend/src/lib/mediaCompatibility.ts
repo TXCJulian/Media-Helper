@@ -49,7 +49,7 @@ export function getBrowserCompatibilityReport(
   for (const stream of probe.audio_streams) {
     const codec = normalizeCodec(stream.codec)
     if (codec && !SUPPORTED_AUDIO_CODECS.has(codec)) {
-      unsupportedAudioCodecs.add(stream.codec.toUpperCase())
+      unsupportedAudioCodecs.add(codec.toUpperCase())
     }
   }
 

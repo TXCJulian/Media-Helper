@@ -90,7 +90,7 @@ export default function JobManager({ activeJobId, onLog, onOpenJob }: { activeJo
       </button>
 
       {open && (
-        <div className="max-h-[320px] overflow-y-auto rounded-b-xl border border-t-0 border-[var(--glass-border)] bg-black/20">
+        <div className="max-h-[min(480px,60vh)] overflow-y-auto rounded-b-xl border border-t-0 border-[var(--glass-border)] bg-black/20">
           {refreshError && (
             <div className="border-b border-red-500/20 bg-red-500/10 px-4 py-2 text-[0.72rem] text-red-300">
               Failed to refresh jobs: {refreshError}
