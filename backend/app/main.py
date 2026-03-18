@@ -535,10 +535,18 @@ def start_transcription(
 # 4) Job metadata tracks readiness, errors, and downloadable outputs.
 
 
-def resolve_cutter_path(path: str, source: str, job_id: str = "") -> str:
+def resolve_cutter_path(
+    path: str, source: str, job_id: str = "", base_label: str = ""
+) -> str:
     """Resolve and validate a cutter file path based on source type."""
     if source == "server":
-        return validate_path(BASE_PATH, path)
+        try:
+            base_path = resolve_base(base_label)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail=f"Unknown base: '{base_label}'"
+            )
+        return validate_path(base_path, path)
     elif source == "upload":
         if not job_id:
             raise HTTPException(
@@ -573,9 +581,14 @@ _MEDIA_CONTENT_TYPES = {
 @app.get("/cutter/files")
 def list_cutter_files(
     directory: str = Query(..., max_length=500),
+    base: str = Query(..., max_length=200),
 ):
     require_feature("cutter")
-    path = validate_path(BASE_PATH, directory)
+    try:
+        base_path = resolve_base(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown base: '{base}'")
+    path = validate_path(base_path, directory)
     if not os.path.isdir(path):
         return {"files": []}
 
@@ -605,9 +618,10 @@ def cutter_probe(
     path: str = Query(..., max_length=500),
     source: str = Query(..., max_length=10),
     job_id: str = Query("", max_length=50),
+    base: str = Query("", max_length=200),
 ):
     require_feature("cutter")
-    resolved = resolve_cutter_path(path, source, job_id)
+    resolved = resolve_cutter_path(path, source, job_id, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
     try:
@@ -636,9 +650,10 @@ def cutter_waveform(
     source: str = Query(..., max_length=10),
     peaks: int = Query(2000, ge=100, le=10000),
     job_id: str = Query("", max_length=50),
+    base: str = Query("", max_length=200),
 ):
     require_feature("cutter")
-    resolved = resolve_cutter_path(path, source, job_id)
+    resolved = resolve_cutter_path(path, source, job_id, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
     try:
@@ -653,11 +668,12 @@ def cutter_thumbnails(
     source: str = Query(..., max_length=10),
     count: int = Query(30, ge=5, le=50),
     job_id: str = Query("", max_length=50),
+    base: str = Query("", max_length=200),
 ):
     require_feature("cutter")
     from fastapi.responses import Response
 
-    resolved = resolve_cutter_path(path, source, job_id)
+    resolved = resolve_cutter_path(path, source, job_id, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
     try:
@@ -685,11 +701,11 @@ def cutter_stream(
 ):
     require_feature("cutter")
     try:
-        source, job_id, path = decode_file_id(file_id)
+        source, job_id, base, path = decode_file_id(file_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    resolved = resolve_cutter_path(path, source, job_id)
+    resolved = resolve_cutter_path(path, source, job_id, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -840,11 +856,11 @@ def cutter_stream(
 def cutter_preview_status(file_id: str):
     require_feature("cutter")
     try:
-        source, job_id, path = decode_file_id(file_id)
+        source, job_id, base, path = decode_file_id(file_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    resolved = resolve_cutter_path(path, source, job_id)
+    resolved = resolve_cutter_path(path, source, job_id, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -958,7 +974,7 @@ async def cutter_upload(request: Request):
 
     return {
         "job_id": job_id,
-        "file_id": encode_file_id("upload", filename, job_id),
+        "file_id": encode_file_id("upload", filename, job_id, base=""),
         "filename": filename,
     }
 
@@ -967,14 +983,15 @@ async def cutter_upload(request: Request):
 def cutter_create_job(
     path: str = Form(..., max_length=500),
     source: str = Form("server", max_length=10),
+    base: str = Form("", max_length=200),
 ):
     """Create a job for a server-side file (no file copy, metadata only)."""
     require_feature("cutter")
-    resolved = resolve_cutter_path(path, source)
+    resolved = resolve_cutter_path(path, source, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
     filename = os.path.basename(resolved)
-    job_id = create_job(source, path, filename)
+    job_id = create_job(source, path, filename, base=base)
 
     try:
         probe = probe_file(resolved)
@@ -1079,8 +1096,13 @@ def cutter_save_to_source(job_id: str, filename: str):
 
     # Resolve the original file's directory
     original_path = meta.get("original_path", "")
+    base_label = meta.get("base", "")
     try:
-        resolved_original = validate_path(BASE_PATH, original_path)
+        base_path = resolve_base(base_label)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Cannot resolve original file path")
+    try:
+        resolved_original = validate_path(base_path, original_path)
     except HTTPException:
         raise HTTPException(status_code=400, detail="Cannot resolve original file path")
 
@@ -1114,6 +1136,7 @@ def cutter_cut(
     container: str = Form("", max_length=20),
     audio_tracks_json: str = Form("[]", alias="audio_tracks", max_length=5000),
     keep_quality: bool = Form(False),
+    base: str = Form("", max_length=200),
 ):
     require_feature("cutter")
 
@@ -1123,7 +1146,7 @@ def cutter_cut(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    resolved = resolve_cutter_path(path, source, job_id)
+    resolved = resolve_cutter_path(path, source, job_id, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
 

@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from app.config import BASE_PATH, CUTTER_JOBS_DIR, CUTTER_JOB_TTL
+from app.config import resolve_base, CUTTER_JOBS_DIR, CUTTER_JOB_TTL
 from app.fs_utils import collision_safe_path
 
 logger = logging.getLogger(__name__)
@@ -1750,7 +1750,11 @@ _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 
 
 def create_job(
-    source: str, original_path: str, original_name: str, initial_status: str = "ready"
+    source: str,
+    original_path: str,
+    original_name: str,
+    initial_status: str = "ready",
+    base: str = "",
 ) -> str:
     """Create a new job directory structure and return the job_id."""
     job_id = str(uuid.uuid4())
@@ -1763,6 +1767,7 @@ def create_job(
         "source": source,
         "original_name": original_name,
         "original_path": original_path,
+        "base": base,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": initial_status,
         "preview_transcoded": False,
@@ -1831,17 +1836,22 @@ def _resolve_job_source_path(meta: dict) -> str | None:
         return os.path.join(job_dir, "input", original_name)
 
     if source == "server":
+        base_label = meta.get("base", "")
+        try:
+            base_path = resolve_base(base_label)
+        except ValueError:
+            return None
         original_path = meta.get("original_path", "")
         if not original_path:
             return None
         if os.path.isabs(original_path):
-            base_real = os.path.realpath(BASE_PATH)
+            base_real = os.path.realpath(base_path)
             path_real = os.path.realpath(original_path)
             if path_real == base_real or path_real.startswith(base_real + os.sep):
                 return path_real
             return None
-        resolved = os.path.realpath(os.path.join(BASE_PATH, original_path))
-        base_real = os.path.realpath(BASE_PATH)
+        resolved = os.path.realpath(os.path.join(base_path, original_path))
+        base_real = os.path.realpath(base_path)
         if resolved == base_real or resolved.startswith(base_real + os.sep):
             return resolved
         return None
@@ -1989,14 +1999,14 @@ def cleanup_old_jobs() -> None:
             )
 
 
-def encode_file_id(source: str, path: str, job_id: str = "") -> str:
-    """URL-safe base64 encode of 'source:job_id:path'."""
-    raw = f"{source}:{job_id}:{path}"
+def encode_file_id(source: str, path: str, job_id: str = "", base: str = "") -> str:
+    """URL-safe base64 encode of 'source:job_id:base:path'."""
+    raw = f"{source}:{job_id}:{base}:{path}"
     return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
 
 
-def decode_file_id(file_id: str) -> tuple[str, str, str]:
-    """Decode a file_id back to (source, job_id, path). Raises ValueError on invalid input.
+def decode_file_id(file_id: str) -> tuple[str, str, str, str]:
+    """Decode a file_id back to (source, job_id, base, path). Raises ValueError on invalid input.
 
     Security note: This function performs NO path validation. Callers MUST
     validate the returned path against allowed base directories before use
@@ -2011,11 +2021,14 @@ def decode_file_id(file_id: str) -> tuple[str, str, str]:
     except Exception as e:
         raise ValueError(f"Invalid file_id: {e}") from e
 
-    parts = decoded.split(":", 2)
+    parts = decoded.split(":", 3)
     if len(parts) == 2:
         # Legacy format: "source:path"
-        return parts[0], "", parts[1]
+        return parts[0], "", "", parts[1]
     if len(parts) == 3:
-        return parts[0], parts[1], parts[2]
+        # Legacy format: "source:job_id:path"
+        return parts[0], parts[1], "", parts[2]
+    if len(parts) == 4:
+        return parts[0], parts[1], parts[2], parts[3]
 
-    raise ValueError("Invalid file_id format: expected 'source:job_id:path'")
+    raise ValueError("Invalid file_id format: expected 'source:job_id:base:path'")
