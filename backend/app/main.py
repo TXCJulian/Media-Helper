@@ -16,7 +16,9 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from app.config import (
-    BASE_PATH,
+    BASE_PATHS,
+    BASE_PATH_LABELS,
+    resolve_base,
     TVSHOW_FOLDER_NAME,
     MUSIC_FOLDER_NAME,
     VALID_MUSIC_EXT,
@@ -110,8 +112,8 @@ class DirChangeHandler(FileSystemEventHandler):
             _get_cutter_dirs_cached.cache_clear()
 
 
-# Global observer instance
-_observer = None
+# Global observer instances
+_observers: list = []
 
 
 async def _cleanup_cutter_jobs():
@@ -127,20 +129,20 @@ async def _cleanup_cutter_jobs():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan with startup and shutdown events."""
-    global _observer
+    global _observers
 
     # Startup
     handler = DirChangeHandler()
-    if os.path.isdir(BASE_PATH):
-        _observer = Observer()
-        _observer.schedule(handler, BASE_PATH, recursive=True)
-        _observer.start()
-        logger.info("File watcher started on '%s'", BASE_PATH)
-    else:
-        logger.warning(
-            "BASE_PATH '%s' does not exist; file watcher not started.", BASE_PATH
-        )
-        _observer = None
+    _observers = []
+    for bp in BASE_PATHS:
+        if os.path.isdir(bp):
+            obs = Observer()
+            obs.schedule(handler, bp, recursive=True)
+            obs.start()
+            _observers.append(obs)
+            logger.info("Watching %s for filesystem changes", bp)
+        else:
+            logger.warning("Base path does not exist, skipping watch: %s", bp)
 
     # Start cutter upload cleanup task only if cutter feature is enabled
     cleanup_task = None
@@ -155,10 +157,12 @@ async def lifespan(app: FastAPI):
     # Shutdown
     if cleanup_task is not None:
         cleanup_task.cancel()
-    if _observer:
-        _observer.stop()
-        _observer.join()
-        logger.info("File watcher stopped.")
+    for obs in _observers:
+        obs.stop()
+    for obs in _observers:
+        obs.join()
+    if _observers:
+        logger.info("File watchers stopped.")
 
 
 app = FastAPI(lifespan=lifespan)
@@ -178,12 +182,16 @@ def health():
         "status": "ok",
         "transcriber": bool(TRANSCRIBER_URL),
         "features": ENABLED_FEATURES,
+        "base_paths": list(BASE_PATH_LABELS.keys()),
     }
 
 
 @app.get("/config")
 def get_config():
-    return {"features": ENABLED_FEATURES}
+    return {
+        "features": ENABLED_FEATURES,
+        "base_paths": list(BASE_PATH_LABELS.keys()),
+    }
 
 
 @app.get("/directories/tvshows")
@@ -198,13 +206,13 @@ def list_directories(
     filtered = all_dirs
     if series:
         series_lc = series.lower()
-        filtered = [d for d in filtered if series_lc in d.lower()]
+        filtered = [d for d in filtered if series_lc in d["path"].lower()]
 
     # nach Staffel filtern
     if season is not None:
         season_str = f"{season:02d}"
         pattern = f"/season {season_str}"
-        filtered = [d for d in filtered if d.lower().endswith(pattern)]
+        filtered = [d for d in filtered if d["path"].lower().endswith(pattern)]
 
     return {"directories": filtered}
 
@@ -221,13 +229,13 @@ def list_music_directories(
     filtered = all_dirs
     if artist:
         artist_lc = artist.lower()
-        filtered = [d for d in filtered if artist_lc in d.lower()]
+        filtered = [d for d in filtered if artist_lc in d["path"].lower()]
 
     if album:
         album_lc = album.lower()
         result = []
         for d in filtered:
-            parts = d.split("/")
+            parts = d["path"].split("/")
             if len(parts) >= 2:
                 rest_path = "/".join(parts[1:]).lower()
                 if album_lc in rest_path:
@@ -256,7 +264,7 @@ def list_media_directories(
     filtered = all_dirs
     if search:
         search_lc = search.lower()
-        filtered = [d for d in filtered if search_lc in d.lower()]
+        filtered = [d for d in filtered if search_lc in d["path"].lower()]
 
     return {"directories": filtered}
 
