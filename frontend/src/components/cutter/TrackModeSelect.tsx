@@ -120,7 +120,9 @@ export default function TrackModeSelect({
             : 'border-[var(--border)] hover:border-[var(--glass-border-hover)]'
         }`}
       >
-        <span className="truncate text-[var(--text-primary)]">{selectedOption?.label ?? value}</span>
+        <span className="truncate text-[var(--text-primary)]">
+          {selectedOption?.label ?? value}
+        </span>
         <svg
           className={`pointer-events-none absolute right-2.5 h-3 w-3 text-[var(--text-secondary)] transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
           viewBox="0 0 16 16"

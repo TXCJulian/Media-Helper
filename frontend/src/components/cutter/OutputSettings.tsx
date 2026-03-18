@@ -95,7 +95,9 @@ export default function OutputSettings({
 
   const updateTrack = (streamIndex: number, updates: Partial<AudioTrackConfig>) => {
     onAudioTracksChange(
-      audioTracks.map((track) => (track.streamIndex === streamIndex ? { ...track, ...updates } : track)),
+      audioTracks.map((track) =>
+        track.streamIndex === streamIndex ? { ...track, ...updates } : track,
+      ),
     )
   }
 
@@ -147,7 +149,9 @@ export default function OutputSettings({
             label={keepQuality ? 'On - matching source bitrate' : 'Off - encoder defaults'}
           />
           {keepQuality && sourceVideoBitrate != null && sourceVideoBitrate > 0 && isVideo && (
-            <p className="mt-1 text-[0.68rem] text-white/35">Source video: {formatBitrate(sourceVideoBitrate)}</p>
+            <p className="mt-1 text-[0.68rem] text-white/35">
+              Source video: {formatBitrate(sourceVideoBitrate)}
+            </p>
           )}
           <p className="mt-1 text-[0.68rem] text-white/25">
             Re-encoding always causes some quality loss vs stream copy

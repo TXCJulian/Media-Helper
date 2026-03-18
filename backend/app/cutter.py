@@ -1473,9 +1473,11 @@ def cut_file(
             container = "flac"
         if audio_tracks:
             audio_tracks = [
-                {**track, "mode": "reencode", "codec": "flac"}
-                if track.get("mode") == "passthru"
-                else track
+                (
+                    {**track, "mode": "reencode", "codec": "flac"}
+                    if track.get("mode") == "passthru"
+                    else track
+                )
                 for track in audio_tracks
             ]
 
@@ -1500,14 +1502,19 @@ def cut_file(
     if audio_tracks is not None:
         cmd += ["-map", "0:v?"]
 
-        included_tracks = [track for track in audio_tracks if track.get("mode") != "remove"]
+        included_tracks = [
+            track for track in audio_tracks if track.get("mode") != "remove"
+        ]
         probe_streams = audio_streams or []
 
         for track in included_tracks:
             rel_idx = _audio_relative_index(probe_streams, int(track["index"]))
             cmd += ["-map", f"0:a:{rel_idx}"]
     elif audio_stream_index is not None:
-        rel_idx = _audio_relative_index(audio_streams or probe_file(filepath).get("audio_streams", []), audio_stream_index)
+        rel_idx = _audio_relative_index(
+            audio_streams or probe_file(filepath).get("audio_streams", []),
+            audio_stream_index,
+        )
         cmd += ["-map", "0:v?", "-map", f"0:a:{rel_idx}"]
 
     # Validate codec/container against allowlists
@@ -1540,7 +1547,12 @@ def cut_file(
                 cmd += [f"-c:a:{out_idx}", "copy"]
             elif mode == "reencode":
                 raw_codec = str(track.get("codec") or "aac")
-                enc = _CODEC_TO_ENCODER.get(raw_codec, raw_codec)
+                if raw_codec not in _CODEC_TO_ENCODER:
+                    raise ValueError(
+                        f"Invalid audio track codec: '{raw_codec}'. "
+                        f"Allowed: {sorted(_CODEC_TO_ENCODER.keys())}"
+                    )
+                enc = _CODEC_TO_ENCODER[raw_codec]
                 cmd += [f"-c:a:{out_idx}", enc]
                 if keep_quality:
                     br = int(bitrates.get(int(track["index"]), 0) or 0)
@@ -1641,6 +1653,7 @@ def generate_thumbnail_strip(filepath: str, count: int = 30) -> bytes:
     Uses fast keyframe seeking (``-ss`` before ``-i``) for each position,
     so even large files over network shares complete quickly.
     """
+    count = min(max(count, 1), 50)  # Cap to avoid excessive ffmpeg inputs/filters
     info = probe_file(filepath)
     duration = info["duration"]
     if duration <= 0:
@@ -1939,6 +1952,24 @@ def cleanup_old_jobs() -> None:
         stale_keys = [jid for jid in _job_meta_locks if jid not in active_job_ids]
         for key in stale_keys:
             _job_meta_locks.pop(key, None)
+
+    # Warn if in-memory state dictionaries are growing unexpectedly large
+    _DICT_SIZE_WARN_THRESHOLD = 500
+    for name, d in [
+        ("_preview_build_locks", _preview_build_locks),
+        ("_preview_status", _preview_status),
+        ("_transcode_locks", _transcode_locks),
+        ("_job_meta_locks", _job_meta_locks),
+        ("_job_activity", _job_activity),
+    ]:
+        if len(d) > _DICT_SIZE_WARN_THRESHOLD:
+            logger.warning(
+                "Cutter runtime dict %s has %d entries (threshold %d) — "
+                "possible memory leak",
+                name,
+                len(d),
+                _DICT_SIZE_WARN_THRESHOLD,
+            )
 
 
 def encode_file_id(source: str, path: str, job_id: str = "") -> str:

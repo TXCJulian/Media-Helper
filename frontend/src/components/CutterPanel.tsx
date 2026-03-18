@@ -886,16 +886,18 @@ export default function CutterPanel({
               />
             </FormSection>
 
-            {probe.audio_streams && probe.audio_streams.length > 1 && selectedPreviewAudioStreamIndex != null && (
-              <FormSection label="Preview Audio Track">
-                <AudioTrackSelect
-                  streams={probe.audio_streams}
-                  value={selectedPreviewAudioStreamIndex}
-                  onChange={setPreviewAudioStreamIndex}
-                  disabled={locked}
-                />
-              </FormSection>
-            )}
+            {probe.audio_streams &&
+              probe.audio_streams.length > 1 &&
+              selectedPreviewAudioStreamIndex != null && (
+                <FormSection label="Preview Audio Track">
+                  <AudioTrackSelect
+                    streams={probe.audio_streams}
+                    value={selectedPreviewAudioStreamIndex}
+                    onChange={setPreviewAudioStreamIndex}
+                    disabled={locked}
+                  />
+                </FormSection>
+              )}
 
             <FormSection label="Trim">
               <TrimControls

@@ -622,7 +622,7 @@ def cutter_waveform(
 def cutter_thumbnails(
     path: str = Query(..., max_length=500),
     source: str = Query(..., max_length=10),
-    count: int = Query(30, ge=5, le=100),
+    count: int = Query(30, ge=5, le=50),
     job_id: str = Query("", max_length=50),
 ):
     require_feature("cutter")
@@ -1041,6 +1041,9 @@ def cutter_save_to_source(job_id: str, filename: str):
         raise HTTPException(status_code=404, detail=str(e))
 
     safe_name = os.path.basename(filename)
+    ext = os.path.splitext(safe_name)[1].lower()
+    if ext and ext not in VALID_CUTTER_EXT:
+        raise HTTPException(status_code=422, detail=f"Invalid output extension: {ext}")
     src_file = os.path.join(job_dir, "output", safe_name)
     if not os.path.isfile(src_file):
         raise HTTPException(status_code=404, detail="Output file not found")
@@ -1101,6 +1104,7 @@ def cutter_cut(
         )
 
     valid_codecs = {
+        "copy",
         "aac",
         "flac",
         "opus",
@@ -1115,6 +1119,7 @@ def cutter_cut(
         "libaom-av1",
     }
     valid_audio_codecs = {
+        "copy",
         "aac",
         "flac",
         "opus",
@@ -1159,7 +1164,9 @@ def cutter_cut(
     valid_modes = {"passthru", "reencode", "remove"}
     for track in audio_tracks_parsed:
         if not isinstance(track, dict):
-            raise HTTPException(status_code=422, detail="Each audio track must be an object")
+            raise HTTPException(
+                status_code=422, detail="Each audio track must be an object"
+            )
         if track.get("mode") not in valid_modes:
             raise HTTPException(
                 status_code=422,
@@ -1259,7 +1266,9 @@ def cutter_cut(
                 progress_cb=progress_cb,
                 keep_quality=keep_quality,
                 source_video_bitrate=source_video_bitrate,
-                source_audio_bitrates=source_audio_bitrates if source_audio_bitrates else None,
+                source_audio_bitrates=(
+                    source_audio_bitrates if source_audio_bitrates else None
+                ),
                 audio_streams=probe_audio_streams,
                 job_id=job_id,
                 cancel_event=cancel_event,
