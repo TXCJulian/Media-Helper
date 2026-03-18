@@ -4,7 +4,41 @@ import type { PanelName } from '@/components/Landing'
 import EpisodePanel from '@/components/EpisodePanel'
 import MusicPanel from '@/components/MusicPanel'
 import LyricsPanel from '@/components/LyricsPanel'
+import CutterPanel from '@/components/CutterPanel'
 import { fetchConfig } from '@/lib/api'
+import type { CutterPersistedState, CutterSourceState } from '@/types'
+
+const EMPTY_SOURCE_STATE: CutterSourceState = {
+  probe: null,
+  peaks: [],
+  filePath: '',
+  fileId: '',
+  thumbnailUrl: '',
+  files: [],
+  jobId: '',
+  outputFiles: [],
+  isLoadingFile: false,
+}
+
+const INITIAL_CUTTER_STATE: CutterPersistedState = {
+  form: {
+    source: 'server',
+    directory: '',
+    filename: '',
+    inPoint: 0,
+    outPoint: 0,
+    outputName: '',
+    streamCopy: true,
+    codec: 'libx264',
+    container: 'mp4',
+    audioTracks: [],
+    keepQuality: false,
+  },
+  directories: [],
+  search: '',
+  serverState: { ...EMPTY_SOURCE_STATE },
+  uploadState: { ...EMPTY_SOURCE_STATE },
+}
 
 export default function App() {
   const [activeView, setActiveView] = useState<'home' | PanelName>('home')
@@ -13,7 +47,10 @@ export default function App() {
   useEffect(() => {
     fetchConfig()
       .then((cfg) => setEnabledFeatures(cfg.features as PanelName[]))
-      .catch(() => setEnabledFeatures(['episodes', 'music']))
+      .catch((err) => {
+        console.warn('Backend is not reachable', err)
+        setEnabledFeatures([])
+      })
   }, [])
 
   // Per-panel log + error state
@@ -28,6 +65,11 @@ export default function App() {
   const [lyricsLog, setLyricsLog] = useState<string[]>([])
   const [lyricsError, setLyricsError] = useState('')
   const [lyricsStarted, setLyricsStarted] = useState(false)
+
+  const [cutterLog, setCutterLog] = useState<string[]>([])
+  const [cutterError, setCutterError] = useState('')
+  const [cutterStarted, setCutterStarted] = useState(false)
+  const [cutterState, setCutterState] = useState<CutterPersistedState>(INITIAL_CUTTER_STATE)
 
   const handleEpisodeLog = useCallback((log: string[]) => {
     setEpisodeStarted(true)
@@ -44,9 +86,15 @@ export default function App() {
     setLyricsLog(log)
   }, [])
 
+  const handleCutterLog = useCallback((log: string[]) => {
+    setCutterStarted(true)
+    setCutterLog(log)
+  }, [])
+
   const handleEpisodeError = useCallback((err: string) => setEpisodeError(err), [])
   const handleMusicError = useCallback((err: string) => setMusicError(err), [])
   const handleLyricsError = useCallback((err: string) => setLyricsError(err), [])
+  const handleCutterError = useCallback((err: string) => setCutterError(err), [])
 
   const goHome = useCallback(() => {
     setActiveView('home')
@@ -88,14 +136,33 @@ export default function App() {
     )
   }
 
-  return (
-    <LyricsPanel
-      onLog={handleLyricsLog}
-      onError={handleLyricsError}
-      onBack={goHome}
-      log={lyricsLog}
-      error={lyricsError}
-      hasStarted={lyricsStarted}
-    />
-  )
+  if (activeView === 'lyrics') {
+    return (
+      <LyricsPanel
+        onLog={handleLyricsLog}
+        onError={handleLyricsError}
+        onBack={goHome}
+        log={lyricsLog}
+        error={lyricsError}
+        hasStarted={lyricsStarted}
+      />
+    )
+  }
+
+  if (activeView === 'cutter') {
+    return (
+      <CutterPanel
+        onLog={handleCutterLog}
+        onError={handleCutterError}
+        onBack={goHome}
+        log={cutterLog}
+        error={cutterError}
+        hasStarted={cutterStarted}
+        persisted={cutterState}
+        onPersistedChange={setCutterState}
+      />
+    )
+  }
+
+  return null
 }

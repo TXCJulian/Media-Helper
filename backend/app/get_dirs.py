@@ -7,6 +7,7 @@ from app.config import (
     MUSIC_FOLDER_NAME,
     VALID_VIDEO_EXT,
     VALID_MUSIC_EXT,
+    VALID_CUTTER_EXT,
 )
 
 
@@ -46,6 +47,12 @@ def get_music_dirs() -> list[str]:
     return get_dirs(music_base, VALID_MUSIC_EXT)
 
 
+def get_cutter_dirs() -> list[str]:
+    if not os.path.isdir(BASE_PATH):
+        return []
+    return get_dirs(BASE_PATH, VALID_CUTTER_EXT)
+
+
 @lru_cache(maxsize=1)
 def _get_all_dirs_cached() -> list[str]:
     return get_tvshow_dirs()
@@ -54,3 +61,8 @@ def _get_all_dirs_cached() -> list[str]:
 @lru_cache(maxsize=1)
 def _get_music_dirs_cached() -> list[str]:
     return get_music_dirs()
+
+
+@lru_cache(maxsize=1)
+def _get_cutter_dirs_cached() -> list[str]:
+    return get_cutter_dirs()

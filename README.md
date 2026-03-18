@@ -4,7 +4,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/React-61DAFB?style=flat&logo=react&logoColor=black)](https://react.dev/)
 
-*A media management tool for renaming TV shows, music files, and transcribing lyrics — with a modern web interface.*
+*A media management tool for renaming TV shows, music files, transcribing lyrics, and cutting media — with a modern web interface.*
 
 ## Screenshots
 
@@ -15,6 +15,10 @@
 | Music Renamer | Lyrics Transcriber |
 |:---:|:---:|
 | ![Music Panel](docs/screenshots/music-panel.png) | ![Lyrics Panel](docs/screenshots/lyrics-panel.png) |
+
+| Media Cutter (Server) | Media Cutter (Upload) |
+|:---:|:---:|
+| ![Cutter Panel](docs/screenshots/cutter-panel.png) | ![Cutter Upload](docs/screenshots/cutter-upload.png) |
 
 ## Table of Contents
 
@@ -31,18 +35,19 @@
 
 ## Overview
 
-Jellyfin Media-Renamer is a dockerized tool with three modules:
+Jellyfin Media-Renamer is a dockerized tool with four modules:
 
 1. **Episode Renamer** — Renames TV show episodes using TMDB metadata
 2. **Music Renamer** — Renames music files based on ID3/audio tags
 3. **Lyrics Transcriber** — Transcribes lyrics from audio files using AI (HDemucs + Whisper + Genius)
+4. **Media Cutter** — Trim and cut audio/video files with waveform preview and per-track codec control
 
 The application consists of a FastAPI backend (Python 3.12), a React frontend (Vite + Tailwind CSS), and an optional GPU-powered lyrics transcription service. All services communicate over a Docker bridge network behind an Nginx reverse proxy.
 
 ## Features
 
 ### TV Shows
-- Automatic series search via TMDB API (multi-language: DE, EN, FR, etc.)
+- Automatic series search via TMDB API (multi-language: DE, EN, etc.)
 - Episode renaming: `S01E01 - Episode title.ext`
 - Intelligent filename-to-episode matching with configurable threshold
 - Sequence assignment mode for unmatched files
@@ -64,7 +69,21 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 - GPU health indicator showing connected GPU model
 - Skip existing lyrics option
 - Advanced options: language override, skip vocal separation, skip Genius correction
-- Requires optional GPU service ([Whisper_Lyric-Transcriber](https://github.com/TXCJulian/Whisper_Lyric-Transcriber))
+- **Requires optional GPU service ([Whisper_Lyric-Transcriber](https://github.com/TXCJulian/Whisper_Lyric-Transcriber))**
+
+### Media Cutter
+
+- Trim audio and video files with precise in/out point selection
+- Waveform visualization and video thumbnail strip for navigation
+- Per-track audio codec selection (AAC, FLAC, Opus, AC3, MP3, Vorbis, PCM)
+- Video re-encoding support (H.264, H.265, VP9, AV1) with keep-quality option
+- Stream copy mode for lossless, instant cuts
+- Server file browser or direct file upload (up to 50 GB)
+- Automatic browser preview transcoding for non-compatible formats
+- Job-based workflow with persistent state and output downloads
+- Save output files back to the source directory
+- Real-time cut progress streaming via SSE
+- Supported formats: MP4, MKV, MOV, AVI, WebM, MP3, FLAC, M4A, WAV, AAC, AC3, DTS, Opus, OGG, AIFF
 
 ### General
 - Modern dark-themed web interface with glassmorphism design
@@ -85,6 +104,7 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 - FastAPI + Uvicorn
 - TMDB API (The Movie Database)
 - Mutagen (audio metadata)
+- ffmpeg (media cutting/transcoding)
 - Watchdog (filesystem monitoring)
 
 **Frontend:**
@@ -152,7 +172,7 @@ cd Jellyfin_Media-Renamer
 
 1. Register on [themoviedb.org](https://www.themoviedb.org/)
 2. Go to Settings → API
-3. Request an API Key (free)
+3. Request an API Key (free for personal usage)
 4. Copy your API Key
 
 ### Step 3: Adjust Configuration
@@ -162,7 +182,7 @@ Edit the `docker-compose.yml` and adjust the following values:
 ```yaml
 environment:
   - TMDB_API_KEY=YOUR_TMDB_API_KEY_HERE
-  - ENABLED_FEATURES=episodes,music,lyrics  # Toggle modules
+  - ENABLED_FEATURES=episodes,music,lyrics,cutter  # Enable modules
 volumes:
   - /path/to/your/media:/media:rw
 ```
@@ -174,7 +194,7 @@ volumes:
 docker compose up --build
 
 # With lyrics transcription (requires NVIDIA GPU)
-docker compose --profile gpu up --build
+docker compose --profile gpu up --build #Clone transcriber repo first
 ```
 
 ### Step 5: Open Application
@@ -196,8 +216,12 @@ docker compose --profile gpu up --build
 | `VALID_VIDEO_EXT` | Video file extensions (CSV) | `.mp4,.mkv,.mov,.avi` |
 | `VALID_MUSIC_EXT` | Music file extensions (CSV) | `.flac,.wav,.mp3` |
 | `TRANSCRIBER_URL` | Lyrics transcriber service URL | `http://lyric-transcriber:3334` |
-| `ENABLED_FEATURES` | Active modules (CSV) | `episodes,music,lyrics` |
+| `ENABLED_FEATURES` | Active modules (CSV) | `episodes,music,cutter` |
 | `ALLOWED_ORIGINS` | CORS allowed origins | `http://localhost:3333` |
+| `VALID_CUTTER_EXT` | Cutter file extensions (CSV) | `.mp4,.mkv,.mov,.avi,.webm,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.opus,.ogg,.aiff` |
+| `CUTTER_JOBS_DIR` | Directory for cutter job data | `/tmp/cutter-jobs` |
+| `CUTTER_JOB_TTL` | Job expiry in seconds | `86400` |
+| `CUTTER_MAX_DIRECT_REMUX_BYTES` | Max file size for direct remux preview | `1073741824` (1 GB) |
 
 ### Directory Structure
 
@@ -212,14 +236,19 @@ The application expects the following structure in your media directory:
 │   │   │   └── ...
 │   │   └── Season 02/
 │   └── ...
-└── Music/
-    ├── Artist Name/
-    │   ├── Album Name/
-    │   │   ├── 01-track.flac
-    │   │   └── ...
-    │   └── ...
+├── Music/
+│   ├── Artist Name/
+│   │   ├── Album Name/
+│   │   │   ├── 01-track.flac
+│   │   │   └── ...
+│   │   └── ...
+│   └── ...
+└── Movies/                    ← Media Cutter browses all of /media/
+    ├── movie1.mkv
     └── ...
 ```
+
+> **Note:** The Episode Renamer and Music Renamer only scan their respective subdirectories (`TV Shows/`, `Music/`). The Media Cutter scans the entire `BASE_PATH` so it can access files in any subdirectory (Movies, TV Shows, Music, etc.).
 
 ## API Endpoints
 
@@ -253,6 +282,25 @@ The application expects the following structure in your media directory:
 | `GET` | `/transcribe/files` | List music files with lyrics status (query: `directory`) |
 | `GET` | `/transcribe/start` | Start transcription (SSE stream, query: `directory`, `files`, `output_format`, `skip_existing`, `language`, `skip_separation`, `skip_correction`) |
 
+### Media Cutter
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/cutter/files` | List media files in a directory (query: `directory`) |
+| `GET` | `/cutter/probe` | Probe file metadata with ffprobe (query: `path`, `source`, `job_id`) |
+| `GET` | `/cutter/waveform` | Generate audio waveform data (query: `path`, `source`, `job_id`, `peaks`) |
+| `GET` | `/cutter/thumbnails` | Generate video thumbnail strip (query: `path`, `source`, `job_id`, `count`) |
+| `GET` | `/cutter/stream/{file_id}` | Stream/preview a media file in the browser |
+| `GET` | `/cutter/preview-status/{file_id}` | Check preview transcode progress |
+| `POST` | `/cutter/upload` | Upload a file to a cutter job |
+| `POST` | `/cutter/jobs` | Create a new cutter job |
+| `GET` | `/cutter/jobs` | List all cutter jobs |
+| `GET` | `/cutter/jobs/{job_id}` | Get job metadata |
+| `DELETE` | `/cutter/jobs/{job_id}` | Delete a job and its files |
+| `GET` | `/cutter/jobs/{job_id}/download/{filename}` | Download an output file |
+| `POST` | `/cutter/jobs/{job_id}/save/{filename}` | Save output back to source directory |
+| `POST` | `/cutter/cut` | Cut a media file (SSE stream, form: `path`, `source`, `job_id`, `in_point`, `out_point`, `codec`, `audio_codec`, `container`, `stream_copy`, `keep_quality`, `audio_tracks`) |
+
 ## Deployment
 
 ### Local Development
@@ -261,12 +309,12 @@ The application expects the following structure in your media directory:
 # Backend (with auto-reload)
 cd backend
 pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 3332
+uvicorn app.main:app --reload --port 8000
 
 # Frontend (dev server with HMR, proxies API to localhost:8000)
 cd frontend
-npm install
-npm run dev
+npm ci
+npm run dev    # Runs on http://localhost:5173
 ```
 
 ### Production with Docker Compose
@@ -300,7 +348,7 @@ docker push bosscock/media-renamer:frontend
 For multi-arch builds (amd64 + arm64):
 
 ```bash
-docker buildx create --name multi --use
+docker buildx create --use
 docker buildx build --platform linux/amd64,linux/arm64 -t bosscock/media-renamer:backend ./backend --push
 docker buildx build --platform linux/amd64,linux/arm64 -t bosscock/media-renamer:frontend ./frontend --push
 ```
@@ -318,6 +366,7 @@ Jellyfin_Media-Renamer/
 │   │   ├── rename_episodes.py    # TMDB episode matching + rename
 │   │   ├── rename_music.py       # Metadata-based music rename
 │   │   ├── transcribe_lyrics.py  # Lyrics transcription (SSE proxy)
+│   │   ├── cutter.py             # Media cutting (ffmpeg, jobs, preview)
 │   │   ├── get_dirs.py           # Directory listing (cached)
 │   │   └── fs_utils.py           # Filesystem utilities (fsync)
 │   ├── tests/                    # pytest test suite
@@ -331,6 +380,16 @@ Jellyfin_Media-Renamer/
 │   │   │   ├── EpisodePanel.tsx  # TV show renaming panel
 │   │   │   ├── MusicPanel.tsx    # Music renaming panel
 │   │   │   ├── LyricsPanel.tsx   # Lyrics transcription panel
+│   │   │   ├── CutterPanel.tsx   # Media cutting panel
+│   │   │   ├── cutter/           # Cutter sub-components
+│   │   │   │   ├── MediaPlayer.tsx
+│   │   │   │   ├── TrimControls.tsx
+│   │   │   │   ├── WaveformBar.tsx
+│   │   │   │   ├── ThumbnailStrip.tsx
+│   │   │   │   ├── OutputSettings.tsx
+│   │   │   │   ├── AudioTrackSelect.tsx
+│   │   │   │   ├── TrackModeSelect.tsx
+│   │   │   │   └── JobManager.tsx
 │   │   │   ├── PanelLayout.tsx   # Shared panel layout
 │   │   │   ├── LogPanel.tsx      # Output log display
 │   │   │   ├── ErrorBoundary.tsx
@@ -429,5 +488,3 @@ mount -t nfs server:/export /mnt -o actimeo=1,vers=4
 - The code normalizes umlauts automatically (ä→ae, ö→oe, ü→ue)
 
 ---
-
-**Made for Jellyfin and Plex users**

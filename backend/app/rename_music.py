@@ -10,7 +10,7 @@ from mutagen.oggopus import OggOpus
 from mutagen.aiff import AIFF
 from mutagen.asf import ASF
 from mutagen.musepack import Musepack
-from mutagen import MutagenError
+from mutagen._util import MutagenError
 from typing import Optional, Any
 from app.config import VALID_MUSIC_EXT
 from app.fs_utils import flush_directory, collision_safe_path
@@ -224,10 +224,10 @@ def rename_music(
                         try:
                             os.remove(old_lyric)
                             logs.append(
-                                f"\t[DELETE] Lyric file removed: {os.path.basename(old_lyric)}"
+                                f"[DELETE]\tLyric file removed: {os.path.basename(old_lyric)}"
                             )
                         except Exception as e:
-                            logs.append(f"\t[!] {lyric_ext} deletion failed: {e}")
+                            logs.append(f"[!]\t{lyric_ext} deletion failed: {e}")
                 logs.append(f"[RENAME]\t'{filename}' -> {os.path.basename(new_path)}")
                 renamed_count += 1
             except Exception as e:
@@ -239,7 +239,7 @@ def rename_music(
                 old_lyric = base_name + lyric_ext
                 if os.path.exists(old_lyric):
                     logs.append(
-                        f"\t[DELETE] Would remove lyric file: {os.path.basename(old_lyric)}"
+                        f"[DELETE]\tWould remove lyric file: {os.path.basename(old_lyric)}"
                     )
             logs.append(
                 f"[DRYRUN]\tWould rename '{filename}' -> {os.path.basename(new_path)}"

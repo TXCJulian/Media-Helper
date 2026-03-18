@@ -3,13 +3,14 @@ interface SegmentedControlProps {
   value: string
   onChange: (value: string) => void
   disabled?: boolean
-  color?: 'blue' | 'indigo' | 'rose'
+  color?: 'blue' | 'indigo' | 'rose' | 'emerald'
 }
 
 const activeClasses = {
   blue: 'bg-[var(--accent)] text-white shadow-[0_2px_10px_var(--accent-glow)]',
   indigo: 'bg-[var(--accent-2)] text-white shadow-[0_2px_10px_var(--accent-2-glow)]',
   rose: 'bg-[var(--accent-3)] text-white shadow-[0_2px_10px_var(--accent-3-glow)]',
+  emerald: 'bg-[var(--accent-4)] text-white shadow-[0_2px_10px_var(--accent-4-glow)]',
 }
 
 export default function SegmentedControl({

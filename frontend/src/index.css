@@ -65,6 +65,8 @@
   --accent-2-glow: rgba(168, 85, 247, 0.18);
   --accent-3: #f472b6;
   --accent-3-glow: rgba(244, 114, 182, 0.18);
+  --accent-4: #34d399;
+  --accent-4-glow: rgba(52, 211, 153, 0.18);
 
   --text-primary: #eaeaef;
   --text-secondary: #8c8ca0;
@@ -138,6 +140,9 @@
   }
   ::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.15);
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
   }
 }
 
@@ -213,6 +218,12 @@
       0 0 0 3px var(--accent-3-glow),
       0 0 20px rgba(244, 114, 182, 0.08);
   }
+  .input-field.input-emerald:focus {
+    border-color: var(--accent-4);
+    box-shadow:
+      0 0 0 3px var(--accent-4-glow),
+      0 0 20px rgba(52, 211, 153, 0.08);
+  }
   .input-field.input-error {
     border-color: var(--error);
   }
@@ -275,6 +286,50 @@
     box-shadow:
       0 0 32px rgba(244, 114, 182, 0.3),
       0 4px 20px rgba(0, 0, 0, 0.3);
+  }
+  .btn-submit.btn-emerald {
+    background: var(--accent-4);
+  }
+  .btn-submit.btn-emerald:hover:not(:disabled) {
+    box-shadow:
+      0 0 32px rgba(52, 211, 153, 0.3),
+      0 4px 20px rgba(0, 0, 0, 0.3);
+  }
+
+  /* ── Sliders ── */
+  .slider-emerald {
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.08);
+    outline: none;
+    cursor: pointer;
+  }
+  .slider-emerald::-webkit-slider-thumb {
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-4);
+    border: 2px solid rgba(0, 0, 0, 0.3);
+    cursor: grab;
+    transition: box-shadow 0.15s;
+  }
+  .slider-emerald::-webkit-slider-thumb:hover {
+    box-shadow: 0 0 0 4px var(--accent-4-glow);
+  }
+  .slider-emerald::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-4);
+    border: 2px solid rgba(0, 0, 0, 0.3);
+    cursor: grab;
+  }
+  .slider-emerald::-moz-range-track {
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.08);
   }
 
   /* ── Spinners ── */

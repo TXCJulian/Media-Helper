@@ -7,7 +7,7 @@ interface DirectorySelectProps {
   onRefresh: () => void
   isLoading: boolean
   disabled?: boolean
-  color?: 'blue' | 'indigo' | 'rose'
+  color?: 'blue' | 'indigo' | 'rose' | 'emerald'
 }
 
 const focusClasses = {
@@ -15,12 +15,15 @@ const focusClasses = {
   indigo:
     'border-[var(--accent-2)] shadow-[0_0_0_3px_var(--accent-2-glow),0_0_20px_rgba(168,85,247,0.08)]',
   rose: 'border-[var(--accent-3)] shadow-[0_0_0_3px_var(--accent-3-glow),0_0_20px_rgba(244,114,182,0.08)]',
+  emerald:
+    'border-[var(--accent-4)] shadow-[0_0_0_3px_var(--accent-4-glow),0_0_20px_rgba(52,211,153,0.08)]',
 }
 
 const selectedTextClasses = {
   blue: 'text-[var(--accent-light)]',
   indigo: 'text-[var(--accent-2)]',
   rose: 'text-[var(--accent-3)]',
+  emerald: 'text-[var(--accent-4)]',
 }
 
 export default function DirectorySelect({
