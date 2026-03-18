@@ -2,7 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchJson, fetchTranscriberHealth, fetchMusicFiles, postRefresh } from '@/lib/api'
 import { connectSSE } from '@/lib/sse'
 import { useDebounce } from '@/hooks/useDebounce'
-import type { DirectoriesResponse, LyricsForm, TranscriberHealth, MusicFileInfo } from '@/types'
+import type {
+  DirectoriesResponse,
+  DirectoryEntry,
+  LyricsForm,
+  TranscriberHealth,
+  MusicFileInfo,
+} from '@/types'
 import PanelLayout from '@/components/PanelLayout'
 import LogPanel from '@/components/LogPanel'
 import FormSection from '@/components/ui/FormSection'
@@ -17,6 +23,7 @@ interface LyricsPanelProps {
   log: string[]
   error: string
   hasStarted: boolean
+  showBaseLabel?: boolean
 }
 
 function shortGpuName(gpu: string | null | undefined): string {
@@ -31,18 +38,20 @@ export default function LyricsPanel({
   log,
   error,
   hasStarted,
+  showBaseLabel,
 }: LyricsPanelProps) {
   const [form, setForm] = useState<LyricsForm>({
     artist: '',
     album: '',
     directory: '',
+    base: '',
     format: 'lrc',
     skip_existing: true,
     language: '',
     no_separation: false,
     no_correction: false,
   })
-  const [directories, setDirectories] = useState<string[]>([])
+  const [directories, setDirectories] = useState<DirectoryEntry[]>([])
   const [isLoadingDirs, setIsLoadingDirs] = useState(false)
   const [isTranscribing, setIsTranscribing] = useState(false)
   const [health, setHealth] = useState<TranscriberHealth | null>(null)
@@ -81,11 +90,16 @@ export default function LyricsPanel({
         const data = await fetchJson<DirectoriesResponse>('/directories/music', params)
         const dirs = data.directories ?? []
         setDirectories(dirs)
-        setForm((prev) => ({
-          ...prev,
-          directory:
-            dirs.length > 0 ? (dirs.includes(prev.directory) ? prev.directory : dirs[0]!) : '',
-        }))
+        setForm((prev) => {
+          const stillPresent = dirs.some(
+            (d) => d.path === prev.directory && d.base === prev.base,
+          )
+          return {
+            ...prev,
+            directory: dirs.length > 0 ? (stillPresent ? prev.directory : dirs[0]!.path) : '',
+            base: dirs.length > 0 ? (stillPresent ? prev.base : dirs[0]!.base) : '',
+          }
+        })
       } catch (err) {
         onError(`Error loading directories: ${err instanceof Error ? err.message : String(err)}`)
       } finally {
@@ -100,9 +114,9 @@ export default function LyricsPanel({
   }, [debouncedArtist, debouncedAlbum, fetchDirs])
 
   const loadFiles = useCallback(
-    (directory: string, selectAll: boolean, signal?: { cancelled: boolean }) => {
+    (directory: string, base: string, selectAll: boolean, signal?: { cancelled: boolean }) => {
       setIsLoadingFiles(true)
-      fetchMusicFiles(directory)
+      fetchMusicFiles(directory, base)
         .then((data) => {
           if (signal?.cancelled) return
           const files = data.files ?? []
@@ -127,8 +141,8 @@ export default function LyricsPanel({
 
   const refreshFiles = useCallback(() => {
     if (!form.directory) return
-    loadFiles(form.directory, false)
-  }, [form.directory, loadFiles])
+    loadFiles(form.directory, form.base, false)
+  }, [form.directory, form.base, loadFiles])
 
   useEffect(() => {
     if (!form.directory) {
@@ -137,11 +151,11 @@ export default function LyricsPanel({
       return
     }
     const signal = { cancelled: false }
-    loadFiles(form.directory, true, signal)
+    loadFiles(form.directory, form.base, true, signal)
     return () => {
       signal.cancelled = true
     }
-  }, [form.directory, loadFiles])
+  }, [form.directory, form.base, loadFiles])
 
   const handleRefresh = async () => {
     setIsLoadingDirs(true)
@@ -181,6 +195,7 @@ export default function LyricsPanel({
 
     const params: Record<string, string> = {
       directory: form.directory,
+      base: form.base,
       output_format: form.format,
       skip_existing: String(form.skip_existing),
       no_separation: String(form.no_separation),
@@ -283,11 +298,13 @@ export default function LyricsPanel({
           <DirectorySelect
             directories={directories}
             value={form.directory}
-            onChange={(v) => update('directory', v)}
+            base={form.base}
+            onChange={(val, base) => setForm((prev) => ({ ...prev, directory: val, base }))}
             onRefresh={() => void handleRefresh()}
             isLoading={isLoadingDirs}
             disabled={busy}
             color="rose"
+            showBaseLabel={showBaseLabel}
           />
         </FormSection>
 

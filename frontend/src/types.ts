@@ -23,14 +23,14 @@ export interface MusicForm {
 }
 
 export interface DirectoriesResponse {
-  directories: string[]
+  directories: DirectoryEntry[]
 }
 
 export interface RenameResponse {
   success?: boolean
   error?: string
   log?: string[]
-  directories?: string[]
+  directories?: DirectoryEntry[]
 }
 
 export interface LyricsForm {
