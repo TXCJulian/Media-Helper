@@ -29,15 +29,18 @@ CUTTER_MAX_DIRECT_REMUX_BYTES = int(
 
 _VALID_FEATURES = {"episodes", "music", "lyrics", "cutter"}
 _features_raw = os.getenv("ENABLED_FEATURES", "episodes,music,cutter")
-_parsed_features: set[str] = {
-    f.strip().lower()
-    for f in _features_raw.split(",")
-    if f.strip().lower() in _VALID_FEATURES
-}
+_parsed_features: list[str] = list(
+    dict.fromkeys(
+        f.strip().lower()
+        for f in _features_raw.split(",")
+        if f.strip().lower() in _VALID_FEATURES
+    )
+)
 if not _parsed_features:
     logger.warning(
         "No valid ENABLED_FEATURES found in '%s', falling back to all features: %s",
         _features_raw,
         _VALID_FEATURES,
     )
-ENABLED_FEATURES: set[str] = _parsed_features or _VALID_FEATURES
+ENABLED_FEATURES: list[str] = _parsed_features or sorted(_VALID_FEATURES)
+ENABLED_FEATURES_SET: set[str] = set(ENABLED_FEATURES)

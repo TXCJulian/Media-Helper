@@ -48,7 +48,9 @@ const cards: {
 ]
 
 export default function Landing({ onNavigate, enabledFeatures }: LandingProps) {
-  const visibleCards = cards.filter((card) => enabledFeatures.includes(card.id))
+  const visibleCards = cards
+    .filter((card) => enabledFeatures.includes(card.id))
+    .sort((a, b) => enabledFeatures.indexOf(a.id) - enabledFeatures.indexOf(b.id))
 
   return (
     <div className="relative z-1 flex min-h-screen flex-col items-center justify-center p-8">

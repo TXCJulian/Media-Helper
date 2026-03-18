@@ -1484,20 +1484,37 @@ def cut_file(
     output_path = collision_safe_path(output_path)
     duration = out_point - in_point
 
-    cmd = [
-        "ffmpeg",
-        "-nostdin",
-        "-loglevel",
-        "warning",
-        "-stats",
-        # Keep -ss before -i for fast input seeking on large files.
-        "-ss",
-        str(in_point),
-        "-t",
-        str(duration),
-        "-i",
-        filepath,
-    ]
+    if stream_copy:
+        # -ss before -i: fast demuxer-level seek (keyframe-granularity, fine for copy)
+        cmd = [
+            "ffmpeg",
+            "-nostdin",
+            "-loglevel",
+            "warning",
+            "-stats",
+            "-ss",
+            str(in_point),
+            "-t",
+            str(duration),
+            "-i",
+            filepath,
+        ]
+    else:
+        # -ss after -i: decode-level seek (frame-accurate, avoids black frames /
+        # distortion at the start when re-encoding)
+        cmd = [
+            "ffmpeg",
+            "-nostdin",
+            "-loglevel",
+            "warning",
+            "-stats",
+            "-i",
+            filepath,
+            "-ss",
+            str(in_point),
+            "-t",
+            str(duration),
+        ]
 
     if audio_tracks is not None:
         cmd += ["-map", "0:v?"]

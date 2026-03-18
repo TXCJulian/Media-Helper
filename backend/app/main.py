@@ -26,6 +26,7 @@ from app.config import (
     TRANSCRIBER_URL,
     ALLOWED_ORIGINS,
     ENABLED_FEATURES,
+    ENABLED_FEATURES_SET,
 )
 from app.rename_episodes import rename_episodes
 from app.rename_music import rename_music, load_audio_file, get_first_tag_value
@@ -76,7 +77,7 @@ logger = logging.getLogger(__name__)
 
 def require_feature(name: str):
     """Raise 404 if feature is not enabled."""
-    if name not in ENABLED_FEATURES:
+    if name not in ENABLED_FEATURES_SET:
         raise HTTPException(status_code=404, detail=f"Feature '{name}' is not enabled")
 
 
@@ -143,7 +144,7 @@ async def lifespan(app: FastAPI):
 
     # Start cutter upload cleanup task only if cutter feature is enabled
     cleanup_task = None
-    if "cutter" in ENABLED_FEATURES:
+    if "cutter" in ENABLED_FEATURES_SET:
         os.makedirs(CUTTER_JOBS_DIR, exist_ok=True)
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
             logger.error("Cutter feature requires ffmpeg and ffprobe on PATH")
@@ -176,13 +177,13 @@ def health():
     return {
         "status": "ok",
         "transcriber": bool(TRANSCRIBER_URL),
-        "features": sorted(ENABLED_FEATURES),
+        "features": ENABLED_FEATURES,
     }
 
 
 @app.get("/config")
 def get_config():
-    return {"features": sorted(ENABLED_FEATURES)}
+    return {"features": ENABLED_FEATURES}
 
 
 @app.get("/directories/tvshows")
@@ -213,7 +214,7 @@ def list_music_directories(
     artist: str | None = Query(None, description="Artist filter", max_length=200),
     album: str | None = Query(None, description="Album filter", max_length=200),
 ):
-    if "music" not in ENABLED_FEATURES and "lyrics" not in ENABLED_FEATURES:
+    if "music" not in ENABLED_FEATURES_SET and "lyrics" not in ENABLED_FEATURES_SET:
         raise HTTPException(status_code=404, detail="No music features enabled")
     all_dirs = _get_music_dirs_cached()
 
