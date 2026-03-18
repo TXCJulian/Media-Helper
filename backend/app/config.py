@@ -6,7 +6,37 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", "dependencies", ".env"
 
 logger = logging.getLogger(__name__)
 
-BASE_PATH = os.getenv("BASE_PATH") or "/media"
+# --- Base paths ---
+_base_paths_raw = os.getenv("BASE_PATHS", "/media")
+BASE_PATHS: list[str] = [p.strip() for p in _base_paths_raw.split(",") if p.strip()]
+if not BASE_PATHS:
+    BASE_PATHS = ["/media"]
+
+
+def _build_labels(paths: list[str]) -> dict[str, str]:
+    """Map each base path to a unique label derived from its last path segment."""
+    labels: dict[str, str] = {}
+    for path in paths:
+        base_label = os.path.basename(path.rstrip("/\\")) or path
+        if base_label not in labels:
+            labels[base_label] = path
+        else:
+            suffix = 2
+            while f"{base_label}-{suffix}" in labels:
+                suffix += 1
+            labels[f"{base_label}-{suffix}"] = path
+    return labels
+
+
+BASE_PATH_LABELS: dict[str, str] = _build_labels(BASE_PATHS)
+
+
+def resolve_base(base_label: str) -> str:
+    """Resolve a base label to its full path. Raises ValueError if unknown."""
+    path = BASE_PATH_LABELS.get(base_label)
+    if path is None:
+        raise ValueError(f"Unknown base: '{base_label}'")
+    return path
 TVSHOW_FOLDER_NAME = os.getenv("TVSHOW_FOLDER_NAME") or "TV Shows"
 MUSIC_FOLDER_NAME = os.getenv("MUSIC_FOLDER_NAME") or "Music"
 TMDB_API_KEY = os.getenv("TMDB_API_KEY") or "YOUR_TMDB_API_KEY"
