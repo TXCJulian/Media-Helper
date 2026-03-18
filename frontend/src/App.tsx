@@ -48,8 +48,8 @@ export default function App() {
     fetchConfig()
       .then((cfg) => setEnabledFeatures(cfg.features as PanelName[]))
       .catch((err) => {
-        console.warn('Failed to fetch enabled features config, falling back to defaults', err)
-        setEnabledFeatures(['episodes', 'music'])
+        console.warn('Backend is not reachable', err)
+        setEnabledFeatures([])
       })
   }, [])
 
