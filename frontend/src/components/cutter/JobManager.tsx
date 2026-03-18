@@ -26,10 +26,12 @@ export default function JobManager({
   activeJobId,
   onLog,
   onOpenJob,
+  showBaseLabel,
 }: {
   activeJobId?: string
   onLog?: (msg: string) => void
   onOpenJob?: (job: CutterJob) => void
+  showBaseLabel?: boolean
 }) {
   const [jobs, setJobs] = useState<CutterJob[]>([])
   const [loading, setLoading] = useState(false)
@@ -151,6 +153,9 @@ export default function JobManager({
                   </div>
                   <div className="mt-1 flex items-center gap-3 text-[0.68rem] text-white/35">
                     <span>{job.source}</span>
+                    {showBaseLabel && job.base && (
+                      <span className="text-white/25">{job.base}</span>
+                    )}
                     <span>{relativeTime(job.created_at)}</span>
                   </div>
                   {job.output_files.length > 0 && (
