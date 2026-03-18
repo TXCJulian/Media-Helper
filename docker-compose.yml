@@ -7,7 +7,9 @@ services:
     container_name: media-renamer_backend
     restart: unless-stopped
     environment:
-      - BASE_PATH=/media
+      - BASE_PATHS=${BASE_PATHS:-/media}
+      # For multiple media paths: BASE_PATHS=/media1,/media2
+      # Each needs its own volume mount below
       - TVSHOW_FOLDER_NAME=TV Shows
       - MUSIC_FOLDER_NAME=Music
       - TMDB_API_KEY=${TMDB_API_KEY:-}
