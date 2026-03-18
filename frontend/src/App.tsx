@@ -24,6 +24,7 @@ const INITIAL_CUTTER_STATE: CutterPersistedState = {
   form: {
     source: 'server',
     directory: '',
+    base: '',
     filename: '',
     inPoint: 0,
     outPoint: 0,
@@ -43,10 +44,14 @@ const INITIAL_CUTTER_STATE: CutterPersistedState = {
 export default function App() {
   const [activeView, setActiveView] = useState<'home' | PanelName>('home')
   const [enabledFeatures, setEnabledFeatures] = useState<PanelName[]>([])
+  const [basePaths, setBasePaths] = useState<string[]>([])
 
   useEffect(() => {
     fetchConfig()
-      .then((cfg) => setEnabledFeatures(cfg.features as PanelName[]))
+      .then((cfg) => {
+        setEnabledFeatures(cfg.features as PanelName[])
+        setBasePaths(cfg.base_paths ?? [])
+      })
       .catch((err) => {
         console.warn('Backend is not reachable', err)
         setEnabledFeatures([])
@@ -119,6 +124,7 @@ export default function App() {
         log={episodeLog}
         error={episodeError}
         hasStarted={episodeStarted}
+        showBaseLabel={basePaths.length > 1}
       />
     )
   }
@@ -132,6 +138,7 @@ export default function App() {
         log={musicLog}
         error={musicError}
         hasStarted={musicStarted}
+        showBaseLabel={basePaths.length > 1}
       />
     )
   }
@@ -145,6 +152,7 @@ export default function App() {
         log={lyricsLog}
         error={lyricsError}
         hasStarted={lyricsStarted}
+        showBaseLabel={basePaths.length > 1}
       />
     )
   }
@@ -160,6 +168,7 @@ export default function App() {
         hasStarted={cutterStarted}
         persisted={cutterState}
         onPersistedChange={setCutterState}
+        showBaseLabel={basePaths.length > 1}
       />
     )
   }

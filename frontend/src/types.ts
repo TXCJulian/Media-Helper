@@ -1,7 +1,13 @@
+export interface DirectoryEntry {
+  path: string
+  base: string
+}
+
 export interface EpisodeForm {
   series: string
   season: number
   directory: string
+  base: string
   dry_run: boolean
   assign_seq: boolean
   threshold: number
@@ -12,6 +18,7 @@ export interface MusicForm {
   artist: string
   album: string
   directory: string
+  base: string
   dry_run: boolean
 }
 
@@ -30,6 +37,7 @@ export interface LyricsForm {
   artist: string
   album: string
   directory: string
+  base: string
   format: 'lrc' | 'txt' | 'all'
   skip_existing: boolean
   language: string
@@ -59,6 +67,7 @@ export interface MusicFilesResponse {
 export interface CutterForm {
   source: 'server' | 'upload'
   directory: string
+  base: string
   filename: string
   inPoint: number
   outPoint: number
@@ -151,11 +160,12 @@ export interface CutterJob {
   preview_transcoded?: boolean
   browser_ready?: boolean
   transcode_error?: string | null
+  base?: string
 }
 
 export interface CutterPersistedState {
   form: CutterForm
-  directories: string[]
+  directories: DirectoryEntry[]
   search: string
   serverState: CutterSourceState
   uploadState: CutterSourceState
