@@ -35,7 +35,7 @@
 
 ## Overview
 
-Jellyfin Media-Renamer is a dockerized tool with four modules:
+Media-Helper is a dockerized tool with four modules:
 
 1. **Episode Renamer** — Renames TV show episodes using TMDB metadata
 2. **Music Renamer** — Renames music files based on ID3/audio tags
@@ -164,8 +164,8 @@ Browser                    Frontend Container               Backend Container
 ### Step 1: Clone Repository
 
 ```bash
-git clone https://github.com/TXCJulian/Jellyfin_Media-Renamer.git
-cd Jellyfin_Media-Renamer
+git clone https://github.com/TXCJulian/Media-Helper.git
+cd Media-Helper
 ```
 
 ### Step 2: Get TMDB API Key
@@ -243,8 +243,17 @@ The application expects the following structure in your media directory:
 │   │   │   └── ...
 │   │   └── ...
 │   └── ...
-└── Movies/                    ← Media Cutter browses all of /media/
-    ├── movie1.mkv
+└── Movies/                  ← Media Cutter browses all of /media/
+    │   ├── Movie Name/
+    │   │   ├── movie1.flac
+    │   │   └── ...
+    │   ├── Movie Collection/
+    │   │   ├── Movie Name/
+    │   │   │   └── movie1.flac
+    │   │   │   
+    │   │   ├── Movie Name/
+    │   │   │   └── movie2.flac
+    │   │   └── ...
     └── ...
 ```
 
@@ -358,7 +367,7 @@ docker buildx build --platform linux/amd64,linux/arm64 -t bosscock/media-renamer
 ### Project Structure
 
 ```
-Jellyfin_Media-Renamer/
+Media-Helper/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py               # FastAPI app + all routes
