@@ -278,9 +278,14 @@ async def rename(
     assign_seq: bool = Form(...),
     threshold: float = Form(..., ge=0.0, le=1.0),
     lang: str = Form(..., max_length=5),
+    base: str = Form(..., max_length=200),
 ):
     require_feature("episodes")
-    tvshow_base = os.path.join(BASE_PATH, TVSHOW_FOLDER_NAME)
+    try:
+        base_path = resolve_base(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown base: '{base}'")
+    tvshow_base = os.path.join(base_path, TVSHOW_FOLDER_NAME)
     path = validate_path(tvshow_base, directory)
     if not os.path.isdir(path):
         return {
@@ -323,9 +328,14 @@ async def rename(
 async def rename_music_route(
     directory: str = Form(..., max_length=500),
     dry_run: bool = Form(...),
+    base: str = Form(..., max_length=200),
 ):
     require_feature("music")
-    music_base = os.path.join(BASE_PATH, MUSIC_FOLDER_NAME)
+    try:
+        base_path = resolve_base(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown base: '{base}'")
+    music_base = os.path.join(base_path, MUSIC_FOLDER_NAME)
     path = validate_path(music_base, directory)
     if not os.path.isdir(path):
         return {
@@ -364,9 +374,14 @@ def transcriber_health():
 @app.get("/transcribe/files")
 def list_transcribable_files(
     directory: str = Query(..., max_length=500),
+    base: str = Query(..., max_length=200),
 ):
     require_feature("lyrics")
-    music_base = os.path.join(BASE_PATH, MUSIC_FOLDER_NAME)
+    try:
+        base_path = resolve_base(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown base: '{base}'")
+    music_base = os.path.join(base_path, MUSIC_FOLDER_NAME)
     path = validate_path(music_base, directory)
     if not os.path.isdir(path):
         return {"files": [], "error": "Directory not found"}
@@ -383,6 +398,7 @@ def start_transcription(
     language: str = Form("", max_length=10),
     no_separation: bool = Form(False),
     no_correction: bool = Form(False),
+    base: str = Form(..., max_length=200),
 ):
     require_feature("lyrics")
     if output_format not in ("lrc", "txt", "all"):
@@ -393,7 +409,11 @@ def start_transcription(
     if not TRANSCRIBER_URL:
         return {"error": "TRANSCRIBER_URL not set"}
 
-    music_base = os.path.join(BASE_PATH, MUSIC_FOLDER_NAME)
+    try:
+        base_path = resolve_base(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown base: '{base}'")
+    music_base = os.path.join(base_path, MUSIC_FOLDER_NAME)
     path = validate_path(music_base, directory)
     if not os.path.isdir(path):
         return {"error": "Directory not found"}
