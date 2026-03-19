@@ -45,17 +45,30 @@ export default function App() {
   const [activeView, setActiveView] = useState<'home' | PanelName>('home')
   const [enabledFeatures, setEnabledFeatures] = useState<PanelName[]>([])
   const [basePaths, setBasePaths] = useState<string[]>([])
+  const [backendStatus, setBackendStatus] = useState<'checking' | 'connected' | 'unreachable'>(
+    'checking',
+  )
 
   useEffect(() => {
+    let cancelled = false
+
     fetchConfig()
       .then((cfg) => {
+        if (cancelled) return
         setEnabledFeatures(cfg.features as PanelName[])
         setBasePaths(cfg.base_paths ?? [])
+        setBackendStatus('connected')
       })
       .catch((err) => {
+        if (cancelled) return
         console.warn('Backend is not reachable', err)
         setEnabledFeatures([])
+        setBackendStatus('unreachable')
       })
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   // Per-panel log + error state
@@ -112,7 +125,13 @@ export default function App() {
   }, [])
 
   if (activeView === 'home') {
-    return <Landing onNavigate={showPanel} enabledFeatures={enabledFeatures} />
+    return (
+      <Landing
+        onNavigate={showPanel}
+        enabledFeatures={enabledFeatures}
+        backendStatus={backendStatus}
+      />
+    )
   }
 
   if (activeView === 'episodes') {

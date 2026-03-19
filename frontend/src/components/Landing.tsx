@@ -3,6 +3,7 @@ export type PanelName = 'episodes' | 'music' | 'lyrics' | 'cutter'
 interface LandingProps {
   onNavigate: (panel: PanelName) => void
   enabledFeatures: PanelName[]
+  backendStatus: 'checking' | 'connected' | 'unreachable'
 }
 
 const cards: {
@@ -47,7 +48,7 @@ const cards: {
   },
 ]
 
-export default function Landing({ onNavigate, enabledFeatures }: LandingProps) {
+export default function Landing({ onNavigate, enabledFeatures, backendStatus }: LandingProps) {
   const visibleCards = cards
     .filter((card) => enabledFeatures.includes(card.id))
     .sort((a, b) => enabledFeatures.indexOf(a.id) - enabledFeatures.indexOf(b.id))
@@ -64,7 +65,7 @@ export default function Landing({ onNavigate, enabledFeatures }: LandingProps) {
         Organize your media library
       </p>
 
-      {visibleCards.length === 0 ? (
+      {backendStatus === 'unreachable' ? (
         <div className="flex max-w-[400px] flex-col items-center justify-center rounded-2xl border border-red-500/30 bg-red-500/5 p-8 text-center">
           <span className="mb-3 text-[2rem]">⚠</span>
           <p className="mb-2 font-semibold text-[var(--text-secondary)]">Backend Unreachable</p>
@@ -73,7 +74,7 @@ export default function Landing({ onNavigate, enabledFeatures }: LandingProps) {
             accessible.
           </p>
         </div>
-      ) : (
+      ) : visibleCards.length > 0 ? (
         <div
           className={`grid w-full max-w-[1100px] grid-cols-1 gap-5 ${
             visibleCards.length >= 4
@@ -125,7 +126,7 @@ export default function Landing({ onNavigate, enabledFeatures }: LandingProps) {
             </button>
           ))}
         </div>
-      )}
+      ) : null}
     </div>
   )
 }
