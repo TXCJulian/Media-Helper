@@ -69,7 +69,8 @@ export default function Landing({ onNavigate, enabledFeatures }: LandingProps) {
           <span className="mb-3 text-[2rem]">⚠</span>
           <p className="mb-2 font-semibold text-[var(--text-secondary)]">Backend Unreachable</p>
           <p className="text-[0.9rem] text-[var(--text-tertiary)]">
-            Unable to connect to the backend service. Please check that the server is running and accessible.
+            Unable to connect to the backend service. Please check that the server is running and
+            accessible.
           </p>
         </div>
       ) : (

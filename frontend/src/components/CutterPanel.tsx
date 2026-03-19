@@ -24,6 +24,7 @@ import {
   postRefresh,
   saveToSource,
 } from '@/lib/api'
+import { encodeCutterFileId } from '@/lib/cutterFileId'
 import {
   getBrowserCompatibilityMessage,
   getBrowserCompatibilityReport,
@@ -60,13 +61,6 @@ const EXT_TO_CONTAINER: Record<string, string> = {
   '.ogg': 'ogg',
   '.mp3': 'mp3',
   '.m4a': 'mp4',
-}
-
-function encodeFileId(source: string, path: string, jid = ''): string {
-  const bytes = new TextEncoder().encode(`${source}:${jid}:${path}`)
-  let bin = ''
-  for (const b of bytes) bin += String.fromCharCode(b)
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
 interface CutterPanelProps {
@@ -198,7 +192,8 @@ export default function CutterPanel({
             directories: dirs,
             form: {
               ...prev.form,
-              directory: dirs.length > 0 ? (stillPresent ? prev.form.directory : dirs[0]!.path) : '',
+              directory:
+                dirs.length > 0 ? (stillPresent ? prev.form.directory : dirs[0]!.path) : '',
               base: dirs.length > 0 ? (stillPresent ? prev.form.base : dirs[0]!.base) : '',
             },
           }
@@ -315,7 +310,11 @@ export default function CutterPanel({
       setSource({ isLoadingFile: true, probe: null, peaks: [], thumbnailUrl: '', outputFiles: [] })
       try {
         const { job_id } = await createJob(path, 'server', form.base)
-        setSource({ filePath: path, fileId: encodeFileId('server', path, job_id), jobId: job_id })
+        setSource({
+          filePath: path,
+          fileId: encodeCutterFileId('server', path, job_id, form.base),
+          jobId: job_id,
+        })
         setPersisted((prev) => ({
           form: { ...prev.form, filename: file.name },
         }))
@@ -330,7 +329,7 @@ export default function CutterPanel({
 
   // ── Directory selection from DirectorySelect ─────────────────
   const handleDirectoryChange = (dir: string, base: string) => {
-    setPersisted({ form: { ...form, directory: dir, base, filename: '' } })
+    setPersisted({ form: { ...form, directory: dir, base: base || form.base, filename: '' } })
     setSource({
       probe: null,
       peaks: [],
@@ -362,7 +361,7 @@ export default function CutterPanel({
       const settings = job.cut_settings ?? null
       const sourceStatePatch = {
         filePath,
-        fileId: encodeFileId(source, filePath, job.job_id),
+        fileId: encodeCutterFileId(source, filePath, job.job_id, jobBase),
         jobId: job.job_id,
         outputFiles: job.output_files,
         probe: null,

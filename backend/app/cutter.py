@@ -268,11 +268,21 @@ def probe_file(filepath: str) -> dict:
         filepath,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"ffprobe timed out for {filepath}") from exc
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe failed for {filepath}: {result.stderr}")
+
+    if not result.stdout:
+        raise RuntimeError(f"ffprobe produced no output for {filepath}")
 
     try:
         data = json.loads(result.stdout)
@@ -2000,8 +2010,8 @@ def cleanup_old_jobs() -> None:
 
 
 def encode_file_id(source: str, path: str, job_id: str = "", base: str = "") -> str:
-    """URL-safe base64 encode of 'source:job_id:base:path'."""
-    raw = f"{source}:{job_id}:{base}:{path}"
+    """URL-safe base64 encode of 'source|job_id|base|path'."""
+    raw = f"{source}|{job_id}|{base}|{path}"
     return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
 
 
@@ -2021,6 +2031,14 @@ def decode_file_id(file_id: str) -> tuple[str, str, str, str]:
     except Exception as e:
         raise ValueError(f"Invalid file_id: {e}") from e
 
+    # Try new format first (pipe-separated): "source|job_id|base|path"
+    if "|" in decoded:
+        parts = decoded.split("|", 3)
+        if len(parts) == 4:
+            return parts[0], parts[1], parts[2], parts[3]
+        raise ValueError("Invalid file_id format: expected 'source|job_id|base|path'")
+
+    # Legacy colon-separated formats (no Windows paths)
     parts = decoded.split(":", 3)
     if len(parts) == 2:
         # Legacy format: "source:path"
@@ -2031,4 +2049,5 @@ def decode_file_id(file_id: str) -> tuple[str, str, str, str]:
     if len(parts) == 4:
         return parts[0], parts[1], parts[2], parts[3]
 
-    raise ValueError("Invalid file_id format: expected 'source:job_id:base:path'")
+    raise ValueError("Invalid file_id format: expected 'source|job_id|base|path' or legacy format")
+

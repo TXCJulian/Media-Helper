@@ -53,9 +53,7 @@ export default function MusicPanel({
         const dirs = data.directories ?? []
         setDirectories(dirs)
         setForm((prev) => {
-          const stillPresent = dirs.some(
-            (d) => d.path === prev.directory && d.base === prev.base,
-          )
+          const stillPresent = dirs.some((d) => d.path === prev.directory && d.base === prev.base)
           return {
             ...prev,
             directory: dirs.length > 0 ? (stillPresent ? prev.directory : dirs[0]!.path) : '',

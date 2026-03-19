@@ -160,9 +160,7 @@ export default function DirectorySelect({
               {displayValue}
             </span>
             {showBaseLabel && value && base && (
-              <span className="mr-1 shrink-0 pl-3 text-xs text-[var(--text-tertiary)]">
-                {base}
-              </span>
+              <span className="mr-1 shrink-0 pl-3 text-xs text-[var(--text-tertiary)]">{base}</span>
             )}
             {/* Caret */}
             <svg

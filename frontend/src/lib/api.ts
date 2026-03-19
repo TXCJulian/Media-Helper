@@ -149,7 +149,10 @@ export function fetchCutterFiles(
   directory: string,
   base: string,
 ): Promise<{ files: import('@/types').CutterFileInfo[] }> {
-  return fetchJson<{ files: import('@/types').CutterFileInfo[] }>('/cutter/files', { directory, base })
+  return fetchJson<{ files: import('@/types').CutterFileInfo[] }>('/cutter/files', {
+    directory,
+    base,
+  })
 }
 
 export function createJob(path: string, source = 'server', base = ''): Promise<{ job_id: string }> {
@@ -180,7 +183,13 @@ export function fetchPreviewStatus(
   )
 }
 
-export function getThumbnailUrl(path: string, source: string, jobId = '', count = 30, base = ''): string {
+export function getThumbnailUrl(
+  path: string,
+  source: string,
+  jobId = '',
+  count = 30,
+  base = '',
+): string {
   const params = new URLSearchParams({ path, source, count: String(count) })
   if (jobId) params.set('job_id', jobId)
   if (base) params.set('base', base)
