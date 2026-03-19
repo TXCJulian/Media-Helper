@@ -6,35 +6,24 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 
-@pytest.fixture
-def client(tmp_media_dir):
-    """Create a test client with mocked paths."""
-    with patch.dict(os.environ, {
-        "BASE_PATH": str(tmp_media_dir),
-        "TVSHOW_FOLDER_NAME": "TV Shows",
-        "MUSIC_FOLDER_NAME": "Music",
-        "TMDB_API_KEY": "test_key",
-    }):
-        # Re-import to pick up patched env
-        import importlib
-        import app.main as main_mod
-        importlib.reload(main_mod)
-
-        # Override the module-level vars
-        main_mod.BASE_PATH = str(tmp_media_dir)
-        main_mod.TVSHOW_FOLDER_NAME = "TV Shows"
-        main_mod.MUSIC_FOLDER_NAME = "Music"
-
-        with TestClient(main_mod.app) as c:
-            yield c
-
-
 class TestHealthEndpoint:
     def test_health(self, client):
         resp = client.get("/health")
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
+        assert "base_paths" in data
+
+
+class TestConfigEndpoint:
+    def test_config_returns_base_paths(self, client):
+        resp = client.get("/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "features" in data
+        assert "base_paths" in data
+        assert isinstance(data["base_paths"], list)
+        assert len(data["base_paths"]) >= 1
 
 
 class TestDirectoryEndpoints:
@@ -64,7 +53,8 @@ class TestDirectoryEndpoints:
         resp = client.get("/directories/tvshows", params={"series": "Breaking"})
         assert resp.status_code == 200
         dirs = resp.json()["directories"]
-        assert any("Breaking Bad" in d for d in dirs)
+        paths = [d["path"] for d in dirs]
+        assert any("Breaking Bad" in p for p in paths)
 
     def test_season_filter(self, client, tmp_media_dir):
         show_dir = tmp_media_dir / "TV Shows" / "TestShow" / "Season 02"
@@ -76,15 +66,30 @@ class TestDirectoryEndpoints:
         resp = client.get("/directories/tvshows", params={"season": "2"})
         assert resp.status_code == 200
         dirs = resp.json()["directories"]
-        assert all("season 02" in d.lower() for d in dirs)
+        paths = [d["path"] for d in dirs]
+        assert all("season 02" in p.lower() for p in paths)
+
+    def test_directories_have_base_field(self, client, tmp_media_dir):
+        show_dir = tmp_media_dir / "TV Shows" / "SomeShow" / "Season 01"
+        show_dir.mkdir(parents=True)
+        (show_dir / "ep.mp4").write_bytes(b"\x00")
+
+        client.post("/directories/refresh")
+
+        resp = client.get("/directories/tvshows")
+        dirs = resp.json()["directories"]
+        assert len(dirs) > 0
+        assert "path" in dirs[0]
+        assert "base" in dirs[0]
 
 
 class TestInputValidation:
-    def test_threshold_out_of_range(self, client):
+    def test_threshold_out_of_range(self, client, base_label):
         resp = client.post("/rename/episodes", data={
             "series": "test",
             "season": 1,
             "directory": "test",
+            "base": base_label,
             "dry_run": True,
             "assign_seq": False,
             "threshold": 2.0,
@@ -92,11 +97,12 @@ class TestInputValidation:
         })
         assert resp.status_code == 422
 
-    def test_negative_season(self, client):
+    def test_negative_season(self, client, base_label):
         resp = client.post("/rename/episodes", data={
             "series": "test",
             "season": -1,
             "directory": "test",
+            "base": base_label,
             "dry_run": True,
             "assign_seq": False,
             "threshold": 0.5,
@@ -104,11 +110,12 @@ class TestInputValidation:
         })
         assert resp.status_code == 422
 
-    def test_series_too_long(self, client):
+    def test_series_too_long(self, client, base_label):
         resp = client.post("/rename/episodes", data={
             "series": "x" * 300,
             "season": 1,
             "directory": "test",
+            "base": base_label,
             "dry_run": True,
             "assign_seq": False,
             "threshold": 0.5,
@@ -118,11 +125,12 @@ class TestInputValidation:
 
 
 class TestPathTraversal:
-    def test_episode_rename_path_traversal(self, client):
+    def test_episode_rename_path_traversal(self, client, base_label):
         resp = client.post("/rename/episodes", data={
             "series": "test",
             "season": 1,
             "directory": "../../../etc",
+            "base": base_label,
             "dry_run": True,
             "assign_seq": False,
             "threshold": 0.5,
@@ -130,18 +138,34 @@ class TestPathTraversal:
         })
         assert resp.status_code == 400
 
-    def test_music_rename_path_traversal(self, client):
+    def test_music_rename_path_traversal(self, client, base_label):
         resp = client.post("/rename/music", data={
             "directory": "../../../etc",
+            "base": base_label,
             "dry_run": True,
         })
         assert resp.status_code == 400
 
-    def test_transcribe_files_path_traversal(self, client):
+    def test_transcribe_files_path_traversal(self, client, base_label):
         resp = client.get("/transcribe/files", params={
             "directory": "../../../etc",
+            "base": base_label,
         })
         assert resp.status_code == 400
+
+    def test_unknown_base_returns_400(self, client):
+        resp = client.post("/rename/episodes", data={
+            "series": "test",
+            "season": 1,
+            "directory": "test",
+            "base": "nonexistent_base",
+            "dry_run": True,
+            "assign_seq": False,
+            "threshold": 0.5,
+            "lang": "en",
+        })
+        assert resp.status_code == 400
+        assert "Unknown base" in resp.json()["detail"]
 
 
 class TestCutterStreamValidation:
@@ -151,12 +175,12 @@ class TestCutterStreamValidation:
         media_file = tmp_path / "clip.mkv"
         media_file.write_bytes(b"demo")
 
-        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
-        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "", "clip.mkv"))
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "", "", "clip.mkv"))
         monkeypatch.setattr(
             main_mod,
             "resolve_cutter_path",
-            lambda _path, _source, _job_id="": str(media_file),
+            lambda _path, _source, _job_id="", base_label="": str(media_file),
         )
         monkeypatch.setattr(
             main_mod,
@@ -178,12 +202,12 @@ class TestCutterStreamValidation:
         media_file = tmp_path / "clip.mkv"
         media_file.write_bytes(b"demo")
 
-        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
-        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "", "clip.mkv"))
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "", "", "clip.mkv"))
         monkeypatch.setattr(
             main_mod,
             "resolve_cutter_path",
-            lambda _path, _source, _job_id="": str(media_file),
+            lambda _path, _source, _job_id="", base_label="": str(media_file),
         )
         monkeypatch.setattr(
             main_mod,
@@ -205,12 +229,12 @@ class TestCutterStreamValidation:
         media_file = tmp_path / "clip.mkv"
         media_file.write_bytes(b"demo")
 
-        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
-        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "job-1", "clip.mkv"))
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "job-1", "", "clip.mkv"))
         monkeypatch.setattr(
             main_mod,
             "resolve_cutter_path",
-            lambda _path, _source, _job_id="": str(media_file),
+            lambda _path, _source, _job_id="", base_label="": str(media_file),
         )
         monkeypatch.setattr(
             main_mod,
@@ -243,12 +267,12 @@ class TestCutterStreamValidation:
         media_file.write_bytes(b"orig")
         preview_file.write_bytes(b"preview")
 
-        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
-        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "job-1", "clip.mkv"))
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "job-1", "", "clip.mkv"))
         monkeypatch.setattr(
             main_mod,
             "resolve_cutter_path",
-            lambda _path, _source, _job_id="": str(media_file),
+            lambda _path, _source, _job_id="", base_label="": str(media_file),
         )
         monkeypatch.setattr(
             main_mod,
@@ -276,12 +300,12 @@ class TestCutterPreviewStatus:
         media_file = tmp_path / "clip.mp4"
         media_file.write_bytes(b"demo")
 
-        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
-        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "", "clip.mp4"))
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "", "", "clip.mp4"))
         monkeypatch.setattr(
             main_mod,
             "resolve_cutter_path",
-            lambda _path, _source, _job_id="": str(media_file),
+            lambda _path, _source, _job_id="", base_label="": str(media_file),
         )
         monkeypatch.setattr(
             main_mod,
@@ -305,7 +329,7 @@ class TestCutterDeleteJob:
     def test_delete_job_returns_conflict_for_busy_job(self, client, monkeypatch):
         import app.main as main_mod
 
-        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"episodes", "music", "cutter"})
 
         def fake_delete_job(_job_id):
             raise RuntimeError("Job is still busy and could not be deleted")
@@ -325,7 +349,7 @@ class TestCutterValidation:
         media_file = tmp_path / "clip.mp4"
         media_file.write_bytes(b"demo")
 
-        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"episodes", "music", "cutter"})
         monkeypatch.setattr(main_mod, "get_job_dir", lambda _job_id: str(tmp_path))
         monkeypatch.setattr(main_mod, "resolve_cutter_path", lambda *_args, **_kwargs: str(media_file))
 
@@ -334,6 +358,7 @@ class TestCutterValidation:
             data={
                 "path": "clip.mp4",
                 "source": "server",
+                "base": "",
                 "job_id": "11111111-1111-1111-1111-111111111111",
                 "in_point": "10",
                 "out_point": "5",
@@ -344,14 +369,12 @@ class TestCutterValidation:
         assert resp.status_code == 422
         assert "out_point" in resp.json()["detail"]
 
-    def test_resolve_cutter_path_blocks_server_traversal(self, tmp_path, monkeypatch):
+    def test_resolve_cutter_path_blocks_server_traversal(self, tmp_media_dir, base_label, monkeypatch):
         import app.main as main_mod
         from fastapi import HTTPException
 
-        monkeypatch.setattr(main_mod, "BASE_PATH", str(tmp_path))
-
         with pytest.raises(HTTPException) as exc_info:
-            main_mod.resolve_cutter_path("../../../etc/passwd", "server")
+            main_mod.resolve_cutter_path("../../../etc/passwd", "server", base_label=base_label)
 
         assert exc_info.value.status_code == 400
 
@@ -361,7 +384,7 @@ class TestCutterValidation:
         media_file = tmp_path / "test.mp4"
         media_file.write_bytes(b"demo")
 
-        monkeypatch.setattr(main_mod, "ENABLED_FEATURES", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"episodes", "music", "cutter"})
         monkeypatch.setattr(main_mod, "get_job_dir", lambda _job_id: str(tmp_path))
         monkeypatch.setattr(main_mod, "resolve_cutter_path", lambda *_args, **_kwargs: str(media_file))
 
@@ -373,6 +396,7 @@ class TestCutterValidation:
             data={
                 "path": "test.mp4",
                 "source": "server",
+                "base": "",
                 "job_id": "11111111-1111-1111-1111-111111111111",
                 "in_point": "0",
                 "out_point": "30",

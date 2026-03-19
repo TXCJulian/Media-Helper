@@ -36,12 +36,12 @@ def test_label_collision_suffixed():
 
 
 def test_default_when_unset():
-    env = os.environ.copy()
-    env.pop("BASE_PATHS", None)
-    env.pop("BASE_PATH", None)
-    with patch.dict(os.environ, env, clear=True):
-        import importlib
-        import app.config as config_mod
+    """When BASE_PATHS is not set (and dotenv doesn't provide it), default to /media."""
+    import importlib
+    import app.config as config_mod
+    # Must mock load_dotenv at the dotenv module level so reload() calls the mock
+    with patch("dotenv.load_dotenv"), \
+         patch.dict(os.environ, {}, clear=True):
         importlib.reload(config_mod)
         assert config_mod.BASE_PATHS == ["/media"]
 

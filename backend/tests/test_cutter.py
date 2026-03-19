@@ -238,9 +238,10 @@ def test_encode_decode_file_id_round_trip():
         "11111111-1111-1111-1111-111111111111",
     )
 
-    source, job_id, path = cutter.decode_file_id(encoded)
+    source, job_id, base, path = cutter.decode_file_id(encoded)
     assert source == "server"
     assert job_id == "11111111-1111-1111-1111-111111111111"
+    assert base == ""
     assert path == "Movies/Show Name/Season 01/Episode:01.mkv"
 
 
@@ -253,9 +254,10 @@ def test_decode_file_id_handles_unpadded_base64():
     encoded = cutter.encode_file_id("upload", "clip.mp4", "")
     unpadded = encoded.rstrip("=")
 
-    source, job_id, path = cutter.decode_file_id(unpadded)
+    source, job_id, base, path = cutter.decode_file_id(unpadded)
     assert source == "upload"
     assert job_id == ""
+    assert base == ""
     assert path == "clip.mp4"
 
 
