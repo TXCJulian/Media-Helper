@@ -24,6 +24,7 @@ const INITIAL_CUTTER_STATE: CutterPersistedState = {
   form: {
     source: 'server',
     directory: '',
+    base: '',
     filename: '',
     inPoint: 0,
     outPoint: 0,
@@ -43,14 +44,31 @@ const INITIAL_CUTTER_STATE: CutterPersistedState = {
 export default function App() {
   const [activeView, setActiveView] = useState<'home' | PanelName>('home')
   const [enabledFeatures, setEnabledFeatures] = useState<PanelName[]>([])
+  const [basePaths, setBasePaths] = useState<string[]>([])
+  const [backendStatus, setBackendStatus] = useState<'checking' | 'connected' | 'unreachable'>(
+    'checking',
+  )
 
   useEffect(() => {
+    let cancelled = false
+
     fetchConfig()
-      .then((cfg) => setEnabledFeatures(cfg.features as PanelName[]))
+      .then((cfg) => {
+        if (cancelled) return
+        setEnabledFeatures(cfg.features as PanelName[])
+        setBasePaths(cfg.base_paths ?? [])
+        setBackendStatus('connected')
+      })
       .catch((err) => {
+        if (cancelled) return
         console.warn('Backend is not reachable', err)
         setEnabledFeatures([])
+        setBackendStatus('unreachable')
       })
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   // Per-panel log + error state
@@ -107,7 +125,13 @@ export default function App() {
   }, [])
 
   if (activeView === 'home') {
-    return <Landing onNavigate={showPanel} enabledFeatures={enabledFeatures} />
+    return (
+      <Landing
+        onNavigate={showPanel}
+        enabledFeatures={enabledFeatures}
+        backendStatus={backendStatus}
+      />
+    )
   }
 
   if (activeView === 'episodes') {
@@ -119,6 +143,7 @@ export default function App() {
         log={episodeLog}
         error={episodeError}
         hasStarted={episodeStarted}
+        showBaseLabel={basePaths.length > 1}
       />
     )
   }
@@ -132,6 +157,7 @@ export default function App() {
         log={musicLog}
         error={musicError}
         hasStarted={musicStarted}
+        showBaseLabel={basePaths.length > 1}
       />
     )
   }
@@ -145,6 +171,7 @@ export default function App() {
         log={lyricsLog}
         error={lyricsError}
         hasStarted={lyricsStarted}
+        showBaseLabel={basePaths.length > 1}
       />
     )
   }
@@ -160,6 +187,7 @@ export default function App() {
         hasStarted={cutterStarted}
         persisted={cutterState}
         onPersistedChange={setCutterState}
+        showBaseLabel={basePaths.length > 1}
       />
     )
   }

@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from app.config import BASE_PATH, CUTTER_JOBS_DIR, CUTTER_JOB_TTL
+from app.config import resolve_base, BASE_PATH_LABELS, CUTTER_JOBS_DIR, CUTTER_JOB_TTL
 from app.fs_utils import collision_safe_path
 
 logger = logging.getLogger(__name__)
@@ -268,11 +268,21 @@ def probe_file(filepath: str) -> dict:
         filepath,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"ffprobe timed out for {filepath}") from exc
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe failed for {filepath}: {result.stderr}")
+
+    if not result.stdout:
+        raise RuntimeError(f"ffprobe produced no output for {filepath}")
 
     try:
         data = json.loads(result.stdout)
@@ -402,15 +412,19 @@ def transcode_for_preview(
     info = probe_file(filepath)
     has_video = info.get("video_codec") is not None
 
-    # Determine audio codec for the selected stream
+    # Determine audio codec and channel count for the selected stream
     audio_streams = info.get("audio_streams", [])
+    audio_channels = 0
     if audio_stream_index is not None and audio_streams:
         sel = next((s for s in audio_streams if s["index"] == audio_stream_index), None)
         audio_codec = (
             sel["codec"] if sel else info.get("audio_codec", "unknown")
         ).lower()
+        audio_channels = sel.get("channels", 0) if sel else 0
     else:
         audio_codec = info.get("audio_codec", "unknown").lower()
+        first_audio = audio_streams[0] if audio_streams else None
+        audio_channels = first_audio.get("channels", 0) if first_audio else 0
 
     cmd = ["ffmpeg", "-nostdin", "-loglevel", "warning", "-i", filepath]
 
@@ -448,6 +462,10 @@ def transcode_for_preview(
         cmd += ["-c:a", "copy"]
     else:
         cmd += ["-c:a", "aac", "-b:a", "192k"]
+        # AAC doesn't support height/object channels (e.g. 5.1.2 Atmos
+        # layouts), so downmix to stereo when channels > 6.
+        if audio_channels > 6:
+            cmd += ["-ac", "2"]
 
     cmd += [
         "-sn",  # Drop subtitles (ASS/SSA not MP4-compatible)
@@ -806,6 +824,11 @@ def get_or_transcode_preview(
                     cmd += [f"-c:a:{i}", "copy"]
                 else:
                     cmd += [f"-c:a:{i}", "aac", f"-b:a:{i}", "192k"]
+                    # AAC doesn't support height/object channels (e.g. 5.1.2
+                    # Atmos layouts), so downmix to stereo when channels > 6.
+                    channels = stream.get("channels", 0)
+                    if channels > 6:
+                        cmd += [f"-ac:a:{i}", "2"]
 
             if not audio_streams:
                 audio_codec = info.get("audio_codec", "unknown").lower()
@@ -1750,7 +1773,11 @@ _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 
 
 def create_job(
-    source: str, original_path: str, original_name: str, initial_status: str = "ready"
+    source: str,
+    original_path: str,
+    original_name: str,
+    initial_status: str = "ready",
+    base: str = "",
 ) -> str:
     """Create a new job directory structure and return the job_id."""
     job_id = str(uuid.uuid4())
@@ -1759,10 +1786,12 @@ def create_job(
     os.makedirs(os.path.join(job_dir, "output"), exist_ok=True)
 
     metadata = {
+        "schema_version": 1,
         "job_id": job_id,
         "source": source,
         "original_name": original_name,
         "original_path": original_path,
+        "base": base,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": initial_status,
         "preview_transcoded": False,
@@ -1831,17 +1860,22 @@ def _resolve_job_source_path(meta: dict) -> str | None:
         return os.path.join(job_dir, "input", original_name)
 
     if source == "server":
+        base_label = meta.get("base", "")
+        try:
+            base_path = resolve_base(base_label)
+        except ValueError:
+            return None
         original_path = meta.get("original_path", "")
         if not original_path:
             return None
         if os.path.isabs(original_path):
-            base_real = os.path.realpath(BASE_PATH)
+            base_real = os.path.realpath(base_path)
             path_real = os.path.realpath(original_path)
             if path_real == base_real or path_real.startswith(base_real + os.sep):
                 return path_real
             return None
-        resolved = os.path.realpath(os.path.join(BASE_PATH, original_path))
-        base_real = os.path.realpath(BASE_PATH)
+        resolved = os.path.realpath(os.path.join(base_path, original_path))
+        base_real = os.path.realpath(base_path)
         if resolved == base_real or resolved.startswith(base_real + os.sep):
             return resolved
         return None
@@ -1881,6 +1915,59 @@ def list_jobs() -> list[dict]:
             jobs.append(meta)
     jobs.sort(key=lambda j: j.get("created_at", ""), reverse=True)
     return jobs
+
+
+def _infer_base_label(meta: dict, default: str) -> str:
+    """Try to infer the correct base label from original_path; fall back to *default*."""
+    original_path = meta.get("original_path", "")
+    if original_path and os.path.isabs(original_path):
+        real_path = os.path.realpath(original_path)
+        for label, base_path in BASE_PATH_LABELS.items():
+            real_base = os.path.realpath(base_path)
+            if real_path == real_base or real_path.startswith(real_base + os.sep):
+                return label
+    return default
+
+
+def migrate_jobs() -> int:
+    """Migrate all job.json files to the current schema. Returns count of migrated jobs."""
+    if not os.path.isdir(CUTTER_JOBS_DIR):
+        return 0
+
+    default_base = next(iter(BASE_PATH_LABELS), "")
+    migrated = 0
+
+    for name in os.listdir(CUTTER_JOBS_DIR):
+        if not _UUID_RE.match(name):
+            continue
+        meta = load_job_metadata(name)
+        if not meta:
+            continue
+
+        version = meta.get("schema_version", 0)
+        if version >= 1:
+            continue
+
+        # --- v0 -> v1: add "base" field ---
+        if not meta.get("base"):
+            meta["base"] = _infer_base_label(meta, default_base)
+
+        meta["schema_version"] = 1
+        # Ensure schema_version appears first in the JSON output
+        meta = {"schema_version": meta.pop("schema_version"), **meta}
+
+        try:
+            save_job_metadata(name, meta)
+            migrated += 1
+            logger.debug("Migrated job %s to schema v1 (base=%s)", name, meta["base"])
+        except OSError:
+            logger.warning(
+                "Failed to write migrated metadata for job %s", name, exc_info=True
+            )
+
+    if migrated:
+        logger.info("Migrated %d cutter job(s) to current schema", migrated)
+    return migrated
 
 
 def delete_job(job_id: str) -> None:
@@ -1989,14 +2076,14 @@ def cleanup_old_jobs() -> None:
             )
 
 
-def encode_file_id(source: str, path: str, job_id: str = "") -> str:
-    """URL-safe base64 encode of 'source:job_id:path'."""
-    raw = f"{source}:{job_id}:{path}"
+def encode_file_id(source: str, path: str, job_id: str = "", base: str = "") -> str:
+    """URL-safe base64 encode of 'source|job_id|base|path'."""
+    raw = f"{source}|{job_id}|{base}|{path}"
     return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
 
 
-def decode_file_id(file_id: str) -> tuple[str, str, str]:
-    """Decode a file_id back to (source, job_id, path). Raises ValueError on invalid input.
+def decode_file_id(file_id: str) -> tuple[str, str, str, str]:
+    """Decode a file_id back to (source, job_id, base, path). Raises ValueError on invalid input.
 
     Security note: This function performs NO path validation. Callers MUST
     validate the returned path against allowed base directories before use
@@ -2011,11 +2098,23 @@ def decode_file_id(file_id: str) -> tuple[str, str, str]:
     except Exception as e:
         raise ValueError(f"Invalid file_id: {e}") from e
 
-    parts = decoded.split(":", 2)
+    # Try new format first (pipe-separated): "source|job_id|base|path"
+    if "|" in decoded:
+        parts = decoded.split("|", 3)
+        if len(parts) == 4:
+            return parts[0], parts[1], parts[2], parts[3]
+        raise ValueError("Invalid file_id format: expected 'source|job_id|base|path'")
+
+    # Legacy colon-separated formats (no Windows paths)
+    parts = decoded.split(":", 3)
     if len(parts) == 2:
         # Legacy format: "source:path"
-        return parts[0], "", parts[1]
+        return parts[0], "", "", parts[1]
     if len(parts) == 3:
-        return parts[0], parts[1], parts[2]
+        # Legacy format: "source:job_id:path"
+        return parts[0], parts[1], "", parts[2]
+    if len(parts) == 4:
+        return parts[0], parts[1], parts[2], parts[3]
 
-    raise ValueError("Invalid file_id format: expected 'source:job_id:path'")
+    raise ValueError("Invalid file_id format: expected 'source|job_id|base|path' or legacy format")
+

@@ -3,6 +3,7 @@ export type PanelName = 'episodes' | 'music' | 'lyrics' | 'cutter'
 interface LandingProps {
   onNavigate: (panel: PanelName) => void
   enabledFeatures: PanelName[]
+  backendStatus: 'checking' | 'connected' | 'unreachable'
 }
 
 const cards: {
@@ -17,7 +18,7 @@ const cards: {
     id: 'episodes',
     icon: '▶',
     title: 'Episode Renamer',
-    desc: 'Rename TV show episodes using TMDB metadata. Match series, seasons, and episode names automatically.',
+    desc: 'Rename TV show episodes using TMDB metadata.',
     colorClass: 'card-episodes',
     iconClass: 'bg-[var(--accent-glow)] text-[var(--accent-light)]',
   },
@@ -25,7 +26,7 @@ const cards: {
     id: 'music',
     icon: '♫',
     title: 'Music Renamer',
-    desc: 'Rename music files based on ID3 tags. Standardize your artist and album file structures.',
+    desc: 'Rename music files based on metadata tags.',
     colorClass: 'card-music',
     iconClass: 'bg-[var(--accent-2-glow)] text-[var(--accent-2)]',
   },
@@ -33,7 +34,7 @@ const cards: {
     id: 'lyrics',
     icon: '¶',
     title: 'Lyrics Transcriber',
-    desc: 'Transcribe lyrics from audio files. Generate LRC timestamps or plain text using AI.',
+    desc: 'Transcribe lyrics from audio files using whisper.',
     colorClass: 'card-lyrics',
     iconClass: 'bg-[var(--accent-3-glow)] text-[var(--accent-3)]',
   },
@@ -41,13 +42,13 @@ const cards: {
     id: 'cutter',
     icon: '✂',
     title: 'Media Cutter',
-    desc: 'Trim audio and video files with waveform preview. Supports all major codecs with live transcoding.',
+    desc: 'Trim audio and video files with ffmpeg.',
     colorClass: 'card-cutter',
     iconClass: 'bg-[var(--accent-4-glow)] text-[var(--accent-4)]',
   },
 ]
 
-export default function Landing({ onNavigate, enabledFeatures }: LandingProps) {
+export default function Landing({ onNavigate, enabledFeatures, backendStatus }: LandingProps) {
   const visibleCards = cards
     .filter((card) => enabledFeatures.includes(card.id))
     .sort((a, b) => enabledFeatures.indexOf(a.id) - enabledFeatures.indexOf(b.id))
@@ -64,15 +65,16 @@ export default function Landing({ onNavigate, enabledFeatures }: LandingProps) {
         Organize your media library
       </p>
 
-      {visibleCards.length === 0 ? (
+      {backendStatus === 'unreachable' ? (
         <div className="flex max-w-[400px] flex-col items-center justify-center rounded-2xl border border-red-500/30 bg-red-500/5 p-8 text-center">
           <span className="mb-3 text-[2rem]">⚠</span>
           <p className="mb-2 font-semibold text-[var(--text-secondary)]">Backend Unreachable</p>
           <p className="text-[0.9rem] text-[var(--text-tertiary)]">
-            Unable to connect to the backend service. Please check that the server is running and accessible.
+            Unable to connect to the backend service. Please check that the server is running and
+            accessible.
           </p>
         </div>
-      ) : (
+      ) : visibleCards.length > 0 ? (
         <div
           className={`grid w-full max-w-[1100px] grid-cols-1 gap-5 ${
             visibleCards.length >= 4
@@ -124,7 +126,7 @@ export default function Landing({ onNavigate, enabledFeatures }: LandingProps) {
             </button>
           ))}
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

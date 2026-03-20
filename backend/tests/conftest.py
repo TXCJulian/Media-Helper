@@ -1,3 +1,6 @@
+import os
+from unittest.mock import patch
+
 import pytest
 
 
@@ -53,3 +56,33 @@ def tmp_tvshow_mixed_dir(tmp_media_dir):
         (show_dir / name).write_bytes(b"\x00" * 100)
 
     return show_dir
+
+
+@pytest.fixture
+def base_label(tmp_media_dir):
+    """Return the base label for the tmp_media_dir."""
+    return os.path.basename(str(tmp_media_dir))
+
+
+@pytest.fixture
+def client(tmp_media_dir):
+    """Create a test client with mocked paths."""
+    with patch.dict(os.environ, {
+        "BASE_PATHS": str(tmp_media_dir),
+        "TVSHOW_FOLDER_NAME": "TV Shows",
+        "MUSIC_FOLDER_NAME": "Music",
+        "TMDB_API_KEY": "test_key",
+    }):
+        import importlib
+        import app.config as config_mod
+        importlib.reload(config_mod)
+        import app.get_dirs as get_dirs_mod
+        importlib.reload(get_dirs_mod)
+        import app.main as main_mod
+        importlib.reload(main_mod)
+
+        with TestClient(main_mod.app) as c:
+            yield c
+
+
+from fastapi.testclient import TestClient

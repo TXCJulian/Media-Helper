@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchJson, postForm, postRefresh } from '@/lib/api'
 import { useDebounce } from '@/hooks/useDebounce'
-import type { DirectoriesResponse, EpisodeForm, RenameResponse } from '@/types'
+import type { DirectoriesResponse, DirectoryEntry, EpisodeForm, RenameResponse } from '@/types'
 import PanelLayout from '@/components/PanelLayout'
 import LogPanel from '@/components/LogPanel'
 import FormSection from '@/components/ui/FormSection'
@@ -16,6 +16,7 @@ interface EpisodePanelProps {
   log: string[]
   error: string
   hasStarted: boolean
+  showBaseLabel?: boolean
 }
 
 export default function EpisodePanel({
@@ -25,17 +26,19 @@ export default function EpisodePanel({
   log,
   error,
   hasStarted,
+  showBaseLabel,
 }: EpisodePanelProps) {
   const [form, setForm] = useState<EpisodeForm>({
     series: '',
     season: 1,
     directory: '',
+    base: '',
     dry_run: true,
     assign_seq: false,
     threshold: 0.75,
     lang: 'de',
   })
-  const [directories, setDirectories] = useState<string[]>([])
+  const [directories, setDirectories] = useState<DirectoryEntry[]>([])
   const [isLoadingDirs, setIsLoadingDirs] = useState(false)
   const [isRenaming, setIsRenaming] = useState(false)
   const [touched, setTouched] = useState(false)
@@ -54,11 +57,14 @@ export default function EpisodePanel({
         const data = await fetchJson<DirectoriesResponse>('/directories/tvshows', params)
         const dirs = data.directories ?? []
         setDirectories(dirs)
-        setForm((prev) => ({
-          ...prev,
-          directory:
-            dirs.length > 0 ? (dirs.includes(prev.directory) ? prev.directory : dirs[0]!) : '',
-        }))
+        setForm((prev) => {
+          const stillPresent = dirs.some((d) => d.path === prev.directory && d.base === prev.base)
+          return {
+            ...prev,
+            directory: dirs.length > 0 ? (stillPresent ? prev.directory : dirs[0]!.path) : '',
+            base: dirs.length > 0 ? (stillPresent ? prev.base : dirs[0]!.base) : '',
+          }
+        })
       } catch (err) {
         onError(`Error loading directories: ${err instanceof Error ? err.message : String(err)}`)
       } finally {
@@ -96,6 +102,7 @@ export default function EpisodePanel({
         series: form.series,
         season: form.season,
         directory: form.directory,
+        base: form.base,
         dry_run: form.dry_run,
         assign_seq: form.assign_seq,
         threshold: form.threshold,
@@ -160,11 +167,13 @@ export default function EpisodePanel({
           <DirectorySelect
             directories={directories}
             value={form.directory}
-            onChange={(v) => update('directory', v)}
+            base={form.base}
+            onChange={(val, base) => setForm((prev) => ({ ...prev, directory: val, base }))}
             onRefresh={() => void handleRefresh()}
             isLoading={isLoadingDirs}
             disabled={busy}
             color="blue"
+            showBaseLabel={showBaseLabel}
           />
         </FormSection>
 

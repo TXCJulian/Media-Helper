@@ -4,7 +4,7 @@ services:
     container_name: media-renamer_backend
     command: []
     environment:
-      #- BASE_PATH=/ #absolute path to media root, defaults to /media
+      #- BASE_PATHS=/media1,/media2  # comma-separated media roots, defaults to /media
       #- TVSHOW_FOLDER_NAME=TV Shows #name of the folder in BASE_PATH where TV shows are stored, defaults to "TV Shows"
       #- MUSIC_FOLDER_NAME=Music #name of the folder in BASE_PATH where music is stored, defaults to "Music"
       - TMDB_API_KEY=YOUR_TMDB_API_KEY_HERE #API key for The Movie Database (TMDb) - required for episode renaming

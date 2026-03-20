@@ -24,6 +24,7 @@ import {
   postRefresh,
   saveToSource,
 } from '@/lib/api'
+import { encodeCutterFileId } from '@/lib/cutterFileId'
 import {
   getBrowserCompatibilityMessage,
   getBrowserCompatibilityReport,
@@ -62,13 +63,6 @@ const EXT_TO_CONTAINER: Record<string, string> = {
   '.m4a': 'mp4',
 }
 
-function encodeFileId(source: string, path: string, jid = ''): string {
-  const bytes = new TextEncoder().encode(`${source}:${jid}:${path}`)
-  let bin = ''
-  for (const b of bytes) bin += String.fromCharCode(b)
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-
 interface CutterPanelProps {
   onLog: (log: string[]) => void
   onError: (error: string) => void
@@ -78,6 +72,7 @@ interface CutterPanelProps {
   hasStarted: boolean
   persisted: CutterPersistedState
   onPersistedChange: (state: CutterPersistedState) => void
+  showBaseLabel?: boolean
 }
 
 export default function CutterPanel({
@@ -89,6 +84,7 @@ export default function CutterPanel({
   hasStarted,
   persisted,
   onPersistedChange,
+  showBaseLabel,
 }: CutterPanelProps) {
   // Shared state
   const { form, directories, search } = persisted
@@ -188,18 +184,20 @@ export default function CutterPanel({
         if (searchText) params.search = searchText
         const data = await fetchJson<DirectoriesResponse>('/directories/media', params)
         const dirs = data.directories ?? []
-        setPersisted((prev) => ({
-          directories: dirs,
-          form: {
-            ...prev.form,
-            directory:
-              dirs.length > 0
-                ? dirs.includes(prev.form.directory)
-                  ? prev.form.directory
-                  : dirs[0]!
-                : '',
-          },
-        }))
+        setPersisted((prev) => {
+          const stillPresent = dirs.some(
+            (d) => d.path === prev.form.directory && d.base === prev.form.base,
+          )
+          return {
+            directories: dirs,
+            form: {
+              ...prev.form,
+              directory:
+                dirs.length > 0 ? (stillPresent ? prev.form.directory : dirs[0]!.path) : '',
+              base: dirs.length > 0 ? (stillPresent ? prev.form.base : dirs[0]!.base) : '',
+            },
+          }
+        })
       } catch (err) {
         onError(`Error loading directories: ${err instanceof Error ? err.message : String(err)}`)
       } finally {
@@ -252,7 +250,7 @@ export default function CutterPanel({
     }
     const signal = { cancelled: false }
     setIsLoadingFiles(true)
-    fetchCutterFiles(form.directory)
+    fetchCutterFiles(form.directory, form.base)
       .then((data) => {
         if (signal.cancelled) return
         setSource({ files: data.files ?? [] })
@@ -272,19 +270,20 @@ export default function CutterPanel({
 
   // ── Load probe + waveform for a file ──────────────────────────
   const loadFileData = useCallback(
-    async (path: string, source: 'server' | 'upload', jid = '') => {
+    async (path: string, source: 'server' | 'upload', jid = '', base = '') => {
       onError('')
       setSource({ probe: null, peaks: [], thumbnailUrl: '', isLoadingFile: true })
       try {
         const [probeData, waveData] = await Promise.all([
-          fetchProbe(path, source, jid),
-          fetchWaveform(path, source, 800, jid),
+          fetchProbe(path, source, jid, base),
+          fetchWaveform(path, source, 800, jid, base),
         ])
         setSource({
           probe: probeData,
           peaks: waveData.peaks,
           isLoadingFile: false,
-          thumbnailUrl: probeData.video_codec != null ? getThumbnailUrl(path, source, jid) : '',
+          thumbnailUrl:
+            probeData.video_codec != null ? getThumbnailUrl(path, source, jid, 30, base) : '',
         })
         const probePatch = buildProbeSelectionPatch(path, probeData.duration, probeData)
         setPersisted((prev) => ({
@@ -310,23 +309,27 @@ export default function CutterPanel({
       const path = `${form.directory}/${file.name}`
       setSource({ isLoadingFile: true, probe: null, peaks: [], thumbnailUrl: '', outputFiles: [] })
       try {
-        const { job_id } = await createJob(path, 'server')
-        setSource({ filePath: path, fileId: encodeFileId('server', path, job_id), jobId: job_id })
+        const { job_id } = await createJob(path, 'server', form.base)
+        setSource({
+          filePath: path,
+          fileId: encodeCutterFileId('server', path, job_id, form.base),
+          jobId: job_id,
+        })
         setPersisted((prev) => ({
           form: { ...prev.form, filename: file.name },
         }))
-        await loadFileData(path, 'server', job_id)
+        await loadFileData(path, 'server', job_id, form.base)
       } catch (err) {
         onError(`Error creating job: ${err instanceof Error ? err.message : String(err)}`)
         setSource({ isLoadingFile: false })
       }
     },
-    [form.directory, loadFileData, setSource, setPersisted, onError],
+    [form.directory, form.base, loadFileData, setSource, setPersisted, onError],
   )
 
   // ── Directory selection from DirectorySelect ─────────────────
-  const handleDirectoryChange = (dir: string) => {
-    setPersisted({ form: { ...form, directory: dir, filename: '' } })
+  const handleDirectoryChange = (dir: string, base: string) => {
+    setPersisted({ form: { ...form, directory: dir, base: base || form.base, filename: '' } })
     setSource({
       probe: null,
       peaks: [],
@@ -350,6 +353,7 @@ export default function CutterPanel({
         job.status === 'ready' && !job.browser_ready && !!job.preview_transcoded
 
       const source: CutterForm['source'] = job.source
+      const jobBase = source === 'server' ? (job.base ?? '') : ''
       const filePath = source === 'server' ? job.original_path : job.original_name
       const directory = job.original_path
         ? job.original_path.substring(0, job.original_path.lastIndexOf('/'))
@@ -357,7 +361,7 @@ export default function CutterPanel({
       const settings = job.cut_settings ?? null
       const sourceStatePatch = {
         filePath,
-        fileId: encodeFileId(source, filePath, job.job_id),
+        fileId: encodeCutterFileId(source, filePath, job.job_id, jobBase),
         jobId: job.job_id,
         outputFiles: job.output_files,
         probe: null,
@@ -370,6 +374,7 @@ export default function CutterPanel({
           ...prev.form,
           source,
           directory: source === 'server' ? directory : prev.form.directory,
+          base: source === 'server' ? jobBase : prev.form.base,
           filename: job.original_name,
           inPoint: settings?.in_point ?? 0,
           outPoint: settings?.out_point ?? 0,
@@ -395,7 +400,7 @@ export default function CutterPanel({
       setTranscodePreviewEnabled(false)
       setPreviewAudioStreamIndex(null)
       try {
-        await loadFileData(filePath, source, job.job_id)
+        await loadFileData(filePath, source, job.job_id, jobBase)
         if (shouldAutoUseTranscodedPreview) {
           setTranscodePreviewEnabled(true)
         }
@@ -539,6 +544,7 @@ export default function CutterPanel({
       out_point: String(form.outPoint),
       stream_copy: String(form.streamCopy),
     }
+    if (form.source === 'server' && form.base) params.base = form.base
     if (form.outputName) params.output_name = form.outputName
     if (!form.streamCopy && form.codec) {
       params.codec = form.codec
@@ -718,11 +724,13 @@ export default function CutterPanel({
               <DirectorySelect
                 directories={directories}
                 value={form.directory}
+                base={form.base}
                 onChange={handleDirectoryChange}
                 onRefresh={() => void handleRefresh()}
                 isLoading={isLoadingDirs}
                 disabled={locked}
                 color="emerald"
+                showBaseLabel={showBaseLabel}
               />
             </FormSection>
 
@@ -997,6 +1005,7 @@ export default function CutterPanel({
         activeJobId={jobId}
         onLog={(msg) => onLog([...log, msg])}
         onOpenJob={handleOpenJob}
+        showBaseLabel={showBaseLabel}
       />
     </PanelLayout>
   )

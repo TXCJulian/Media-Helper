@@ -16,7 +16,9 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from app.config import (
-    BASE_PATH,
+    BASE_PATHS,
+    BASE_PATH_LABELS,
+    resolve_base,
     TVSHOW_FOLDER_NAME,
     MUSIC_FOLDER_NAME,
     VALID_MUSIC_EXT,
@@ -110,8 +112,8 @@ class DirChangeHandler(FileSystemEventHandler):
             _get_cutter_dirs_cached.cache_clear()
 
 
-# Global observer instance
-_observer = None
+# Global observer instances
+_observers: list = []
 
 
 async def _cleanup_cutter_jobs():
@@ -127,25 +129,28 @@ async def _cleanup_cutter_jobs():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan with startup and shutdown events."""
-    global _observer
+    global _observers
 
     # Startup
     handler = DirChangeHandler()
-    if os.path.isdir(BASE_PATH):
-        _observer = Observer()
-        _observer.schedule(handler, BASE_PATH, recursive=True)
-        _observer.start()
-        logger.info("File watcher started on '%s'", BASE_PATH)
-    else:
-        logger.warning(
-            "BASE_PATH '%s' does not exist; file watcher not started.", BASE_PATH
-        )
-        _observer = None
+    _observers = []
+    for bp in BASE_PATHS:
+        if os.path.isdir(bp):
+            obs = Observer()
+            obs.schedule(handler, bp, recursive=True)
+            obs.start()
+            _observers.append(obs)
+            logger.info("Watching %s for filesystem changes", bp)
+        else:
+            logger.warning("Base path does not exist, skipping watch: %s", bp)
 
     # Start cutter upload cleanup task only if cutter feature is enabled
     cleanup_task = None
     if "cutter" in ENABLED_FEATURES_SET:
         os.makedirs(CUTTER_JOBS_DIR, exist_ok=True)
+        from app.cutter import migrate_jobs
+
+        migrate_jobs()
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
             logger.error("Cutter feature requires ffmpeg and ffprobe on PATH")
         cleanup_task = asyncio.create_task(_cleanup_cutter_jobs())
@@ -155,10 +160,12 @@ async def lifespan(app: FastAPI):
     # Shutdown
     if cleanup_task is not None:
         cleanup_task.cancel()
-    if _observer:
-        _observer.stop()
-        _observer.join()
-        logger.info("File watcher stopped.")
+    for obs in _observers:
+        obs.stop()
+    for obs in _observers:
+        obs.join()
+    if _observers:
+        logger.info("File watchers stopped.")
 
 
 app = FastAPI(lifespan=lifespan)
@@ -178,12 +185,16 @@ def health():
         "status": "ok",
         "transcriber": bool(TRANSCRIBER_URL),
         "features": ENABLED_FEATURES,
+        "base_paths": list(BASE_PATH_LABELS.keys()),
     }
 
 
 @app.get("/config")
 def get_config():
-    return {"features": ENABLED_FEATURES}
+    return {
+        "features": ENABLED_FEATURES,
+        "base_paths": list(BASE_PATH_LABELS.keys()),
+    }
 
 
 @app.get("/directories/tvshows")
@@ -198,13 +209,13 @@ def list_directories(
     filtered = all_dirs
     if series:
         series_lc = series.lower()
-        filtered = [d for d in filtered if series_lc in d.lower()]
+        filtered = [d for d in filtered if series_lc in d["path"].lower()]
 
     # nach Staffel filtern
     if season is not None:
         season_str = f"{season:02d}"
         pattern = f"/season {season_str}"
-        filtered = [d for d in filtered if d.lower().endswith(pattern)]
+        filtered = [d for d in filtered if d["path"].lower().endswith(pattern)]
 
     return {"directories": filtered}
 
@@ -221,13 +232,13 @@ def list_music_directories(
     filtered = all_dirs
     if artist:
         artist_lc = artist.lower()
-        filtered = [d for d in filtered if artist_lc in d.lower()]
+        filtered = [d for d in filtered if artist_lc in d["path"].lower()]
 
     if album:
         album_lc = album.lower()
         result = []
         for d in filtered:
-            parts = d.split("/")
+            parts = d["path"].split("/")
             if len(parts) >= 2:
                 rest_path = "/".join(parts[1:]).lower()
                 if album_lc in rest_path:
@@ -256,7 +267,7 @@ def list_media_directories(
     filtered = all_dirs
     if search:
         search_lc = search.lower()
-        filtered = [d for d in filtered if search_lc in d.lower()]
+        filtered = [d for d in filtered if search_lc in d["path"].lower()]
 
     return {"directories": filtered}
 
@@ -270,9 +281,14 @@ async def rename(
     assign_seq: bool = Form(...),
     threshold: float = Form(..., ge=0.0, le=1.0),
     lang: str = Form(..., max_length=5),
+    base: str = Form(..., max_length=200),
 ):
     require_feature("episodes")
-    tvshow_base = os.path.join(BASE_PATH, TVSHOW_FOLDER_NAME)
+    try:
+        base_path = resolve_base(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown base: '{base}'")
+    tvshow_base = os.path.join(base_path, TVSHOW_FOLDER_NAME)
     path = validate_path(tvshow_base, directory)
     if not os.path.isdir(path):
         return {
@@ -315,9 +331,14 @@ async def rename(
 async def rename_music_route(
     directory: str = Form(..., max_length=500),
     dry_run: bool = Form(...),
+    base: str = Form(..., max_length=200),
 ):
     require_feature("music")
-    music_base = os.path.join(BASE_PATH, MUSIC_FOLDER_NAME)
+    try:
+        base_path = resolve_base(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown base: '{base}'")
+    music_base = os.path.join(base_path, MUSIC_FOLDER_NAME)
     path = validate_path(music_base, directory)
     if not os.path.isdir(path):
         return {
@@ -356,9 +377,14 @@ def transcriber_health():
 @app.get("/transcribe/files")
 def list_transcribable_files(
     directory: str = Query(..., max_length=500),
+    base: str = Query(..., max_length=200),
 ):
     require_feature("lyrics")
-    music_base = os.path.join(BASE_PATH, MUSIC_FOLDER_NAME)
+    try:
+        base_path = resolve_base(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown base: '{base}'")
+    music_base = os.path.join(base_path, MUSIC_FOLDER_NAME)
     path = validate_path(music_base, directory)
     if not os.path.isdir(path):
         return {"files": [], "error": "Directory not found"}
@@ -375,6 +401,7 @@ def start_transcription(
     language: str = Form("", max_length=10),
     no_separation: bool = Form(False),
     no_correction: bool = Form(False),
+    base: str = Form(..., max_length=200),
 ):
     require_feature("lyrics")
     if output_format not in ("lrc", "txt", "all"):
@@ -385,7 +412,11 @@ def start_transcription(
     if not TRANSCRIBER_URL:
         return {"error": "TRANSCRIBER_URL not set"}
 
-    music_base = os.path.join(BASE_PATH, MUSIC_FOLDER_NAME)
+    try:
+        base_path = resolve_base(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown base: '{base}'")
+    music_base = os.path.join(base_path, MUSIC_FOLDER_NAME)
     path = validate_path(music_base, directory)
     if not os.path.isdir(path):
         return {"error": "Directory not found"}
@@ -507,10 +538,18 @@ def start_transcription(
 # 4) Job metadata tracks readiness, errors, and downloadable outputs.
 
 
-def resolve_cutter_path(path: str, source: str, job_id: str = "") -> str:
+def resolve_cutter_path(
+    path: str, source: str, job_id: str = "", base_label: str = ""
+) -> str:
     """Resolve and validate a cutter file path based on source type."""
     if source == "server":
-        return validate_path(BASE_PATH, path)
+        try:
+            base_path = resolve_base(base_label)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail=f"Unknown base: '{base_label}'"
+            )
+        return validate_path(base_path, path)
     elif source == "upload":
         if not job_id:
             raise HTTPException(
@@ -545,9 +584,14 @@ _MEDIA_CONTENT_TYPES = {
 @app.get("/cutter/files")
 def list_cutter_files(
     directory: str = Query(..., max_length=500),
+    base: str = Query(..., max_length=200),
 ):
     require_feature("cutter")
-    path = validate_path(BASE_PATH, directory)
+    try:
+        base_path = resolve_base(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown base: '{base}'")
+    path = validate_path(base_path, directory)
     if not os.path.isdir(path):
         return {"files": []}
 
@@ -577,9 +621,10 @@ def cutter_probe(
     path: str = Query(..., max_length=500),
     source: str = Query(..., max_length=10),
     job_id: str = Query("", max_length=50),
+    base: str = Query("", max_length=200),
 ):
     require_feature("cutter")
-    resolved = resolve_cutter_path(path, source, job_id)
+    resolved = resolve_cutter_path(path, source, job_id, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
     try:
@@ -608,9 +653,10 @@ def cutter_waveform(
     source: str = Query(..., max_length=10),
     peaks: int = Query(2000, ge=100, le=10000),
     job_id: str = Query("", max_length=50),
+    base: str = Query("", max_length=200),
 ):
     require_feature("cutter")
-    resolved = resolve_cutter_path(path, source, job_id)
+    resolved = resolve_cutter_path(path, source, job_id, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
     try:
@@ -625,11 +671,12 @@ def cutter_thumbnails(
     source: str = Query(..., max_length=10),
     count: int = Query(30, ge=5, le=50),
     job_id: str = Query("", max_length=50),
+    base: str = Query("", max_length=200),
 ):
     require_feature("cutter")
     from fastapi.responses import Response
 
-    resolved = resolve_cutter_path(path, source, job_id)
+    resolved = resolve_cutter_path(path, source, job_id, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
     try:
@@ -657,11 +704,11 @@ def cutter_stream(
 ):
     require_feature("cutter")
     try:
-        source, job_id, path = decode_file_id(file_id)
+        source, job_id, base, path = decode_file_id(file_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    resolved = resolve_cutter_path(path, source, job_id)
+    resolved = resolve_cutter_path(path, source, job_id, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -812,11 +859,11 @@ def cutter_stream(
 def cutter_preview_status(file_id: str):
     require_feature("cutter")
     try:
-        source, job_id, path = decode_file_id(file_id)
+        source, job_id, base, path = decode_file_id(file_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    resolved = resolve_cutter_path(path, source, job_id)
+    resolved = resolve_cutter_path(path, source, job_id, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -930,7 +977,7 @@ async def cutter_upload(request: Request):
 
     return {
         "job_id": job_id,
-        "file_id": encode_file_id("upload", filename, job_id),
+        "file_id": encode_file_id("upload", filename, job_id, base=""),
         "filename": filename,
     }
 
@@ -939,14 +986,15 @@ async def cutter_upload(request: Request):
 def cutter_create_job(
     path: str = Form(..., max_length=500),
     source: str = Form("server", max_length=10),
+    base: str = Form("", max_length=200),
 ):
     """Create a job for a server-side file (no file copy, metadata only)."""
     require_feature("cutter")
-    resolved = resolve_cutter_path(path, source)
+    resolved = resolve_cutter_path(path, source, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
     filename = os.path.basename(resolved)
-    job_id = create_job(source, path, filename)
+    job_id = create_job(source, path, filename, base=base)
 
     try:
         probe = probe_file(resolved)
@@ -1051,8 +1099,13 @@ def cutter_save_to_source(job_id: str, filename: str):
 
     # Resolve the original file's directory
     original_path = meta.get("original_path", "")
+    base_label = meta.get("base", "")
     try:
-        resolved_original = validate_path(BASE_PATH, original_path)
+        base_path = resolve_base(base_label)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Cannot resolve original file path")
+    try:
+        resolved_original = validate_path(base_path, original_path)
     except HTTPException:
         raise HTTPException(status_code=400, detail="Cannot resolve original file path")
 
@@ -1086,6 +1139,7 @@ def cutter_cut(
     container: str = Form("", max_length=20),
     audio_tracks_json: str = Form("[]", alias="audio_tracks", max_length=5000),
     keep_quality: bool = Form(False),
+    base: str = Form("", max_length=200),
 ):
     require_feature("cutter")
 
@@ -1095,7 +1149,7 @@ def cutter_cut(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    resolved = resolve_cutter_path(path, source, job_id)
+    resolved = resolve_cutter_path(path, source, job_id, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
 

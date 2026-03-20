@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
+import type { DirectoryEntry } from '@/types'
 
 interface DirectorySelectProps {
-  directories: string[]
+  directories: DirectoryEntry[]
   value: string
-  onChange: (value: string) => void
+  base: string
+  onChange: (value: string, base: string) => void
   onRefresh: () => void
   isLoading: boolean
   disabled?: boolean
   color?: 'blue' | 'indigo' | 'rose' | 'emerald'
+  showBaseLabel?: boolean
 }
 
 const focusClasses = {
@@ -29,11 +32,13 @@ const selectedTextClasses = {
 export default function DirectorySelect({
   directories,
   value,
+  base,
   onChange,
   onRefresh,
   isLoading,
   disabled,
   color = 'blue',
+  showBaseLabel,
 }: DirectorySelectProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [focusedIndex, setFocusedIndex] = useState(-1)
@@ -62,8 +67,10 @@ export default function DirectorySelect({
     }
   }, [focusedIndex, isOpen])
 
-  const handleSelect = (dir: string) => {
-    onChange(dir)
+  const findIndex = () => directories.findIndex((d) => d.path === value && d.base === base)
+
+  const handleSelect = (dir: DirectoryEntry) => {
+    onChange(dir.path, dir.base)
     setIsOpen(false)
     triggerRef.current?.focus()
   }
@@ -80,7 +87,7 @@ export default function DirectorySelect({
         } else {
           setIsOpen(!isOpen)
           if (!isOpen) {
-            const idx = directories.indexOf(value)
+            const idx = findIndex()
             setFocusedIndex(idx >= 0 ? idx : 0)
           }
         }
@@ -89,7 +96,7 @@ export default function DirectorySelect({
         e.preventDefault()
         if (!isOpen) {
           setIsOpen(true)
-          const idx = directories.indexOf(value)
+          const idx = findIndex()
           setFocusedIndex(idx >= 0 ? idx : 0)
         } else {
           setFocusedIndex((prev) => Math.min(prev + 1, directories.length - 1))
@@ -132,7 +139,7 @@ export default function DirectorySelect({
               if (!disabled) {
                 setIsOpen(!isOpen)
                 if (!isOpen) {
-                  const idx = directories.indexOf(value)
+                  const idx = findIndex()
                   setFocusedIndex(idx >= 0 ? idx : 0)
                 }
               }
@@ -152,6 +159,9 @@ export default function DirectorySelect({
             >
               {displayValue}
             </span>
+            {showBaseLabel && value && base && (
+              <span className="mr-1 shrink-0 pl-3 text-xs text-[var(--text-tertiary)]">{base}</span>
+            )}
             {/* Caret */}
             <svg
               className={`pointer-events-none absolute right-[0.85rem] h-3 w-3 text-[var(--text-secondary)] transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
@@ -170,22 +180,27 @@ export default function DirectorySelect({
               role="listbox"
             >
               {directories.map((dir, i) => {
-                const isSelected = dir === value
+                const isSelected = dir.path === value && dir.base === base
                 const isFocused = i === focusedIndex
                 return (
                   <div
-                    key={dir}
+                    key={`${dir.base}/${dir.path}`}
                     role="option"
                     aria-selected={isSelected}
                     onClick={() => handleSelect(dir)}
                     onMouseEnter={() => setFocusedIndex(i)}
-                    className={`cursor-pointer truncate rounded-lg px-[0.75rem] py-[0.5rem] text-[0.84rem] transition-colors duration-100 ${
+                    className={`flex cursor-pointer items-center rounded-lg px-[0.75rem] py-[0.5rem] text-[0.84rem] transition-colors duration-100 ${
                       isSelected
                         ? `${selectedTextClasses[color]} font-medium`
                         : 'text-[var(--text-primary)]'
                     } ${isFocused ? 'bg-[var(--bg-glass-hover)]' : ''}`}
                   >
-                    {dir}
+                    <span className="truncate">{dir.path}</span>
+                    {showBaseLabel && (
+                      <span className="ml-auto shrink-0 pl-3 text-xs text-[var(--text-tertiary)]">
+                        {dir.base}
+                      </span>
+                    )}
                   </div>
                 )
               })}

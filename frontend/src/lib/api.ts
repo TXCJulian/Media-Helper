@@ -62,11 +62,12 @@ export async function fetchTranscriberHealth(): Promise<import('@/types').Transc
 
 export async function fetchMusicFiles(
   directory: string,
+  base: string,
 ): Promise<import('@/types').MusicFilesResponse> {
-  return fetchJson('/transcribe/files', { directory })
+  return fetchJson('/transcribe/files', { directory, base })
 }
 
-export async function fetchConfig(): Promise<{ features: string[] }> {
+export async function fetchConfig(): Promise<{ features: string[]; base_paths: string[] }> {
   return fetchJson('/config')
 }
 
@@ -120,10 +121,12 @@ export function fetchProbe(
   path: string,
   source: string,
   jobId = '',
+  base = '',
   timeoutMs = 60_000,
 ): Promise<import('@/types').ProbeResult> {
   const params: Record<string, string> = { path, source }
   if (jobId) params.job_id = jobId
+  if (base) params.base = base
   return fetchJson<import('@/types').ProbeResult>('/cutter/probe', params, timeoutMs)
 }
 
@@ -132,22 +135,28 @@ export function fetchWaveform(
   source: string,
   peaks?: number,
   jobId = '',
+  base = '',
   timeoutMs = 120_000,
 ): Promise<{ peaks: number[] }> {
   const params: Record<string, string> = { path, source }
   if (peaks) params.peaks = String(peaks)
   if (jobId) params.job_id = jobId
+  if (base) params.base = base
   return fetchJson<{ peaks: number[] }>('/cutter/waveform', params, timeoutMs)
 }
 
 export function fetchCutterFiles(
   directory: string,
+  base: string,
 ): Promise<{ files: import('@/types').CutterFileInfo[] }> {
-  return fetchJson<{ files: import('@/types').CutterFileInfo[] }>('/cutter/files', { directory })
+  return fetchJson<{ files: import('@/types').CutterFileInfo[] }>('/cutter/files', {
+    directory,
+    base,
+  })
 }
 
-export function createJob(path: string, source = 'server'): Promise<{ job_id: string }> {
-  return postForm<{ job_id: string }>('/cutter/jobs', { path, source })
+export function createJob(path: string, source = 'server', base = ''): Promise<{ job_id: string }> {
+  return postForm<{ job_id: string }>('/cutter/jobs', { path, source, base })
 }
 
 export function getStreamUrl(
@@ -174,9 +183,16 @@ export function fetchPreviewStatus(
   )
 }
 
-export function getThumbnailUrl(path: string, source: string, jobId = '', count = 30): string {
+export function getThumbnailUrl(
+  path: string,
+  source: string,
+  jobId = '',
+  count = 30,
+  base = '',
+): string {
   const params = new URLSearchParams({ path, source, count: String(count) })
   if (jobId) params.set('job_id', jobId)
+  if (base) params.set('base', base)
   return `/cutter/thumbnails?${params.toString()}`
 }
 
