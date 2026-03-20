@@ -46,6 +46,26 @@ def test_default_when_unset():
         assert config_mod.BASE_PATHS == ["/media"]
 
 
+def test_base_path_singular_fallback():
+    """When only BASE_PATH (singular) is set, it should be used as fallback."""
+    import importlib
+    import app.config as config_mod
+    with patch("dotenv.load_dotenv"), \
+         patch.dict(os.environ, {"BASE_PATH": "/mnt/nas"}, clear=True):
+        importlib.reload(config_mod)
+        assert config_mod.BASE_PATHS == ["/mnt/nas"]
+
+
+def test_base_paths_takes_precedence():
+    """When both BASE_PATHS and BASE_PATH are set, BASE_PATHS wins."""
+    import importlib
+    import app.config as config_mod
+    with patch("dotenv.load_dotenv"), \
+         patch.dict(os.environ, {"BASE_PATHS": "/media1,/media2", "BASE_PATH": "/old"}, clear=True):
+        importlib.reload(config_mod)
+        assert config_mod.BASE_PATHS == ["/media1", "/media2"]
+
+
 def test_resolve_base_valid():
     cfg = _reload_config(BASE_PATHS="/media1,/media2")
     assert cfg.resolve_base("media1") == "/media1"

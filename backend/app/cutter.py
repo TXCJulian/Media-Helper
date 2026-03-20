@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from app.config import resolve_base, CUTTER_JOBS_DIR, CUTTER_JOB_TTL
+from app.config import resolve_base, BASE_PATH_LABELS, CUTTER_JOBS_DIR, CUTTER_JOB_TTL
 from app.fs_utils import collision_safe_path
 
 logger = logging.getLogger(__name__)
@@ -1778,6 +1778,7 @@ def create_job(
         "original_name": original_name,
         "original_path": original_path,
         "base": base,
+        "schema_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": initial_status,
         "preview_transcoded": False,
@@ -1901,6 +1902,57 @@ def list_jobs() -> list[dict]:
             jobs.append(meta)
     jobs.sort(key=lambda j: j.get("created_at", ""), reverse=True)
     return jobs
+
+
+def _infer_base_label(meta: dict, default: str) -> str:
+    """Try to infer the correct base label from original_path; fall back to *default*."""
+    original_path = meta.get("original_path", "")
+    if original_path and os.path.isabs(original_path):
+        real_path = os.path.realpath(original_path)
+        for label, base_path in BASE_PATH_LABELS.items():
+            real_base = os.path.realpath(base_path)
+            if real_path == real_base or real_path.startswith(real_base + os.sep):
+                return label
+    return default
+
+
+def migrate_jobs() -> int:
+    """Migrate all job.json files to the current schema. Returns count of migrated jobs."""
+    if not os.path.isdir(CUTTER_JOBS_DIR):
+        return 0
+
+    default_base = next(iter(BASE_PATH_LABELS), "")
+    migrated = 0
+
+    for name in os.listdir(CUTTER_JOBS_DIR):
+        if not _UUID_RE.match(name):
+            continue
+        meta = load_job_metadata(name)
+        if not meta:
+            continue
+
+        version = meta.get("schema_version", 0)
+        if version >= 1:
+            continue
+
+        # --- v0 -> v1: add "base" field ---
+        if not meta.get("base"):
+            meta["base"] = _infer_base_label(meta, default_base)
+
+        meta["schema_version"] = 1
+
+        try:
+            save_job_metadata(name, meta)
+            migrated += 1
+            logger.debug("Migrated job %s to schema v1 (base=%s)", name, meta["base"])
+        except OSError:
+            logger.warning(
+                "Failed to write migrated metadata for job %s", name, exc_info=True
+            )
+
+    if migrated:
+        logger.info("Migrated %d cutter job(s) to current schema", migrated)
+    return migrated
 
 
 def delete_job(job_id: str) -> None:

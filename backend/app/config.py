@@ -7,7 +7,9 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", "dependencies", ".env"
 logger = logging.getLogger(__name__)
 
 # --- Base paths ---
-_base_paths_raw = os.getenv("BASE_PATHS", "/media")
+_base_paths_raw = os.getenv("BASE_PATHS") or os.getenv("BASE_PATH") or "/media"
+if not os.getenv("BASE_PATHS") and os.getenv("BASE_PATH"):
+    logger.warning("BASE_PATH is deprecated, use BASE_PATHS (comma-separated) instead")
 BASE_PATHS: list[str] = [p.strip() for p in _base_paths_raw.split(",") if p.strip()]
 if not BASE_PATHS:
     BASE_PATHS = ["/media"]

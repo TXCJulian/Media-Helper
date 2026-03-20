@@ -4,7 +4,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/React-61DAFB?style=flat&logo=react&logoColor=black)](https://react.dev/)
 
-*A media management tool for renaming TV shows, music files, transcribing lyrics, and cutting media — with a modern web interface.*
+*A media management tool for renaming TV shows, music files, transcribing lyrics, and cutting media*
 
 ## Screenshots
 
@@ -140,7 +140,7 @@ Browser                    Frontend Container               Backend Container
   |    (SSE stream)               |--[7] proxy_pass (no buffering)-->|
   |                               |    http://renamer-backend:3332   |
   |                               |                                  |---> lyric-transcriber:3334
-  |<--[8] SSE events-------------|<---[9] SSE stream----------------|     (GPU service)
+  |<--[8] SSE events--------------|<---[9] SSE stream----------------|     (GPU service)
 ```
 
 ### Benefits
@@ -209,7 +209,7 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `BASE_PATH` | Base path to media in container | `/media` |
+| `BASE_PATHS` | Base path(s) to media in container (CSV) | `/media` |
 | `TVSHOW_FOLDER_NAME` | Name of TV shows folder | `TV Shows` |
 | `MUSIC_FOLDER_NAME` | Name of music folder | `Music` |
 | `TMDB_API_KEY` | TMDB API key (**required**) | - |
@@ -370,27 +370,27 @@ docker buildx build --platform linux/amd64,linux/arm64 -t bosscock/media-renamer
 Media-Helper/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py               # FastAPI app + all routes
-│   │   ├── config.py             # Configuration + env vars
-│   │   ├── rename_episodes.py    # TMDB episode matching + rename
-│   │   ├── rename_music.py       # Metadata-based music rename
-│   │   ├── transcribe_lyrics.py  # Lyrics transcription (SSE proxy)
-│   │   ├── cutter.py             # Media cutting (ffmpeg, jobs, preview)
-│   │   ├── get_dirs.py           # Directory listing (cached)
-│   │   └── fs_utils.py           # Filesystem utilities (fsync)
-│   ├── tests/                    # pytest test suite
+│   │   ├── main.py                     # FastAPI app + all routes
+│   │   ├── config.py                   # Configuration + env vars
+│   │   ├── rename_episodes.py          # TMDB episode matching + rename
+│   │   ├── rename_music.py             # Metadata-based music rename
+│   │   ├── transcribe_lyrics.py        # Lyrics transcription (SSE proxy)
+│   │   ├── cutter.py                   # Media cutting (ffmpeg, jobs, preview)
+│   │   ├── get_dirs.py                 # Directory listing (cached)
+│   │   └── fs_utils.py                 # Filesystem utilities (fsync)
+│   ├── tests/                          # pytest test suite
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx               # Main app + routing
+│   │   ├── App.tsx                     # Main app + routing
 │   │   ├── components/
-│   │   │   ├── Landing.tsx       # Home page with module cards
-│   │   │   ├── EpisodePanel.tsx  # TV show renaming panel
-│   │   │   ├── MusicPanel.tsx    # Music renaming panel
-│   │   │   ├── LyricsPanel.tsx   # Lyrics transcription panel
-│   │   │   ├── CutterPanel.tsx   # Media cutting panel
-│   │   │   ├── cutter/           # Cutter sub-components
+│   │   │   ├── Landing.tsx             # Home page with module cards
+│   │   │   ├── EpisodePanel.tsx        # TV show renaming panel
+│   │   │   ├── MusicPanel.tsx          # Music renaming panel
+│   │   │   ├── LyricsPanel.tsx         # Lyrics transcription panel
+│   │   │   ├── CutterPanel.tsx         # Media cutting panel
+│   │   │   ├── cutter/                 # Cutter sub-components
 │   │   │   │   ├── MediaPlayer.tsx
 │   │   │   │   ├── TrimControls.tsx
 │   │   │   │   ├── WaveformBar.tsx
@@ -399,24 +399,24 @@ Media-Helper/
 │   │   │   │   ├── AudioTrackSelect.tsx
 │   │   │   │   ├── TrackModeSelect.tsx
 │   │   │   │   └── JobManager.tsx
-│   │   │   ├── PanelLayout.tsx   # Shared panel layout
-│   │   │   ├── LogPanel.tsx      # Output log display
+│   │   │   ├── PanelLayout.tsx         # Shared panel layout
+│   │   │   ├── LogPanel.tsx            # Output log display
 │   │   │   ├── ErrorBoundary.tsx
-│   │   │   └── ui/              # Shared UI components
+│   │   │   └── ui/                     # Shared UI components
 │   │   │       ├── DirectorySelect.tsx
 │   │   │       ├── FormSection.tsx
 │   │   │       ├── SegmentedControl.tsx
 │   │   │       └── ToggleSwitch.tsx
 │   │   ├── lib/
-│   │   │   ├── api.ts            # API fetch utilities
-│   │   │   └── sse.ts            # Server-Sent Events client
-│   │   └── __tests__/            # Vitest test suite
-│   ├── public/fonts/             # Self-hosted Geist + JetBrains Mono
-│   ├── nginx-app.conf            # Nginx reverse proxy config
+│   │   │   ├── api.ts                  # API fetch utilities
+│   │   │   └── sse.ts                  # Server-Sent Events client
+│   │   └── __tests__/                  # Vitest test suite
+│   ├── public/fonts/                   # Self-hosted Geist + JetBrains Mono
+│   ├── nginx-app.conf                  # Nginx reverse proxy config
 │   ├── Dockerfile
 │   └── package.json
-├── docker-compose.yml            # Local development
-├── deploy.yml                    # Production deployment
+├── docker-compose.yml                  # Local development
+├── deploy.yml                          # Production deployment
 └── README.md
 ```
 

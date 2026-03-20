@@ -148,6 +148,9 @@ async def lifespan(app: FastAPI):
     cleanup_task = None
     if "cutter" in ENABLED_FEATURES_SET:
         os.makedirs(CUTTER_JOBS_DIR, exist_ok=True)
+        from app.cutter import migrate_jobs
+
+        migrate_jobs()
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
             logger.error("Cutter feature requires ffmpeg and ffprobe on PATH")
         cleanup_task = asyncio.create_task(_cleanup_cutter_jobs())

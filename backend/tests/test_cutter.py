@@ -589,3 +589,113 @@ def test_cut_file_backwards_compat_no_audio_tracks(tmp_path, monkeypatch):
 
     cmd = captured_cmd["cmd"]
     assert "-c" in cmd and cmd[cmd.index("-c") + 1] == "copy"
+
+
+# ---------------------------------------------------------------------------
+# Job migration tests
+# ---------------------------------------------------------------------------
+
+
+def _write_job_json(jobs_dir, job_id, meta):
+    """Helper: write a job.json into a UUID-named subdirectory."""
+    job_dir = jobs_dir / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    (job_dir / "job.json").write_text(json.dumps(meta))
+
+
+def test_migrate_jobs_adds_base_to_old_job(tmp_path, monkeypatch):
+    job_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    _write_job_json(tmp_path, job_id, {
+        "job_id": job_id,
+        "source": "server",
+        "original_name": "clip.mkv",
+        "original_path": "Movies/clip.mkv",
+        "status": "ready",
+    })
+
+    monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
+    monkeypatch.setattr(cutter, "BASE_PATH_LABELS", {"media": "/media"})
+
+    count = cutter.migrate_jobs()
+
+    assert count == 1
+    meta = json.loads((tmp_path / job_id / "job.json").read_text())
+    assert meta["base"] == "media"
+    assert meta["schema_version"] == 1
+
+
+def test_migrate_jobs_infers_base_from_absolute_path(tmp_path, monkeypatch):
+    # Use real temp dirs so os.path.realpath works cross-platform
+    nas1 = tmp_path / "nas1"
+    nas2 = tmp_path / "nas2"
+    nas1.mkdir()
+    nas2.mkdir()
+    (nas2 / "Movies").mkdir()
+
+    job_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    jobs_dir = tmp_path / "jobs"
+    jobs_dir.mkdir()
+    _write_job_json(jobs_dir, job_id, {
+        "job_id": job_id,
+        "source": "server",
+        "original_name": "clip.mkv",
+        "original_path": str(nas2 / "Movies" / "clip.mkv"),
+        "status": "ready",
+    })
+
+    monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(jobs_dir))
+    monkeypatch.setattr(
+        cutter, "BASE_PATH_LABELS",
+        {"nas1": str(nas1), "nas2": str(nas2)},
+    )
+
+    cutter.migrate_jobs()
+
+    meta = json.loads((jobs_dir / job_id / "job.json").read_text())
+    assert meta["base"] == "nas2"
+
+
+def test_migrate_jobs_skips_already_migrated(tmp_path, monkeypatch):
+    job_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    _write_job_json(tmp_path, job_id, {
+        "job_id": job_id,
+        "source": "server",
+        "original_name": "clip.mkv",
+        "original_path": "clip.mkv",
+        "base": "media",
+        "schema_version": 1,
+        "status": "ready",
+    })
+
+    monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
+    monkeypatch.setattr(cutter, "BASE_PATH_LABELS", {"media": "/media"})
+
+    count = cutter.migrate_jobs()
+    assert count == 0
+
+
+def test_migrate_jobs_survives_corrupt_json(tmp_path, monkeypatch):
+    job_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    job_dir = tmp_path / job_id
+    job_dir.mkdir(parents=True)
+    (job_dir / "job.json").write_text("{corrupt json!!!")
+
+    monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
+    monkeypatch.setattr(cutter, "BASE_PATH_LABELS", {"media": "/media"})
+
+    count = cutter.migrate_jobs()
+    assert count == 0
+
+
+def test_create_job_includes_schema_version(tmp_path, monkeypatch):
+    monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
+
+    job_id = cutter.create_job(
+        source="upload",
+        original_name="clip.mp4",
+        original_path="clip.mp4",
+        base="media",
+    )
+
+    meta = cutter.load_job_metadata(job_id)
+    assert meta["schema_version"] == 1
