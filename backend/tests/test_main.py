@@ -369,7 +369,7 @@ class TestCutterValidation:
         assert resp.status_code == 422
         assert "out_point" in resp.json()["detail"]
 
-    def test_resolve_cutter_path_blocks_server_traversal(self, tmp_media_dir, base_label, monkeypatch):
+    def test_resolve_cutter_path_blocks_server_traversal(self, client, base_label):
         import app.main as main_mod
         from fastapi import HTTPException
 

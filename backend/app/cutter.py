@@ -412,15 +412,19 @@ def transcode_for_preview(
     info = probe_file(filepath)
     has_video = info.get("video_codec") is not None
 
-    # Determine audio codec for the selected stream
+    # Determine audio codec and channel count for the selected stream
     audio_streams = info.get("audio_streams", [])
+    audio_channels = 0
     if audio_stream_index is not None and audio_streams:
         sel = next((s for s in audio_streams if s["index"] == audio_stream_index), None)
         audio_codec = (
             sel["codec"] if sel else info.get("audio_codec", "unknown")
         ).lower()
+        audio_channels = sel.get("channels", 0) if sel else 0
     else:
         audio_codec = info.get("audio_codec", "unknown").lower()
+        first_audio = audio_streams[0] if audio_streams else None
+        audio_channels = first_audio.get("channels", 0) if first_audio else 0
 
     cmd = ["ffmpeg", "-nostdin", "-loglevel", "warning", "-i", filepath]
 
@@ -458,6 +462,10 @@ def transcode_for_preview(
         cmd += ["-c:a", "copy"]
     else:
         cmd += ["-c:a", "aac", "-b:a", "192k"]
+        # AAC doesn't support height/object channels (e.g. 5.1.2 Atmos
+        # layouts), so downmix to stereo when channels > 6.
+        if audio_channels > 6:
+            cmd += ["-ac", "2"]
 
     cmd += [
         "-sn",  # Drop subtitles (ASS/SSA not MP4-compatible)
@@ -816,6 +824,11 @@ def get_or_transcode_preview(
                     cmd += [f"-c:a:{i}", "copy"]
                 else:
                     cmd += [f"-c:a:{i}", "aac", f"-b:a:{i}", "192k"]
+                    # AAC doesn't support height/object channels (e.g. 5.1.2
+                    # Atmos layouts), so downmix to stereo when channels > 6.
+                    channels = stream.get("channels", 0)
+                    if channels > 6:
+                        cmd += [f"-ac:a:{i}", "2"]
 
             if not audio_streams:
                 audio_codec = info.get("audio_codec", "unknown").lower()
