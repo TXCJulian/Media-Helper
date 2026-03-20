@@ -1773,12 +1773,12 @@ def create_job(
     os.makedirs(os.path.join(job_dir, "output"), exist_ok=True)
 
     metadata = {
+        "schema_version": 1,
         "job_id": job_id,
         "source": source,
         "original_name": original_name,
         "original_path": original_path,
         "base": base,
-        "schema_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": initial_status,
         "preview_transcoded": False,
@@ -1940,6 +1940,8 @@ def migrate_jobs() -> int:
             meta["base"] = _infer_base_label(meta, default_base)
 
         meta["schema_version"] = 1
+        # Ensure schema_version appears first in the JSON output
+        meta = {"schema_version": meta.pop("schema_version"), **meta}
 
         try:
             save_job_metadata(name, meta)
