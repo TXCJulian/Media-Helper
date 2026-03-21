@@ -1720,7 +1720,7 @@ def start_background_transcode(
     # Mark job as transcoding while the preview is being built
     _jmeta = load_job_metadata(job_id)
     if _jmeta and _jmeta.get("status") == "ready":
-        _jmeta["status"] = "transcoding"
+        _jmeta["status"] = "full_transcoding"
         _jmeta["preview_transcoded"] = False
         _jmeta.pop("transcode_error", None)
         save_job_metadata(job_id, _jmeta)
@@ -1732,7 +1732,7 @@ def start_background_transcode(
             # Transcode succeeded — restore ready status
             _meta = load_job_metadata(job_id)
             if _meta:
-                if _meta.get("status") == "transcoding":
+                if _meta.get("status") == "full_transcoding":
                     _meta["status"] = "ready"
                 _meta["preview_transcoded"] = True
                 _meta.pop("transcode_error", None)
@@ -1753,7 +1753,7 @@ def start_background_transcode(
             # Restore ready status but record the error for the UI
             _meta = load_job_metadata(job_id)
             if _meta:
-                if _meta.get("status") == "transcoding":
+                if _meta.get("status") == "full_transcoding":
                     _meta["status"] = "ready"
                 _meta["preview_transcoded"] = False
                 _meta["transcode_error"] = str(exc)
@@ -1811,7 +1811,7 @@ def start_background_audio_transcode(
     # Mark job as transcoding while audio is being built
     _jmeta = load_job_metadata(job_id)
     if _jmeta and _jmeta.get("status") == "ready":
-        _jmeta["status"] = "transcoding"
+        _jmeta["status"] = "audio_transcoding"
         _jmeta.pop("transcode_error", None)
         save_job_metadata(job_id, _jmeta)
 
@@ -1821,7 +1821,7 @@ def start_background_audio_transcode(
             transcode_audio_track_from_source(filepath, audio_stream_index, job_id)
             # Restore ready status on success
             _meta = load_job_metadata(job_id)
-            if _meta and _meta.get("status") == "transcoding":
+            if _meta and _meta.get("status") == "audio_transcoding":
                 _meta["status"] = "ready"
                 _meta.pop("transcode_error", None)
                 save_job_metadata(job_id, _meta)
@@ -1842,7 +1842,7 @@ def start_background_audio_transcode(
             # Restore ready status but record the error
             _meta = load_job_metadata(job_id)
             if _meta:
-                if _meta.get("status") == "transcoding":
+                if _meta.get("status") == "audio_transcoding":
                     _meta["status"] = "ready"
                 _meta["transcode_error"] = str(exc)
                 save_job_metadata(job_id, _meta)

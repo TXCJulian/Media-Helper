@@ -17,7 +17,8 @@ const STATUS_COLORS: Record<string, string> = {
   uploading: 'bg-cyan-400/15 text-cyan-300',
   ready: 'bg-white/10 text-white/50',
   cutting: 'bg-amber-400/15 text-amber-300',
-  transcoding: 'bg-blue-400/15 text-blue-300',
+  full_transcoding: 'bg-blue-400/15 text-blue-300',
+  audio_transcoding: 'bg-blue-400/15 text-blue-300',
   done: 'bg-emerald-400/15 text-emerald-300',
   error: 'bg-red-400/15 text-red-300',
 }
