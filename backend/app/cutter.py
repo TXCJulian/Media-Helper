@@ -1097,6 +1097,8 @@ def get_track_preview(
                 f"0:a:{rel}",
                 "-c",
                 "copy",
+                "-movflags",
+                "frag_keyframe+empty_moov",
                 "-f",
                 "mp4",
                 tmp_path,

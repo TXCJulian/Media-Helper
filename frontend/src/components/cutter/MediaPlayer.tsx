@@ -121,11 +121,8 @@ export default function MediaPlayer({
   const [isMediaReady, setIsMediaReady] = useState(!needsTranscoding)
   const [loadedAspectRatio, setLoadedAspectRatio] = useState<string | null>(null)
   // Backend is still producing the file — don't let the browser request it yet
-  const isTranscodeRunning =
-    needsTranscoding && transcodeState != null && transcodeState !== 'done'
-  const isTranscoding =
-    needsTranscoding &&
-    (!isMediaReady || isTranscodeRunning)
+  const isTranscodeRunning = needsTranscoding && transcodeState != null && transcodeState !== 'done'
+  const isTranscoding = needsTranscoding && (!isMediaReady || isTranscodeRunning)
   const fallbackAspectRatio =
     sourceAspectRatio && sourceAspectRatio.trim().length > 0
       ? sourceAspectRatio
