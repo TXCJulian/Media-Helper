@@ -621,7 +621,7 @@ def test_migrate_jobs_adds_base_to_old_job(tmp_path, monkeypatch):
     assert count == 1
     meta = json.loads((tmp_path / job_id / "job.json").read_text())
     assert meta["base"] == "media"
-    assert meta["schema_version"] == 1
+    assert meta["schema_version"] == 2
 
 
 def test_migrate_jobs_infers_base_from_absolute_path(tmp_path, monkeypatch):
@@ -663,7 +663,7 @@ def test_migrate_jobs_skips_already_migrated(tmp_path, monkeypatch):
         "original_name": "clip.mkv",
         "original_path": "clip.mkv",
         "base": "media",
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "ready",
     })
 
@@ -698,4 +698,4 @@ def test_create_job_includes_schema_version(tmp_path, monkeypatch):
     )
 
     meta = cutter.load_job_metadata(job_id)
-    assert meta["schema_version"] == 1
+    assert meta["schema_version"] == 2

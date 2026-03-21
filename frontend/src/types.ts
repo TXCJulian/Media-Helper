@@ -159,6 +159,7 @@ export interface CutterJob {
     | 'ready'
     | 'full_transcoding'
     | 'audio_transcoding'
+    | 'transcoding'
     | 'cutting'
     | 'done'
     | 'error'

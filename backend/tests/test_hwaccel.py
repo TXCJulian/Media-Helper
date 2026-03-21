@@ -246,7 +246,7 @@ class TestGetHwaccelInputArgs:
             mock_run.side_effect = _make_run_side_effect(_QSV_ENCODERS_OUTPUT)
             hwaccel.detect_gpu()
         args = hwaccel.get_hwaccel_input_args()
-        assert args == ["-hwaccel", "qsv"]
+        assert args == ["-hwaccel", "qsv", "-hwaccel_output_format", "qsv"]
 
     def test_off_returns_empty(self):
         hwaccel = _reload_hwaccel("off")
@@ -307,7 +307,8 @@ class TestBuildVideoEncodeArgs:
         )
         assert "h264_qsv" in args
         assert "-global_quality" in args
-        assert "nv12" in args
+        # QSV uses hwaccel_output_format, no explicit pix_fmt
+        assert "-pix_fmt" not in args
 
     def test_amd_amf_args(self):
         hwaccel = _reload_hwaccel("")

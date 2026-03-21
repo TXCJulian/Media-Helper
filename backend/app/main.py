@@ -786,8 +786,8 @@ def cutter_stream(
                 status_code=409,
                 detail=(
                     "Audio preview not ready yet — poll "
-                    "/cutter/preview-status?audio_transcode_stream="
-                    f"{audio_stream} and retry"
+                    f"/cutter/preview-status/{file_id}"
+                    f"?audio_transcode_stream={audio_stream} and retry"
                 ),
             )
         resolved = audio_path
@@ -931,13 +931,16 @@ def cutter_preview_status(
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Audio-only transcode status — uses separate key, bypasses master preview check
+    # Audio-only transcode status — uses separate key, bypasses master preview check.
+    # Also kicks off the transcode if not already started, so polling alone is
+    # sufficient to start the work (matches master preview behavior).
     if audio_transcode_stream is not None:
         if not job_id:
             raise HTTPException(
                 status_code=400,
                 detail="job_id required for audio transcode status",
             )
+        start_background_audio_transcode(resolved, audio_transcode_stream, job_id)
         return get_audio_transcode_status(resolved, job_id, audio_transcode_stream)
 
     def _done_status() -> dict:

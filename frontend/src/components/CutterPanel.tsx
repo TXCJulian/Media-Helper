@@ -638,7 +638,7 @@ export default function CutterPanel({
     // playback may fail. Show a clear warning even if frontend heuristics
     // did not classify this file as problematic.
     if (probe.needs_transcoding && transcodeMode === 'off') {
-      return 'This file is likely not browser-compatible in original playback mode. Enable Transcoded Preview for reliable playback.'
+      return 'This file is likely not browser-compatible in original playback mode. Use a transcode preview mode ("Full Transcode" or "Transcode Audio Only") for reliable playback.'
     }
 
     return null

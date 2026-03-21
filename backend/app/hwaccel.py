@@ -81,7 +81,7 @@ _QUALITY_PARAMS: dict[str, dict] = {
         "crf_flag": "-global_quality",
         "preset_flag": "-preset",
         "preview_preset": "veryfast",
-        "pix_fmt": "nv12",
+        "pix_fmt": None,  # QSV uses hwaccel_output_format; no software pix_fmt needed
     },
     "amd": {
         "crf_flag": None,  # AMF uses -rc/-qp_i/-qp_p instead
@@ -102,7 +102,7 @@ _QUALITY_PARAMS: dict[str, dict] = {
 # ---------------------------------------------------------------------------
 _HWACCEL_INPUT_ARGS: dict[str, list[str]] = {
     "nvidia": ["-hwaccel", "cuda"],
-    "intel": ["-hwaccel", "qsv"],
+    "intel": ["-hwaccel", "qsv", "-hwaccel_output_format", "qsv"],
     "amd": ["-hwaccel", "auto"],
     "vaapi": ["-hwaccel", "vaapi", "-vaapi_device", config.VAAPI_DEVICE],
     "off": [],
@@ -213,7 +213,7 @@ def detect_gpu() -> None:
                 )
                 return
             else:
-                logger.warning(
+                logger.debug(
                     "GPU encoder %s reported available but probe failed, skipping %s",
                     min_enc,
                     be,

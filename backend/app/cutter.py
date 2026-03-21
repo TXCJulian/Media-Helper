@@ -2271,9 +2271,12 @@ def cut_file(
         elif codec:
             encoder = _CODEC_TO_ENCODER.get(codec, codec)
             if encoder in _VIDEO_ENCODERS:
-                cmd += ["-c:v", resolve_video_encoder(encoder)]
-                if keep_quality and source_video_bitrate and source_video_bitrate > 0:
-                    cmd += ["-b:v", str(source_video_bitrate)]
+                bitrate_str = (
+                    str(source_video_bitrate)
+                    if keep_quality and source_video_bitrate and source_video_bitrate > 0
+                    else None
+                )
+                cmd += build_video_encode_args(encoder, bitrate=bitrate_str)
 
         bitrates = source_audio_bitrates or {}
         for out_idx, track in enumerate(included_tracks):
@@ -2300,7 +2303,7 @@ def cut_file(
             if codec:
                 encoder = _CODEC_TO_ENCODER.get(codec, codec)
                 if encoder in _VIDEO_ENCODERS:
-                    cmd += ["-c:v", resolve_video_encoder(encoder)]
+                    cmd += build_video_encode_args(encoder)
                     # Audio codec for video re-encode: explicit or copy
                     if audio_codec:
                         a_enc = _CODEC_TO_ENCODER.get(audio_codec, audio_codec)
@@ -2481,7 +2484,7 @@ def create_job(
     os.makedirs(os.path.join(job_dir, "output"), exist_ok=True)
 
     metadata = {
-        "schema_version": 1,
+        "schema_version": 2,
         "job_id": job_id,
         "source": source,
         "original_name": original_name,
@@ -2641,21 +2644,26 @@ def migrate_jobs() -> int:
             continue
 
         version = meta.get("schema_version", 0)
-        if version >= 1:
+        if version >= 2:
             continue
 
         # --- v0 -> v1: add "base" field ---
-        if not meta.get("base"):
-            meta["base"] = _infer_base_label(meta, default_base)
+        if version < 1:
+            if not meta.get("base"):
+                meta["base"] = _infer_base_label(meta, default_base)
 
-        meta["schema_version"] = 1
+        # --- v1 -> v2: rename "transcoding" status to "full_transcoding" ---
+        if meta.get("status") == "transcoding":
+            meta["status"] = "full_transcoding"
+
+        meta["schema_version"] = 2
         # Ensure schema_version appears first in the JSON output
         meta = {"schema_version": meta.pop("schema_version"), **meta}
 
         try:
             save_job_metadata(name, meta)
             migrated += 1
-            logger.debug("Migrated job %s to schema v1 (base=%s)", name, meta["base"])
+            logger.debug("Migrated job %s to schema v%d", name, meta["schema_version"])
         except OSError:
             logger.warning(
                 "Failed to write migrated metadata for job %s", name, exc_info=True
