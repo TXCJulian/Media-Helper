@@ -7,6 +7,13 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
+# Aliases
+# ---------------------------------------------------------------------------
+
+CompletedResult = subprocess.CompletedProcess
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -55,18 +62,18 @@ def _make_run_side_effect(encoders_output: str, probe_succeeds: bool = True):
 
     def side_effect(cmd, **kwargs):
         if "-encoders" in cmd:
-            return subprocess.CompletedResult(
+            return CompletedResult(
                 args=cmd, returncode=0, stdout=encoders_output, stderr=""
             )
         # Probe encode (color source test)
         if "color=" in str(cmd):
-            return subprocess.CompletedResult(
+            return CompletedResult(
                 args=cmd,
                 returncode=0 if probe_succeeds else 1,
                 stdout=b"",
                 stderr=b"",
             )
-        return subprocess.CompletedResult(args=cmd, returncode=0, stdout="", stderr="")
+        return CompletedResult(args=cmd, returncode=0, stdout="", stderr="")
 
     return side_effect
 
@@ -86,12 +93,6 @@ def _reload_hwaccel(hwaccel_value: str = ""):
     # stop() will have the patch cleaned up by the next reload anyway.
     hwaccel_mod._test_hwaccel_patcher = patcher
     return hwaccel_mod
-
-
-# ---------------------------------------------------------------------------
-# subprocess.CompletedResult is actually CompletedProcess — alias for clarity
-# ---------------------------------------------------------------------------
-subprocess.CompletedResult = subprocess.CompletedProcess
 
 
 # ---------------------------------------------------------------------------
