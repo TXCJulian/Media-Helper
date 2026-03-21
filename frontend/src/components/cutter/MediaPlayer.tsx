@@ -545,8 +545,8 @@ export default function MediaPlayer({
           {isDualMode && (
             <audio
               ref={audioRef}
-              src={audioUrl}
-              preload="auto"
+              src={isTranscodeRunning ? undefined : audioUrl}
+              preload="none"
               style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }}
             />
           )}

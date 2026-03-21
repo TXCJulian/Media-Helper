@@ -80,9 +80,13 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 - Stream copy mode for lossless, instant cuts
 - Server file browser or direct file upload (up to 50 GB)
 - Automatic browser preview transcoding for non-compatible formats
+- Three preview modes for problematic files: original playback, transcode audio only, and full transcode
+- Non-blocking preview generation workflow (status polling + retry)
+- Per-track preview caching for audio-only transcode artifacts
 - Job-based workflow with persistent state and output downloads
 - Save output files back to the source directory
 - Real-time cut progress streaming via SSE
+- Automatic GPU encoder usage for preview/cut re-encoding when supported (with safe CPU fallback)
 - Supported formats: MP4, MKV, MOV, AVI, WebM, MP3, FLAC, M4A, WAV, AAC, AC3, DTS, Opus, OGG, AIFF
 
 ### General
@@ -105,6 +109,7 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 - TMDB API (The Movie Database)
 - Mutagen (audio metadata)
 - ffmpeg (media cutting/transcoding)
+- Auto-detected FFmpeg hardware acceleration for cutter encoding (NVENC/QSV/AMF/VAAPI)
 - Watchdog (filesystem monitoring)
 
 **Frontend:**
@@ -120,6 +125,7 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 - Nginx reverse proxy
 - Bridge network for service communication
 - Optional: NVIDIA GPU service for lyrics transcription
+- Cutter backend container uses Jellyfin FFmpeg build on amd64 for broader HW encoder availability
 
 ### Request Flow
 
@@ -157,6 +163,7 @@ Browser                    Frontend Container               Backend Container
 - **Docker Compose** (Version 2.0+)
 - **TMDB API Key** ([free at themoviedb.org](https://www.themoviedb.org/settings/api))
 - **Media directory** with read/write permissions
+- **Optional**: Hardware-acceleration compatible APU/GPU (for ffmpeg in cutter section)
 - **Optional**: NVIDIA GPU + CUDA drivers (for lyrics transcription)
 
 ## Installation
@@ -223,6 +230,8 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `CUTTER_JOBS_DIR` | Directory for cutter job data | `/tmp/cutter-jobs` |
 | `CUTTER_JOB_TTL` | Job expiry in seconds | `86400` |
 | `CUTTER_MAX_DIRECT_REMUX_BYTES` | Max file size for direct remux preview | `1073741824` (1 GB) |
+| `HWACCEL` | Cutter hardware acceleration mode (`off` disables; otherwise auto-detect) | auto-detect |
+| `VAAPI_DEVICE` | VAAPI render node path (used for VAAPI backend) | `/dev/dri/renderD128` |
 
 ### Directory Structure
 
@@ -300,8 +309,8 @@ The application expects the following structure in your media directory:
 | `GET` | `/cutter/probe` | Probe file metadata with ffprobe (query: `path`, `source`, `job_id`) |
 | `GET` | `/cutter/waveform` | Generate audio waveform data (query: `path`, `source`, `job_id`, `peaks`) |
 | `GET` | `/cutter/thumbnails` | Generate video thumbnail strip (query: `path`, `source`, `job_id`, `count`) |
-| `GET` | `/cutter/stream/{file_id}` | Stream/preview a media file in the browser |
-| `GET` | `/cutter/preview-status/{file_id}` | Check preview transcode progress |
+| `GET` | `/cutter/stream/{file_id}` | Stream/preview media (query: `audio_stream`, `transcode`, `audio_only`, `transcode_audio_only`) |
+| `GET` | `/cutter/preview-status/{file_id}` | Check preview transcode progress (query: `audio_transcode_stream`) |
 | `POST` | `/cutter/upload` | Upload a file to a cutter job |
 | `POST` | `/cutter/jobs` | Create a new cutter job |
 | `GET` | `/cutter/jobs` | List all cutter jobs |
@@ -377,9 +386,10 @@ Media-Helper/
 │   │   ├── rename_music.py             # Metadata-based music rename
 │   │   ├── transcribe_lyrics.py        # Lyrics transcription (SSE proxy)
 │   │   ├── cutter.py                   # Media cutting (ffmpeg, jobs, preview)
+│   │   ├── hwaccel.py                  # GPU encoder detection + ffmpeg arg mapping
 │   │   ├── get_dirs.py                 # Directory listing (cached)
 │   │   └── fs_utils.py                 # Filesystem utilities (fsync)
-│   ├── tests/                          # pytest test suite
+│   ├── tests/                          # pytest test suite (incl. hwaccel + audio-only transcode)
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── frontend/
@@ -458,7 +468,22 @@ docker compose logs renamer-backend
 # 1. Missing TMDB_API_KEY
 # 2. Invalid media path in volume
 # 3. Missing permissions for /media
+# 4. ffmpeg/ffprobe unavailable in backend container
 ```
+
+### Cutter preview stuck in loading/transcoding state
+
+1. Check preview status directly: `curl "http://localhost:3332/cutter/preview-status/<file_id>"`
+2. For audio-only transcode mode, include stream index: `curl "http://localhost:3332/cutter/preview-status/<file_id>?audio_transcode_stream=1"`
+3. A `409` from `/cutter/stream/<file_id>` means preview generation is still in progress (expected); keep polling status and retry stream request.
+4. Inspect backend logs for ffmpeg/hwaccel errors: `docker compose logs renamer-backend`
+
+### Cutter hardware acceleration not used
+
+1. Ensure GPU devices are passed through in compose/deploy config (NVIDIA or `/dev/dri` for Intel/AMD/VAAPI).
+2. Leave `HWACCEL` unset for auto-detection, or set `HWACCEL=off` to force CPU mode.
+3. If using VAAPI, verify `VAAPI_DEVICE` points to a valid render node (default `/dev/dri/renderD128`).
+4. Check startup logs for detected backend and available encoders.
 
 ### Frontend cannot reach backend (502 Bad Gateway)
 

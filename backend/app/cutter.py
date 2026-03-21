@@ -2093,6 +2093,7 @@ def get_audio_transcode_status(
                 "ready": True,
                 "percent": 100.0,
                 "eta_seconds": 0.0,
+                "elapsed_seconds": status.get("elapsed_seconds", 0.0),
                 "message": "",
                 "updated_at": time.time(),
             }
