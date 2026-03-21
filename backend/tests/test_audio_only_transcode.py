@@ -51,10 +51,12 @@ class TestTranscodeAudioTrackFromSource:
     @patch("app.cutter._end_job_operation")
     @patch("app.cutter._register_job_process")
     @patch("app.cutter._unregister_job_process")
+    @patch("app.cutter.get_or_create_audio_master")
     def test_produces_cached_audio_file(
-        self, mock_unreg, mock_reg, mock_end, mock_begin,
+        self, mock_audio_master, mock_unreg, mock_reg, mock_end, mock_begin,
         mock_replace, mock_makedirs, mock_getmtime, mock_isfile, mock_popen, mock_probe,
     ):
+        mock_audio_master.return_value = ("/tmp/audio_master.mka", False)
         mock_probe.return_value = {
             "duration": 120.0,
             "audio_streams": [
@@ -81,8 +83,11 @@ class TestTranscodeAudioTrackFromSource:
         assert "srcaudio1" in result
         assert result.endswith(".mp4")
 
-        # Verify FFmpeg was called with correct args
+        # Verify FFmpeg was called with audio master as input (not source)
         call_args = mock_popen.call_args[0][0]
+        assert "-i" in call_args
+        input_idx = call_args.index("-i")
+        assert call_args[input_idx + 1] == "/tmp/audio_master.mka"
         assert "-vn" in call_args
         assert "-c:a" in call_args
         assert "aac" in call_args
