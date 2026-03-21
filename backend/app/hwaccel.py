@@ -39,7 +39,7 @@ _GPU_ENCODER_MAP: dict[str, dict[str, str]] = {
         "intel": "vp9_qsv",
         "vaapi": "vp9_vaapi",
     },
-    "libaom-av1": {
+    "libsvtav1": {
         "nvidia": "av1_nvenc",
         "amd": "av1_amf",
     },
@@ -204,12 +204,26 @@ def detect_gpu() -> None:
             # Verify with a test encode
             if _probe_encoder(min_enc, backend=be):
                 _backend = be
+                # Probe each encoder individually — some (e.g. vp9_qsv)
+                # are reported as available but fail on actual hardware.
                 be_encoders = _BACKEND_ENCODERS.get(be, set())
-                actual = _available_encoders & be_encoders
+                candidates = _available_encoders & be_encoders
+                probed: set[str] = set()
+                for enc in candidates:
+                    if enc == min_enc:
+                        probed.add(enc)  # already verified above
+                    elif _probe_encoder(enc, backend=be):
+                        probed.add(enc)
+                    else:
+                        logger.info(
+                            "GPU encoder %s probe failed — will use CPU fallback",
+                            enc,
+                        )
+                _available_encoders = probed
                 logger.info(
                     "Hardware acceleration: %s (encoders: %s)",
                     be,
-                    ", ".join(sorted(actual)),
+                    ", ".join(sorted(probed)),
                 )
                 return
             else:
@@ -220,7 +234,9 @@ def detect_gpu() -> None:
                 )
 
     _backend = "off"
-    logger.info("Hardware acceleration: GPU encoders found but none passed probe, using CPU")
+    logger.info(
+        "Hardware acceleration: GPU encoders found but none passed probe, using CPU"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +258,21 @@ def resolve_video_encoder(cpu_encoder: str) -> str:
     if gpu_enc and gpu_enc in _available_encoders:
         return gpu_enc
     return cpu_encoder
+
+
+def blacklist_encoder(gpu_encoder: str) -> None:
+    """Remove a GPU encoder at runtime after it fails on real media.
+
+    This prevents repeated failures for the same encoder without
+    disabling the entire backend.
+    """
+    global _available_encoders
+    if gpu_encoder in _available_encoders:
+        _available_encoders = _available_encoders - {gpu_encoder}
+        logger.warning(
+            "Runtime blacklist: GPU encoder %s removed (will use CPU fallback)",
+            gpu_encoder,
+        )
 
 
 def get_hwaccel_input_args() -> list[str]:

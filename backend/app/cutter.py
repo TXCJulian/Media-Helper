@@ -16,7 +16,12 @@ from typing import Callable, Optional
 
 from app.config import resolve_base, BASE_PATH_LABELS, CUTTER_JOBS_DIR, CUTTER_JOB_TTL
 from app.fs_utils import collision_safe_path
-from app.hwaccel import build_video_encode_args, get_hwaccel_input_args, resolve_video_encoder
+from app.hwaccel import (
+    blacklist_encoder,
+    build_video_encode_args,
+    get_hwaccel_input_args,
+    resolve_video_encoder,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +113,7 @@ _CODEC_TO_ENCODER = {
     "pcm_s24le": "pcm_s24le",
 }
 
-_VIDEO_ENCODERS = {"libx264", "libx265", "libvpx-vp9", "libaom-av1"}
+_VIDEO_ENCODERS = {"libx264", "libx265", "libvpx-vp9", "libsvtav1"}
 
 _VALID_CONTAINERS = {
     "mp4",
@@ -256,6 +261,21 @@ def _waveform_cached(filepath: str, mtime: float, num_peaks: int) -> list[float]
     return peaks
 
 
+def _estimate_video_bitrate(
+    video_stream: dict, fmt: dict, audio_streams: list[dict]
+) -> int:
+    """Return the video bitrate, falling back to container bitrate minus audio."""
+    vbr = int(video_stream.get("bit_rate", 0))
+    if vbr > 0:
+        return vbr
+    # MKV/WebM often lack per-stream bit_rate; estimate from container total.
+    total = int(fmt.get("bit_rate", 0))
+    if total <= 0:
+        return 0
+    audio_total = sum(int(s.get("bit_rate", 0)) for s in audio_streams)
+    return max(0, total - audio_total)
+
+
 def probe_file(filepath: str) -> dict:
     """Run ffprobe and return parsed media info."""
     cmd = [
@@ -352,7 +372,7 @@ def probe_file(filepath: str) -> dict:
         ),
         "display_aspect_ratio": display_aspect_ratio,
         "sample_rate": first_audio["sample_rate"] if first_audio else 0,
-        "video_bitrate": int(video_stream.get("bit_rate", 0)) if video_stream else None,
+        "video_bitrate": _estimate_video_bitrate(video_stream, fmt, audio_streams) if video_stream else None,
         "audio_streams": audio_streams,
     }
     return info
@@ -449,7 +469,10 @@ def transcode_for_preview(
             cmd += ["-c:v", "copy"]
         else:
             cmd += build_video_encode_args(
-                "libx264", crf="23", preset=_PREVIEW_X264_PRESET, pix_fmt="yuv420p",
+                "libx264",
+                crf="23",
+                preset=_PREVIEW_X264_PRESET,
+                pix_fmt="yuv420p",
             )
             cmd += ["-threads", _PREVIEW_MAX_THREADS]
     else:
@@ -791,7 +814,9 @@ def get_or_transcode_preview(
             duration = max(0.0, float(info.get("duration", 0.0) or 0.0))
 
             video_codec = str(info.get("video_codec") or "").lower()
-            needs_video_reencode = has_video and video_codec not in _BROWSER_VIDEO_CODECS
+            needs_video_reencode = (
+                has_video and video_codec not in _BROWSER_VIDEO_CODECS
+            )
 
             cmd = ["ffmpeg", "-nostdin", "-loglevel", "warning", "-stats", "-y"]
             if needs_video_reencode:
@@ -804,7 +829,10 @@ def get_or_transcode_preview(
                     cmd += ["-c:v", "copy"]
                 else:
                     cmd += build_video_encode_args(
-                        "libx264", crf="23", preset=_PREVIEW_X264_PRESET, pix_fmt="yuv420p",
+                        "libx264",
+                        crf="23",
+                        preset=_PREVIEW_X264_PRESET,
+                        pix_fmt="yuv420p",
                     )
                     cmd += ["-threads", _PREVIEW_MAX_THREADS]
             else:
@@ -1273,9 +1301,7 @@ def get_or_create_audio_master(
     suffix = _preview_cache_key(filepath)
     job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
-    audio_master_path = os.path.join(
-        job_dir, f"preview_{suffix}_audio_master.mka"
-    )
+    audio_master_path = os.path.join(job_dir, f"preview_{suffix}_audio_master.mka")
 
     if os.path.isfile(audio_master_path):
         return audio_master_path, False
@@ -1284,18 +1310,25 @@ def get_or_create_audio_master(
         if os.path.isfile(audio_master_path):
             return audio_master_path, False
         if cancel_event.is_set():
-            raise RuntimeError(
-                f"Audio master extraction cancelled for job {job_id}"
-            )
+            raise RuntimeError(f"Audio master extraction cancelled for job {job_id}")
 
         tmp_path = f"{audio_master_path}.{uuid.uuid4().hex}.tmp.mka"
         cmd = [
-            "ffmpeg", "-nostdin", "-loglevel", "warning", "-stats", "-y",
-            "-i", filepath,
-            "-map", "0:a",
+            "ffmpeg",
+            "-nostdin",
+            "-loglevel",
+            "warning",
+            "-stats",
+            "-y",
+            "-i",
+            filepath,
+            "-map",
+            "0:a",
             "-vn",
-            "-c", "copy",
-            "-f", "matroska",
+            "-c",
+            "copy",
+            "-f",
+            "matroska",
             tmp_path,
         ]
 
@@ -1385,7 +1418,9 @@ def get_or_create_audio_master(
 
         if cancel_event.is_set():
             _safe_remove_file(tmp_path)
-            message = f"Audio extraction cancelled because job {job_id} is being deleted"
+            message = (
+                f"Audio extraction cancelled because job {job_id} is being deleted"
+            )
             _set_preview_status(
                 status_key,
                 {
@@ -1434,7 +1469,9 @@ def get_or_create_audio_master(
                     break
                 if attempt == 4:
                     _safe_remove_file(tmp_path)
-                    message = f"Audio master finalize failed for {audio_master_path}: {exc}"
+                    message = (
+                        f"Audio master finalize failed for {audio_master_path}: {exc}"
+                    )
                     _set_preview_status(
                         status_key,
                         {
@@ -1506,9 +1543,7 @@ def transcode_audio_track_from_source(
             if os.path.isfile(audio_path):
                 return audio_path
             if cancel_event.is_set():
-                raise RuntimeError(
-                    f"Audio transcode cancelled for job {job_id}"
-                )
+                raise RuntimeError(f"Audio transcode cancelled for job {job_id}")
 
             # Assign start_ts BEFORE extraction so progress tracking works.
             start_ts = time.monotonic()
@@ -1517,15 +1552,30 @@ def transcode_audio_track_from_source(
             # This reads the full source once (stream copy, no decode) and
             # produces a small MKA with all audio tracks.
             audio_master, extraction_needed = get_or_create_audio_master(
-                filepath, job_id, cancel_event, status_key, start_ts, duration,
+                filepath,
+                job_id,
+                cancel_event,
+                status_key,
+                start_ts,
+                duration,
             )
 
             cmd = [
-                "ffmpeg", "-nostdin", "-loglevel", "warning", "-stats", "-y",
-                "-i", audio_master,
-                "-map", f"0:a:{rel}",
+                "ffmpeg",
+                "-nostdin",
+                "-loglevel",
+                "warning",
+                "-stats",
+                "-y",
+                "-i",
+                audio_master,
+                "-map",
+                f"0:a:{rel}",
                 "-vn",
-                "-c:a", "aac", "-b:a", "192k",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
             ]
             if channels > 6:
                 cmd += ["-ac", "2"]
@@ -1590,7 +1640,13 @@ def transcode_audio_track_from_source(
                     else:
                         remaining = max(0.0, duration - out_seconds)
                         eta_seconds = remaining / speed if speed > 0 else None
-                        percent = max(pct_lo, min(pct_hi - 0.1, pct_lo + progress_ratio * (pct_hi - pct_lo)))
+                        percent = max(
+                            pct_lo,
+                            min(
+                                pct_hi - 0.1,
+                                pct_lo + progress_ratio * (pct_hi - pct_lo),
+                            ),
+                        )
                         message = "Transcoding audio"
 
                     _set_preview_status(
@@ -1633,7 +1689,9 @@ def transcode_audio_track_from_source(
 
             if cancel_event.is_set():
                 _safe_remove_file(tmp_path)
-                message = f"Audio transcode cancelled because job {job_id} is being deleted"
+                message = (
+                    f"Audio transcode cancelled because job {job_id} is being deleted"
+                )
                 _set_preview_status(
                     status_key,
                     {
@@ -1682,7 +1740,9 @@ def transcode_audio_track_from_source(
                         break
                     if attempt == 4:
                         _safe_remove_file(tmp_path)
-                        message = f"Audio transcode finalize failed for {audio_path}: {exc}"
+                        message = (
+                            f"Audio transcode finalize failed for {audio_path}: {exc}"
+                        )
                         _set_preview_status(
                             status_key,
                             {
@@ -1713,15 +1773,20 @@ def transcode_audio_track_from_source(
 
             # Record transcoded track in job metadata
             try:
-                meta = load_job_metadata(job_id)
-                if meta is not None:
-                    tracks = meta.get("audio_transcoded_tracks", [])
-                    if audio_stream_index not in tracks:
-                        tracks.append(audio_stream_index)
-                        meta["audio_transcoded_tracks"] = tracks
-                        save_job_metadata(job_id, meta)
+                with get_job_meta_lock(job_id):
+                    meta = load_job_metadata(job_id)
+                    if meta is not None:
+                        tracks = meta.get("audio_transcoded_tracks", [])
+                        if audio_stream_index not in tracks:
+                            tracks.append(audio_stream_index)
+                            meta["audio_transcoded_tracks"] = tracks
+                            save_job_metadata(job_id, meta)
             except Exception:
-                logger.debug("Could not update audio_transcoded_tracks for job %s", job_id, exc_info=True)
+                logger.debug(
+                    "Could not update audio_transcoded_tracks for job %s",
+                    job_id,
+                    exc_info=True,
+                )
 
             return audio_path
 
@@ -1993,9 +2058,7 @@ def _audio_transcode_file_path(
 ) -> str:
     suffix = _preview_cache_key(filepath)
     job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
-    return os.path.join(
-        job_dir, f"preview_{suffix}_srcaudio{audio_stream_index}.mp4"
-    )
+    return os.path.join(job_dir, f"preview_{suffix}_srcaudio{audio_stream_index}.mp4")
 
 
 def start_background_audio_transcode(
@@ -2133,7 +2196,6 @@ def get_preview_path_if_ready(
     return preview_path if os.path.isfile(preview_path) else None
 
 
-
 def cut_file(
     filepath: str,
     in_point: float,
@@ -2197,6 +2259,7 @@ def cut_file(
 
     output_path = collision_safe_path(output_path)
     duration = out_point - in_point
+    _gpu_encoder_name: str | None = None
 
     if stream_copy:
         # -ss before -i: fast demuxer-level seek (keyframe-granularity, fine for copy)
@@ -2222,7 +2285,10 @@ def cut_file(
         if codec:
             _base_enc = _CODEC_TO_ENCODER.get(codec, codec)
             if _base_enc in _VIDEO_ENCODERS:
-                _uses_gpu_encoder = resolve_video_encoder(_base_enc) != _base_enc
+                _resolved = resolve_video_encoder(_base_enc)
+                if _resolved != _base_enc:
+                    _uses_gpu_encoder = True
+                    _gpu_encoder_name = _resolved
         cmd = ["ffmpeg", "-nostdin", "-loglevel", "warning", "-stats"]
         if _uses_gpu_encoder:
             cmd += get_hwaccel_input_args()
@@ -2274,7 +2340,9 @@ def cut_file(
             if encoder in _VIDEO_ENCODERS:
                 bitrate_str = (
                     str(source_video_bitrate)
-                    if keep_quality and source_video_bitrate and source_video_bitrate > 0
+                    if keep_quality
+                    and source_video_bitrate
+                    and source_video_bitrate > 0
                     else None
                 )
                 cmd += build_video_encode_args(encoder, bitrate=bitrate_str)
@@ -2374,6 +2442,38 @@ def cut_file(
         if proc.returncode != 0:
             detail = "; ".join(stderr_lines[-5:]) if stderr_lines else "no details"
             _safe_remove_file(output_path)
+
+            # If a GPU encoder failed, blacklist it and retry with CPU
+            if _gpu_encoder_name:
+                blacklist_encoder(_gpu_encoder_name)
+                progress_cb(
+                    f"GPU encoder {_gpu_encoder_name} failed — retrying with CPU"
+                )
+                if job_id is not None:
+                    _unregister_job_process(job_id, proc)
+                    _end_job_operation(job_id, cancel_event)
+                _close_pipe(proc.stdout)
+                _close_pipe(proc.stderr)
+                return cut_file(
+                    filepath=filepath,
+                    in_point=in_point,
+                    out_point=out_point,
+                    output_path=output_path,
+                    stream_copy=stream_copy,
+                    codec=codec,
+                    audio_tracks=audio_tracks,
+                    container=container,
+                    progress_cb=progress_cb,
+                    keep_quality=keep_quality,
+                    source_video_bitrate=source_video_bitrate,
+                    source_audio_bitrates=source_audio_bitrates,
+                    audio_streams=audio_streams,
+                    audio_stream_index=audio_stream_index,
+                    audio_codec=audio_codec,
+                    job_id=job_id,
+                    cancel_event=cancel_event,
+                )
+
             raise RuntimeError(f"ffmpeg cut failed (exit {proc.returncode}): {detail}")
 
         progress_cb(f"Saved {os.path.basename(output_path)}")
@@ -2821,5 +2921,6 @@ def decode_file_id(file_id: str) -> tuple[str, str, str, str]:
     if len(parts) == 4:
         return parts[0], parts[1], parts[2], parts[3]
 
-    raise ValueError("Invalid file_id format: expected 'source|job_id|base|path' or legacy format")
-
+    raise ValueError(
+        "Invalid file_id format: expected 'source|job_id|base|path' or legacy format"
+    )

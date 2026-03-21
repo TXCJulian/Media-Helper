@@ -70,7 +70,6 @@ from app.cutter import (
     start_background_audio_transcode,
     get_audio_transcode_status,
     wait_for_audio_transcode,
-    transcode_audio_track_from_source,
 )
 
 logging.basicConfig(
@@ -158,6 +157,7 @@ async def lifespan(app: FastAPI):
             logger.error("Cutter feature requires ffmpeg and ffprobe on PATH")
         else:
             from app.hwaccel import detect_gpu
+
             detect_gpu()
         cleanup_task = asyncio.create_task(_cleanup_cutter_jobs())
 
@@ -552,9 +552,7 @@ def resolve_cutter_path(
         try:
             base_path = resolve_base(base_label)
         except ValueError:
-            raise HTTPException(
-                status_code=400, detail=f"Unknown base: '{base_label}'"
-            )
+            raise HTTPException(status_code=400, detail=f"Unknown base: '{base_label}'")
         return validate_path(base_path, path)
     elif source == "upload":
         if not job_id:
@@ -768,9 +766,7 @@ def cutter_stream(
 
         # Non-blocking: if the file is already ready, use it; otherwise
         # return 409 so the client can poll /cutter/preview-status and retry.
-        audio_path = wait_for_audio_transcode(
-            resolved, job_id, audio_stream, timeout=0
-        )
+        audio_path = wait_for_audio_transcode(resolved, job_id, audio_stream, timeout=0)
         if not audio_path:
             status = get_audio_transcode_status(resolved, job_id, audio_stream)
             if status.get("state") == "error":
@@ -800,7 +796,9 @@ def cutter_stream(
         start_background_transcode(resolved, job_id)
         status = get_preview_status(resolved, job_id)
         if status.get("state") == "error":
-            logger.error("Stream: cached preview error state: %s", status.get("message"))
+            logger.error(
+                "Stream: cached preview error state: %s", status.get("message")
+            )
             raise HTTPException(
                 status_code=500,
                 detail=status.get("message") or "Preview transcode failed",
@@ -818,12 +816,19 @@ def cutter_stream(
         if audio_stream is not None:
             try:
                 if audio_only:
-                    logger.info("Stream: extracting audio-only track %d from master", audio_stream)
+                    logger.info(
+                        "Stream: extracting audio-only track %d from master",
+                        audio_stream,
+                    )
                     resolved = get_audio_track_preview(
                         master_path, audio_stream, resolved, job_id
                     )
                 else:
-                    logger.info("Stream: extracting full track %d from master %s", audio_stream, master_path)
+                    logger.info(
+                        "Stream: extracting full track %d from master %s",
+                        audio_stream,
+                        master_path,
+                    )
                     resolved = get_track_preview(
                         master_path, audio_stream, resolved, job_id
                     )
@@ -1247,7 +1252,7 @@ def cutter_cut(
         "libx264",
         "libx265",
         "libvpx-vp9",
-        "libaom-av1",
+        "libsvtav1",
     }
     valid_audio_codecs = {
         "copy",

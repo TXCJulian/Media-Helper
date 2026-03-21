@@ -39,6 +39,8 @@ def resolve_base(base_label: str) -> str:
     if path is None:
         raise ValueError(f"Unknown base: '{base_label}'")
     return path
+
+
 TVSHOW_FOLDER_NAME = os.getenv("TVSHOW_FOLDER_NAME") or "TV Shows"
 MUSIC_FOLDER_NAME = os.getenv("MUSIC_FOLDER_NAME") or "Music"
 TMDB_API_KEY = os.getenv("TMDB_API_KEY") or "YOUR_TMDB_API_KEY"

@@ -50,7 +50,7 @@ const SOURCE_CODEC_TO_ENCODER: Record<string, string> = {
   hevc: 'libx265',
   h265: 'libx265',
   vp9: 'libvpx-vp9',
-  av1: 'libaom-av1',
+  av1: 'libsvtav1',
 }
 
 const EXT_TO_CONTAINER: Record<string, string> = {
@@ -272,7 +272,7 @@ export default function CutterPanel({
 
   // ── Load probe + waveform for a file ──────────────────────────
   const loadFileData = useCallback(
-    async (path: string, source: 'server' | 'upload', jid = '', base = '') => {
+    async (path: string, source: 'server' | 'upload', jid = '', base = ''): Promise<ProbeResult | null> => {
       onError('')
       setSource({ probe: null, peaks: [], thumbnailUrl: '', isLoadingFile: true })
       try {
@@ -293,12 +293,14 @@ export default function CutterPanel({
         setPreviewStatus(null)
         setTranscodeMode('off')
         setPreviewAudioStreamIndex(null)
+        return probeData
       } catch (err) {
         onError(`Error loading file: ${err instanceof Error ? err.message : String(err)}`)
         setSource({ isLoadingFile: false })
         setPreviewStatus(null)
         setTranscodeMode('off')
         setPreviewAudioStreamIndex(null)
+        return null
       }
     },
     [onError, setSource, setPersisted, buildProbeSelectionPatch],
@@ -350,8 +352,16 @@ export default function CutterPanel({
   // ── Reopen job from job manager ───────────────────────────────
   const handleOpenJob = useCallback(
     async (job: CutterJob) => {
-      const shouldAutoUseTranscodedPreview =
-        job.status === 'ready' && !job.browser_ready && !!job.preview_transcoded
+      const hasFullTranscodedPreview = !!job.preview_transcoded
+      const hasAudioOnlyTranscode = !!job.audio_transcoded_tracks?.length
+      const reopenTranscodeMode: 'off' | 'audio_only' | 'full' = hasFullTranscodedPreview
+        ? 'full'
+        : hasAudioOnlyTranscode
+          ? 'audio_only'
+          : 'off'
+      const reopenAudioStreamIndex = hasAudioOnlyTranscode
+        ? (job.audio_transcoded_tracks?.[0] ?? null)
+        : null
 
       const source: CutterForm['source'] = job.source
       const jobBase = source === 'server' ? (job.base ?? '') : ''
@@ -402,9 +412,10 @@ export default function CutterPanel({
       setPreviewAudioStreamIndex(null)
       try {
         await loadFileData(filePath, source, job.job_id, jobBase)
-        if (shouldAutoUseTranscodedPreview) {
-          setTranscodeMode('full')
+        if (reopenTranscodeMode === 'audio_only') {
+          setPreviewAudioStreamIndex(reopenAudioStreamIndex)
         }
+        setTranscodeMode(reopenTranscodeMode)
         // Restore saved in/out points — loadFileData resets them to 0/duration
         if (settings) {
           setPersisted((prev) => ({
@@ -547,7 +558,7 @@ export default function CutterPanel({
     }
     if (form.source === 'server' && form.base) params.base = form.base
     if (form.outputName) params.output_name = form.outputName
-    if (!form.streamCopy && form.codec) {
+    if (!form.streamCopy && form.codec && isVideo) {
       params.codec = form.codec
     }
     params.container = form.container
@@ -626,7 +637,8 @@ export default function CutterPanel({
   })()
 
   const compatibilityReport = hasFile ? getBrowserCompatibilityReport(filePath, probe) : null
-  const showAudioOnlyButton = isVideo && compatibilityReport && !compatibilityReport.videoIssue
+  const showAudioOnlyButton =
+    isVideo && compatibilityReport && !compatibilityReport.videoIssue
   const compatibilityMessage = (() => {
     if (!hasFile || !probe) return null
 
@@ -638,7 +650,7 @@ export default function CutterPanel({
     // playback may fail. Show a clear warning even if frontend heuristics
     // did not classify this file as problematic.
     if (probe.needs_transcoding && transcodeMode === 'off') {
-      return 'This file is likely not browser-compatible in original playback mode. Use a transcode preview mode ("Full Transcode" or "Transcode Audio Only") for reliable playback.'
+      return 'This file is likely not browser-compatible in original playback mode. Enable Transcoded Preview for reliable playback.'
     }
 
     return null

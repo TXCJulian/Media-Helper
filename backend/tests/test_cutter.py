@@ -67,7 +67,9 @@ def test_probe_file_includes_audio_bitrate(monkeypatch):
     info = cutter.probe_file("/fake/file.mkv")
     assert info["audio_streams"][0]["bit_rate"] == 192000
     assert info["audio_streams"][1]["bit_rate"] == 384000
-    assert info["video_bitrate"] == 0
+    # Video stream has no bit_rate; estimated from container total minus audio
+    # 1000000 - 192000 - 384000 = 424000
+    assert info["video_bitrate"] == 424000
 
 
 def test_get_track_preview_uses_mp4_output_and_absolute_track_cache_key(tmp_path, monkeypatch):

@@ -121,7 +121,8 @@ export default function MediaPlayer({
   const [isMediaReady, setIsMediaReady] = useState(!needsTranscoding)
   const [loadedAspectRatio, setLoadedAspectRatio] = useState<string | null>(null)
   // Backend is still producing the file — don't let the browser request it yet
-  const isTranscodeRunning = needsTranscoding && transcodeState !== 'done'
+  const isTranscodeRunning =
+    needsTranscoding && transcodeState !== 'done' && transcodeState !== 'error'
   const isTranscoding = needsTranscoding && (!isMediaReady || isTranscodeRunning)
   const fallbackAspectRatio =
     sourceAspectRatio && sourceAspectRatio.trim().length > 0
@@ -303,7 +304,6 @@ export default function MediaPlayer({
       }
       if (audioEl) {
         audioEl.currentTime = el.currentTime
-        audioEl.play().catch(() => {})
       }
       const playPromise = el.play()
       if (playPromise && typeof playPromise.then === 'function') {
@@ -311,10 +311,12 @@ export default function MediaPlayer({
           .then(() => {
             setIsPlaying(true)
             startLoop()
+            audioEl?.play().catch(() => {})
           })
           .catch(() => {
             setIsPlaying(false)
             stopLoop()
+            audioEl?.pause()
           })
       } else {
         setIsPlaying(true)
