@@ -72,15 +72,20 @@ def _make_run_side_effect(encoders_output: str, probe_succeeds: bool = True):
 
 
 def _reload_hwaccel(hwaccel_value: str = ""):
-    """Reload hwaccel module with a given HWACCEL config value."""
+    """Reload hwaccel module with a given HWACCEL config value and keep the
+    config patch active for the lifetime of the returned module."""
     import importlib
     from unittest.mock import patch as _patch
     import app.config as config_mod
 
-    with _patch.object(config_mod, "HWACCEL", hwaccel_value):
-        import app.hwaccel as hwaccel_mod
-        importlib.reload(hwaccel_mod)
-        return hwaccel_mod
+    patcher = _patch.object(config_mod, "HWACCEL", hwaccel_value)
+    patcher.start()
+    import app.hwaccel as hwaccel_mod
+    importlib.reload(hwaccel_mod)
+    # Attach the stopper so callers can clean up; tests that don't call
+    # stop() will have the patch cleaned up by the next reload anyway.
+    hwaccel_mod._test_hwaccel_patcher = patcher
+    return hwaccel_mod
 
 
 # ---------------------------------------------------------------------------

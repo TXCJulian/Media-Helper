@@ -9,7 +9,7 @@ Set ``HWACCEL=off`` to force CPU-only encoding.
 import logging
 import subprocess
 
-from app.config import HWACCEL
+from app import config
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ _HWACCEL_INPUT_ARGS: dict[str, list[str]] = {
     "nvidia": ["-hwaccel", "cuda"],
     "intel": ["-hwaccel", "qsv"],
     "amd": ["-hwaccel", "auto"],
-    "vaapi": ["-hwaccel", "vaapi", "-vaapi_device", "/dev/dri/renderD128"],
+    "vaapi": ["-hwaccel", "vaapi", "-vaapi_device", config.VAAPI_DEVICE],
     "off": [],
 }
 
@@ -137,23 +137,31 @@ def _query_encoders() -> set[str]:
     return found
 
 
-def _probe_encoder(encoder: str) -> bool:
+def _probe_encoder(encoder: str, backend: str | None = None) -> bool:
     """Run a tiny test encode to verify the GPU encoder actually works.
 
     Uses 256x256 because some HW encoders (e.g. NVENC) enforce a minimum
     resolution, and a single frame at 1 fps to keep it fast.
     """
     try:
+        pre_input: list[str] = []
+        vf_args: list[str] = []
+        if backend == "vaapi":
+            pre_input = ["-hwaccel", "vaapi", "-vaapi_device", config.VAAPI_DEVICE]
+            vf_args = ["-vf", "format=nv12,hwupload"]
+
         result = subprocess.run(
             [
                 "ffmpeg",
                 "-hide_banner",
                 "-loglevel",
                 "error",
+                *pre_input,
                 "-f",
                 "lavfi",
                 "-i",
                 "color=black:s=256x256:d=0.1:r=1",
+                *vf_args,
                 "-c:v",
                 encoder,
                 "-f",
@@ -172,15 +180,15 @@ def detect_gpu() -> None:
     """Detect available GPU encoding backend. Call once at startup."""
     global _backend, _available_encoders
 
-    if HWACCEL == "off":
+    if config.HWACCEL == "off":
         _backend = "off"
         logger.info("Hardware acceleration disabled via HWACCEL=off")
         return
 
-    if HWACCEL and HWACCEL != "off":
+    if config.HWACCEL and config.HWACCEL != "off":
         logger.warning(
             "Unrecognized HWACCEL value '%s' — ignoring, proceeding with auto-detection",
-            HWACCEL,
+            config.HWACCEL,
         )
 
     _available_encoders = _query_encoders()
@@ -194,7 +202,7 @@ def detect_gpu() -> None:
         min_enc = _MIN_ENCODER[be]
         if min_enc in _available_encoders:
             # Verify with a test encode
-            if _probe_encoder(min_enc):
+            if _probe_encoder(min_enc, backend=be):
                 _backend = be
                 be_encoders = _BACKEND_ENCODERS.get(be, set())
                 actual = _available_encoders & be_encoders

@@ -20,6 +20,7 @@ services:
       - CUTTER_JOBS_DIR=/data/cutter-jobs
       - CUTTER_JOB_TTL=${CUTTER_JOB_TTL:-86400}
       #- HWACCEL=off  # Uncomment to disable GPU-accelerated video encoding
+      #- VAAPI_DEVICE=/dev/dri/renderD128  # Uncomment to override VAAPI device path
     # --- GPU passthrough (uncomment ONE section matching your hardware) ---
     # NVIDIA GPU:
     #deploy:

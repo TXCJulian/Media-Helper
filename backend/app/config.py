@@ -59,6 +59,7 @@ CUTTER_MAX_DIRECT_REMUX_BYTES = int(
     os.getenv("CUTTER_MAX_DIRECT_REMUX_BYTES", str(1024 * 1024 * 1024))
 )
 HWACCEL = os.getenv("HWACCEL", "").lower().strip()
+VAAPI_DEVICE = os.getenv("VAAPI_DEVICE", "/dev/dri/renderD128")
 
 _VALID_FEATURES = {"episodes", "music", "lyrics", "cutter"}
 _features_raw = os.getenv("ENABLED_FEATURES", "episodes,music,cutter")
