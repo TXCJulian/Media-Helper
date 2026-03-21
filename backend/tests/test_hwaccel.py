@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 import subprocess
+import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -9,6 +10,21 @@ import subprocess
 # ---------------------------------------------------------------------------
 
 CompletedResult = subprocess.CompletedProcess
+
+
+# ---------------------------------------------------------------------------
+# Cleanup: stop any lingering patcher after each test
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _cleanup_hwaccel_patcher():
+    """Stop the config patcher left active by _reload_hwaccel after each test."""
+    yield
+    import app.hwaccel as hwaccel_mod
+    patcher = getattr(hwaccel_mod, "_test_hwaccel_patcher", None)
+    if patcher:
+        patcher.stop()
+        hwaccel_mod._test_hwaccel_patcher = None
 
 
 # ---------------------------------------------------------------------------

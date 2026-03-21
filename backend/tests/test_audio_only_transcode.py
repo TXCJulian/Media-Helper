@@ -110,15 +110,24 @@ class TestStartBackgroundAudioTranscode:
         start_background_audio_transcode("/media/test.mkv", 1, "job123")
 
     @patch("app.cutter.os.path.getmtime", return_value=1000.0)
-    @patch("app.cutter.transcode_audio_track_from_source")
     @patch("app.cutter.os.path.isfile", return_value=False)
-    def test_starts_background_thread(self, mock_isfile, mock_transcode, mock_getmtime):
-        import time as _time
+    def test_starts_background_thread(self, mock_isfile, mock_getmtime):
+        import threading
         from app.cutter import start_background_audio_transcode
-        start_background_audio_transcode("/media/test.mkv", 1, "job_bg")
-        _time.sleep(0.3)  # Give thread time to start
-        # Second call should be a no-op (already in progress or done)
-        start_background_audio_transcode("/media/test.mkv", 1, "job_bg")
+
+        started = threading.Event()
+        original_called = threading.Event()
+
+        def mock_transcode(*args, **kwargs):
+            started.set()
+            original_called.wait(timeout=2)
+
+        with patch("app.cutter.transcode_audio_track_from_source", side_effect=mock_transcode):
+            start_background_audio_transcode("/media/test.mkv", 1, "job_bg")
+            assert started.wait(timeout=2), "Background thread did not start"
+            # Second call should be a no-op (already in progress)
+            start_background_audio_transcode("/media/test.mkv", 1, "job_bg")
+            original_called.set()
 
 
 class TestGetAudioTranscodeStatus:
