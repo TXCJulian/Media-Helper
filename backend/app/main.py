@@ -56,6 +56,7 @@ from app.cutter import (
     start_background_transcode,
     wait_for_preview,
     get_track_preview,
+    get_audio_track_preview,
     get_track_remux,
     cut_file,
     encode_file_id,
@@ -68,6 +69,10 @@ from app.cutter import (
     delete_job,
     cleanup_old_jobs,
     get_job_meta_lock,
+    start_background_audio_transcode,
+    get_audio_transcode_status,
+    wait_for_audio_transcode,
+    transcode_audio_track_from_source,
 )
 
 logging.basicConfig(
@@ -153,6 +158,9 @@ async def lifespan(app: FastAPI):
         migrate_jobs()
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
             logger.error("Cutter feature requires ffmpeg and ffprobe on PATH")
+        else:
+            from app.hwaccel import detect_gpu
+            detect_gpu()
         cleanup_task = asyncio.create_task(_cleanup_cutter_jobs())
 
     yield
@@ -701,6 +709,8 @@ def cutter_stream(
     request: Request,
     audio_stream: int | None = Query(None),
     transcode: bool = Query(False),
+    audio_only: bool = Query(False),
+    transcode_audio_only: bool = Query(False),
 ):
     require_feature("cutter")
     try:
@@ -738,7 +748,37 @@ def cutter_stream(
     audio_streams = probe.get("audio_streams", [])
     default_audio_index = audio_streams[0].get("index") if audio_streams else None
 
-    if transcode and needs_tx:
+    # Reject conflicting parameters
+    if transcode_audio_only and (transcode or audio_only):
+        raise HTTPException(
+            status_code=400,
+            detail="transcode_audio_only cannot be combined with transcode or audio_only",
+        )
+
+    if transcode_audio_only:
+        if audio_stream is None:
+            raise HTTPException(
+                status_code=400,
+                detail="audio_stream required for audio-only transcode",
+            )
+        if not job_id:
+            raise HTTPException(
+                status_code=400,
+                detail="job_id required for audio-only transcode",
+            )
+        start_background_audio_transcode(resolved, audio_stream, job_id)
+        audio_path = wait_for_audio_transcode(
+            resolved, job_id, audio_stream, timeout=120
+        )
+        if not audio_path:
+            try:
+                audio_path = transcode_audio_track_from_source(
+                    resolved, audio_stream, job_id
+                )
+            except RuntimeError as e:
+                raise HTTPException(status_code=500, detail=str(e))
+        resolved = audio_path
+    elif transcode and needs_tx:
         if not job_id:
             raise HTTPException(
                 status_code=400, detail="job_id required for transcoded preview"
@@ -747,6 +787,7 @@ def cutter_stream(
         start_background_transcode(resolved, job_id)
         status = get_preview_status(resolved, job_id)
         if status.get("state") == "error":
+            logger.error("Stream: cached preview error state: %s", status.get("message"))
             raise HTTPException(
                 status_code=500,
                 detail=status.get("message") or "Preview transcode failed",
@@ -755,19 +796,30 @@ def cutter_stream(
         # Get or create the master preview (all audio tracks)
         master_path = get_preview_path_if_ready(resolved, job_id)
         if not master_path:
+            logger.info("Stream: master not ready, waiting up to 120s...")
             master_path = wait_for_preview(resolved, job_id, timeout=120)
         if not master_path:
+            logger.info("Stream: wait timed out, calling get_or_transcode_preview")
             try:
                 master_path = get_or_transcode_preview(resolved, job_id)
             except RuntimeError as e:
+                logger.error("Stream: get_or_transcode_preview failed: %s", e)
                 raise HTTPException(status_code=500, detail=str(e))
-        # If a specific audio track is requested, do a fast stream-copy remux
+        # If a specific audio track is requested, extract it from the master
         if audio_stream is not None:
             try:
-                resolved = get_track_preview(
-                    master_path, audio_stream, resolved, job_id
-                )
+                if audio_only:
+                    logger.info("Stream: extracting audio-only track %d from master", audio_stream)
+                    resolved = get_audio_track_preview(
+                        master_path, audio_stream, resolved, job_id
+                    )
+                else:
+                    logger.info("Stream: extracting full track %d from master %s", audio_stream, master_path)
+                    resolved = get_track_preview(
+                        master_path, audio_stream, resolved, job_id
+                    )
             except RuntimeError as e:
+                logger.error("Stream: track extraction failed: %s", e)
                 raise HTTPException(status_code=500, detail=str(e))
         else:
             resolved = master_path
@@ -856,7 +908,10 @@ def cutter_stream(
 
 
 @app.get("/cutter/preview-status/{file_id}")
-def cutter_preview_status(file_id: str):
+def cutter_preview_status(
+    file_id: str,
+    audio_transcode_stream: int | None = Query(None),
+):
     require_feature("cutter")
     try:
         source, job_id, base, path = decode_file_id(file_id)
@@ -866,6 +921,15 @@ def cutter_preview_status(file_id: str):
     resolved = resolve_cutter_path(path, source, job_id, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
+
+    # Audio-only transcode status — uses separate key, bypasses master preview check
+    if audio_transcode_stream is not None:
+        if not job_id:
+            raise HTTPException(
+                status_code=400,
+                detail="job_id required for audio transcode status",
+            )
+        return get_audio_transcode_status(resolved, job_id, audio_transcode_stream)
 
     def _done_status() -> dict:
         return {
