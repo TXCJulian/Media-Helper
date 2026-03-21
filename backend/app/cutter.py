@@ -1911,28 +1911,6 @@ def get_preview_path_if_ready(
     return preview_path if os.path.isfile(preview_path) else None
 
 
-def wait_for_preview(
-    filepath: str,
-    job_id: str,
-    timeout: float = 120,
-) -> str | None:
-    """Wait for a background transcode to finish and return the preview path.
-
-    Returns the master preview file path if it becomes available within the
-    timeout, or None if the transcode hasn't started or timed out.
-    """
-    preview_path = _preview_file_path(filepath, job_id)
-
-    # Check if there's a background transcode event to wait on
-    with _transcode_lock_guard:
-        event = _transcode_locks.get(preview_path)
-
-    if event:
-        event.wait(timeout=timeout)
-
-    # Check if the file is now available
-    return get_preview_path_if_ready(filepath, job_id)
-
 
 def cut_file(
     filepath: str,

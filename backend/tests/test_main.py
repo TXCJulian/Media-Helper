@@ -246,18 +246,9 @@ class TestCutterStreamValidation:
         )
         monkeypatch.setattr(main_mod, "needs_transcoding", lambda *_args, **_kwargs: True)
 
-        called = {"value": False}
-
-        def fail_if_called(*_args, **_kwargs):
-            called["value"] = True
-            raise AssertionError("get_or_transcode_preview should not be called without transcode flag")
-
-        monkeypatch.setattr(main_mod, "get_or_transcode_preview", fail_if_called)
-
         resp = client.get("/cutter/stream/demo")
         assert resp.status_code == 200
         assert resp.content == b"demo"
-        assert called["value"] is False
 
     def test_cutter_stream_transcodes_when_flag_enabled(self, client, tmp_path, monkeypatch):
         import app.main as main_mod
@@ -284,13 +275,40 @@ class TestCutterStreamValidation:
         )
         monkeypatch.setattr(main_mod, "needs_transcoding", lambda *_args, **_kwargs: True)
         monkeypatch.setattr(main_mod, "get_preview_status", lambda *_args, **_kwargs: {"state": "idle"})
-        monkeypatch.setattr(main_mod, "get_preview_path_if_ready", lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(main_mod, "wait_for_preview", lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(main_mod, "get_or_transcode_preview", lambda *_args, **_kwargs: str(preview_file))
+        monkeypatch.setattr(main_mod, "get_preview_path_if_ready", lambda *_args, **_kwargs: str(preview_file))
 
         resp = client.get("/cutter/stream/demo", params={"transcode": "true"})
         assert resp.status_code == 200
         assert resp.content == b"preview"
+
+    def test_stream_returns_409_when_preview_not_ready(self, client, tmp_path, monkeypatch):
+        import app.main as main_mod
+
+        media_file = tmp_path / "clip.mp4"
+        media_file.write_bytes(b"demo")
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"episodes", "music", "cutter"})
+        monkeypatch.setattr(main_mod, "decode_file_id", lambda _file_id: ("server", "job-1", "", "clip.mp4"))
+        monkeypatch.setattr(
+            main_mod,
+            "resolve_cutter_path",
+            lambda _path, _source, _job_id="", base_label="": str(media_file),
+        )
+        monkeypatch.setattr(
+            main_mod,
+            "probe_file",
+            lambda _path: {
+                "audio_codec": "dts",
+                "audio_streams": [{"index": 1}],
+            },
+        )
+        monkeypatch.setattr(main_mod, "needs_transcoding", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(main_mod, "get_preview_status", lambda *_args, **_kwargs: {"state": "idle"})
+        monkeypatch.setattr(main_mod, "get_preview_path_if_ready", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(main_mod, "start_background_transcode", lambda *_args, **_kwargs: None)
+
+        resp = client.get("/cutter/stream/demo", params={"transcode": "true"})
+        assert resp.status_code == 409
 
 
 class TestCutterPreviewStatus:

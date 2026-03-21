@@ -50,11 +50,9 @@ from app.cutter import (
     generate_thumbnail_strip,
     generate_thumbnail_strip_cached,
     needs_transcoding,
-    get_or_transcode_preview,
     get_preview_path_if_ready,
     get_preview_status,
     start_background_transcode,
-    wait_for_preview,
     get_track_preview,
     get_audio_track_preview,
     get_track_remux,
@@ -793,20 +791,14 @@ def cutter_stream(
                 detail=status.get("message") or "Preview transcode failed",
             )
 
-        # Get or create the master preview (all audio tracks).
-        # Wait for the background thread event (set on completion) with a
-        # generous timeout.  If the event is never set (e.g. the thread was
-        # never started), fall back to a synchronous transcode.
+        # Serve the master preview if ready; otherwise return 409 so the
+        # frontend can poll /preview-status and retry when ready.
         master_path = get_preview_path_if_ready(resolved, job_id)
         if not master_path:
-            master_path = wait_for_preview(resolved, job_id, timeout=7200)
-        if not master_path:
-            logger.info("Stream: preview not ready after wait, calling get_or_transcode_preview")
-            try:
-                master_path = get_or_transcode_preview(resolved, job_id)
-            except RuntimeError as e:
-                logger.error("Stream: get_or_transcode_preview failed: %s", e)
-                raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(
+                status_code=409,
+                detail="Preview not ready yet — poll /cutter/preview-status and retry",
+            )
         # If a specific audio track is requested, extract it from the master
         if audio_stream is not None:
             try:
