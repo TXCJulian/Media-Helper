@@ -695,7 +695,14 @@ export default function CutterPanel({
       cancelled = true
       if (timeoutId) clearTimeout(timeoutId)
     }
-  }, [hasFile, probe?.needs_transcoding, fileId, transcodeMode, selectedPreviewAudioStreamIndex, onError])
+  }, [
+    hasFile,
+    probe?.needs_transcoding,
+    fileId,
+    transcodeMode,
+    selectedPreviewAudioStreamIndex,
+    onError,
+  ])
 
   return (
     <PanelLayout title="Media Cutter" onBack={onBack} maxWidth="1100px">
