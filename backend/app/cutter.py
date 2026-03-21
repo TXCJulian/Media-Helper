@@ -16,6 +16,7 @@ from typing import Callable, Optional
 
 from app.config import resolve_base, BASE_PATH_LABELS, CUTTER_JOBS_DIR, CUTTER_JOB_TTL
 from app.fs_utils import collision_safe_path
+from app.hwaccel import build_video_encode_args, get_hwaccel_input_args, resolve_video_encoder
 
 logger = logging.getLogger(__name__)
 
@@ -426,7 +427,13 @@ def transcode_for_preview(
         first_audio = audio_streams[0] if audio_streams else None
         audio_channels = first_audio.get("channels", 0) if first_audio else 0
 
-    cmd = ["ffmpeg", "-nostdin", "-loglevel", "warning", "-i", filepath]
+    video_codec = str(info.get("video_codec") or "").lower()
+    needs_video_reencode = has_video and video_codec not in _BROWSER_VIDEO_CODECS
+
+    cmd = ["ffmpeg", "-nostdin", "-loglevel", "warning"]
+    if needs_video_reencode:
+        cmd += get_hwaccel_input_args()
+    cmd += ["-i", filepath]
 
     # Map specific streams when audio stream is selected
     if audio_stream_index is not None:
@@ -437,23 +444,14 @@ def transcode_for_preview(
     elif has_video:
         pass  # default mapping picks first video + first audio
 
-    video_codec = str(info.get("video_codec") or "").lower()
     if has_video:
         if video_codec in _BROWSER_VIDEO_CODECS:
             cmd += ["-c:v", "copy"]
         else:
-            cmd += [
-                "-c:v",
-                "libx264",
-                "-preset",
-                _PREVIEW_X264_PRESET,
-                "-crf",
-                "23",
-                "-threads",
-                _PREVIEW_MAX_THREADS,
-                "-pix_fmt",
-                "yuv420p",
-            ]
+            cmd += build_video_encode_args(
+                "libx264", crf="23", preset=_PREVIEW_X264_PRESET, pix_fmt="yuv420p",
+            )
+            cmd += ["-threads", _PREVIEW_MAX_THREADS]
     else:
         cmd += ["-vn"]
 
@@ -492,6 +490,13 @@ def _preview_cache_key(filepath: str) -> str:
 
 def _preview_status_key(filepath: str, job_id: str) -> str:
     return f"{job_id}:{_preview_cache_key(filepath)}"
+
+
+def _audio_transcode_status_key(
+    filepath: str, job_id: str, audio_stream_index: int
+) -> str:
+    """Status key for audio-only transcode — distinct from master preview key."""
+    return f"{job_id}:{_preview_cache_key(filepath)}:srcaudio{audio_stream_index}"
 
 
 def _compact_process_error(stderr: str, stdout: str) -> str:
@@ -785,35 +790,23 @@ def get_or_transcode_preview(
             has_video = info.get("video_codec") is not None
             duration = max(0.0, float(info.get("duration", 0.0) or 0.0))
 
-            cmd = [
-                "ffmpeg",
-                "-nostdin",
-                "-loglevel",
-                "warning",
-                "-stats",
-                "-y",
-                "-i",
-                filepath,
-            ]
-
             video_codec = str(info.get("video_codec") or "").lower()
+            needs_video_reencode = has_video and video_codec not in _BROWSER_VIDEO_CODECS
+
+            cmd = ["ffmpeg", "-nostdin", "-loglevel", "warning", "-stats", "-y"]
+            if needs_video_reencode:
+                cmd += get_hwaccel_input_args()
+            cmd += ["-i", filepath]
+
             if has_video:
                 cmd += ["-map", "0:v:0", "-map", "0:a?"]
                 if video_codec in _BROWSER_VIDEO_CODECS:
                     cmd += ["-c:v", "copy"]
                 else:
-                    cmd += [
-                        "-c:v",
-                        "libx264",
-                        "-preset",
-                        _PREVIEW_X264_PRESET,
-                        "-crf",
-                        "23",
-                        "-threads",
-                        _PREVIEW_MAX_THREADS,
-                        "-pix_fmt",
-                        "yuv420p",
-                    ]
+                    cmd += build_video_encode_args(
+                        "libx264", crf="23", preset=_PREVIEW_X264_PRESET, pix_fmt="yuv420p",
+                    )
+                    cmd += ["-threads", _PREVIEW_MAX_THREADS]
             else:
                 cmd += ["-map", "0:a", "-vn"]
 
@@ -838,7 +831,14 @@ def get_or_transcode_preview(
                     cmd += ["-c:a", "aac", "-b:a", "192k"]
 
             tmp_path = f"{preview_path}.{uuid.uuid4().hex}.tmp"
-            cmd += ["-sn", "-f", "mp4", "-movflags", "+faststart", tmp_path]
+            cmd += [
+                "-sn",
+                "-f",
+                "mp4",
+                "-movflags",
+                "frag_keyframe+empty_moov+default_base_moof",
+                tmp_path,
+            ]
 
             start_ts = time.monotonic()
             _set_preview_status(
@@ -1099,8 +1099,6 @@ def get_track_preview(
                 "copy",
                 "-f",
                 "mp4",
-                "-movflags",
-                "+faststart",
                 tmp_path,
             ]
 
@@ -1149,6 +1147,339 @@ def get_track_preview(
                     time.sleep(0.1 * (attempt + 1))
 
         return track_path
+    finally:
+        _end_job_operation(job_id, cancel_event)
+
+
+def get_audio_track_preview(
+    master_path: str,
+    audio_stream_index: int,
+    filepath: str,
+    job_id: str,
+) -> str:
+    """Extract a single audio track from the master preview (no video).
+
+    Returns a cached audio-only MP4 file.  Much faster than
+    ``get_track_preview`` because it skips the multi-GB video stream copy.
+    """
+    cancel_event = threading.Event()
+    _begin_job_operation(job_id, cancel_event)
+    try:
+        suffix = _preview_cache_key(filepath)
+        info = probe_file(filepath)
+        rel = _audio_relative_index(info.get("audio_streams", []), audio_stream_index)
+        job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
+        os.makedirs(job_dir, exist_ok=True)
+        audio_path = os.path.join(
+            job_dir, f"preview_{suffix}_audioabs{audio_stream_index}.mp4"
+        )
+
+        if os.path.isfile(audio_path):
+            return audio_path
+
+        with _get_preview_build_lock(audio_path):
+            if os.path.isfile(audio_path):
+                return audio_path
+
+            tmp_path = f"{audio_path}.{uuid.uuid4().hex}.tmp.mp4"
+            cmd = [
+                "ffmpeg",
+                "-loglevel",
+                "warning",
+                "-y",
+                "-i",
+                master_path,
+                "-map",
+                f"0:a:{rel}",
+                "-vn",
+                "-c",
+                "copy",
+                "-f",
+                "mp4",
+                "-movflags",
+                "+faststart",
+                tmp_path,
+            ]
+
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            _register_job_process(job_id, proc)
+            try:
+                monitor = threading.Thread(
+                    target=_monitor_cancel, args=(proc, cancel_event), daemon=True
+                )
+                monitor.start()
+                try:
+                    stdout_blob, stderr_blob = proc.communicate(timeout=120)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    stdout_blob, stderr_blob = proc.communicate(timeout=10)
+            finally:
+                _unregister_job_process(job_id, proc)
+                _close_pipe(proc.stdout)
+                _close_pipe(proc.stderr)
+
+            if cancel_event.is_set():
+                _safe_remove_file(tmp_path)
+                raise RuntimeError(
+                    f"Audio track extraction cancelled because job {job_id} is being deleted"
+                )
+
+            if proc.returncode != 0:
+                _safe_remove_file(tmp_path)
+                raise RuntimeError(
+                    f"Audio track extraction failed: {stderr_blob.decode(errors='replace')}"
+                )
+
+            for attempt in range(5):
+                try:
+                    os.replace(tmp_path, audio_path)
+                    return audio_path
+                except PermissionError as exc:
+                    if os.path.isfile(audio_path):
+                        _safe_remove_file(tmp_path)
+                        return audio_path
+                    if attempt == 4:
+                        _safe_remove_file(tmp_path)
+                        raise RuntimeError(
+                            f"Audio track finalize failed for {audio_path}: {exc}"
+                        ) from exc
+                    time.sleep(0.1 * (attempt + 1))
+
+        return audio_path
+    finally:
+        _end_job_operation(job_id, cancel_event)
+
+
+def transcode_audio_track_from_source(
+    filepath: str,
+    audio_stream_index: int,
+    job_id: str,
+) -> str:
+    """Transcode a single audio track from the source file to AAC MP4.
+
+    Unlike ``get_audio_track_preview`` (which extracts from a master preview),
+    this works directly on the source file — no master preview needed.
+    Returns the path to the cached audio-only MP4.
+    """
+    cancel_event = threading.Event()
+    _begin_job_operation(job_id, cancel_event)
+    try:
+        info = probe_file(filepath)
+        duration = max(0.0, float(info.get("duration", 0.0) or 0.0))
+        audio_streams = info.get("audio_streams", [])
+        rel = _audio_relative_index(audio_streams, audio_stream_index)
+
+        # Find channel count for this stream
+        channels = 0
+        for s in audio_streams:
+            if s.get("index") == audio_stream_index:
+                channels = s.get("channels", 0)
+                break
+
+        suffix = _preview_cache_key(filepath)
+        job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
+        os.makedirs(job_dir, exist_ok=True)
+        audio_path = os.path.join(
+            job_dir, f"preview_{suffix}_srcaudio{audio_stream_index}.mp4"
+        )
+        status_key = _audio_transcode_status_key(filepath, job_id, audio_stream_index)
+
+        if os.path.isfile(audio_path):
+            _set_preview_status(
+                status_key,
+                {
+                    "state": "done",
+                    "ready": True,
+                    "percent": 100.0,
+                    "eta_seconds": 0.0,
+                    "elapsed_seconds": 0.0,
+                    "message": "",
+                    "updated_at": time.time(),
+                },
+            )
+            return audio_path
+
+        with _get_preview_build_lock(audio_path):
+            if os.path.isfile(audio_path):
+                return audio_path
+            if cancel_event.is_set():
+                raise RuntimeError(
+                    f"Audio transcode cancelled for job {job_id}"
+                )
+
+            cmd = [
+                "ffmpeg", "-nostdin", "-loglevel", "warning", "-stats", "-y",
+                "-i", filepath,
+                "-map", f"0:a:{rel}",
+                "-vn",
+                "-c:a", "aac", "-b:a", "192k",
+            ]
+            if channels > 6:
+                cmd += ["-ac", "2"]
+
+            tmp_path = f"{audio_path}.{uuid.uuid4().hex}.tmp"
+            cmd += ["-f", "mp4", "-movflags", "+faststart", tmp_path]
+
+            start_ts = time.monotonic()
+            _set_preview_status(
+                status_key,
+                {
+                    "state": "running",
+                    "ready": False,
+                    "percent": 0.0,
+                    "eta_seconds": None,
+                    "elapsed_seconds": 0.0,
+                    "message": "Starting audio transcode...",
+                    "updated_at": time.time(),
+                },
+            )
+
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                errors="replace",
+            )
+            _register_job_process(job_id, proc)
+
+            stderr_lines: list[str] = []
+
+            try:
+                while True:
+                    if cancel_event.is_set() and proc.poll() is None:
+                        proc.terminate()
+                    line = proc.stderr.readline() if proc.stderr else ""
+                    if not line:
+                        if proc.poll() is not None:
+                            break
+                        continue
+                    stderr_lines.append(line.rstrip())
+                    out_seconds = _seconds_from_ffmpeg_time(line)
+                    if out_seconds is None or duration <= 0:
+                        continue
+                    elapsed = max(0.001, time.monotonic() - start_ts)
+                    speed = out_seconds / elapsed
+                    progress_ratio = max(0.0, min(1.0, out_seconds / duration))
+
+                    if progress_ratio >= 0.995:
+                        eta_seconds = None
+                        percent = 99.0
+                        message = "Finalizing audio file"
+                    else:
+                        remaining = max(0.0, duration - out_seconds)
+                        eta_seconds = remaining / speed if speed > 0 else None
+                        percent = max(0.0, min(98.9, progress_ratio * 100.0))
+                        message = "Transcoding audio"
+
+                    _set_preview_status(
+                        status_key,
+                        {
+                            "state": "running",
+                            "ready": False,
+                            "percent": percent,
+                            "eta_seconds": eta_seconds,
+                            "elapsed_seconds": elapsed,
+                            "message": message,
+                            "updated_at": time.time(),
+                        },
+                    )
+                if proc.stderr:
+                    remaining_stderr = proc.stderr.read()
+                    if remaining_stderr:
+                        stderr_lines.append(remaining_stderr.rstrip())
+                proc.wait(timeout=300)
+            except subprocess.TimeoutExpired as exc:
+                proc.kill()
+                _set_preview_status(
+                    status_key,
+                    {
+                        "state": "error",
+                        "ready": False,
+                        "percent": 0.0,
+                        "eta_seconds": None,
+                        "elapsed_seconds": time.monotonic() - start_ts,
+                        "message": f"Audio transcode timed out: {exc}",
+                        "updated_at": time.time(),
+                    },
+                )
+                _safe_remove_file(tmp_path)
+                raise RuntimeError(f"Audio transcode timed out: {exc}") from exc
+            finally:
+                _unregister_job_process(job_id, proc)
+                _close_pipe(proc.stdout)
+                _close_pipe(proc.stderr)
+
+            if cancel_event.is_set():
+                _safe_remove_file(tmp_path)
+                message = f"Audio transcode cancelled because job {job_id} is being deleted"
+                _set_preview_status(
+                    status_key,
+                    {
+                        "state": "error",
+                        "ready": False,
+                        "percent": 0.0,
+                        "eta_seconds": None,
+                        "elapsed_seconds": time.monotonic() - start_ts,
+                        "message": message,
+                        "updated_at": time.time(),
+                    },
+                )
+                raise RuntimeError(message)
+
+            if proc.returncode != 0:
+                _safe_remove_file(tmp_path)
+                detail = _compact_process_error("\n".join(stderr_lines), "")
+                logger.error(
+                    "Audio transcode failed (exit %d): %s\nCommand: %s",
+                    proc.returncode,
+                    detail,
+                    subprocess.list2cmdline(cmd),
+                )
+                message = f"Audio transcode failed (exit {proc.returncode}): {detail}"
+                _set_preview_status(
+                    status_key,
+                    {
+                        "state": "error",
+                        "ready": False,
+                        "percent": 0.0,
+                        "eta_seconds": None,
+                        "elapsed_seconds": time.monotonic() - start_ts,
+                        "message": message,
+                        "updated_at": time.time(),
+                    },
+                )
+                raise RuntimeError(message)
+
+            _set_preview_status(
+                status_key,
+                {
+                    "state": "done",
+                    "ready": True,
+                    "percent": 100.0,
+                    "eta_seconds": 0.0,
+                    "elapsed_seconds": time.monotonic() - start_ts,
+                    "message": "",
+                    "updated_at": time.time(),
+                },
+            )
+
+            for attempt in range(5):
+                try:
+                    os.replace(tmp_path, audio_path)
+                    return audio_path
+                except PermissionError as exc:
+                    if os.path.isfile(audio_path):
+                        _safe_remove_file(tmp_path)
+                        return audio_path
+                    if attempt == 4:
+                        _safe_remove_file(tmp_path)
+                        raise RuntimeError(
+                            f"Audio transcode finalize failed for {audio_path}: {exc}"
+                        ) from exc
+                    time.sleep(0.1 * (attempt + 1))
+
+        return audio_path
     finally:
         _end_job_operation(job_id, cancel_event)
 
@@ -1525,12 +1856,9 @@ def cut_file(
     else:
         # -ss after -i: decode-level seek (frame-accurate, avoids black frames /
         # distortion at the start when re-encoding)
-        cmd = [
-            "ffmpeg",
-            "-nostdin",
-            "-loglevel",
-            "warning",
-            "-stats",
+        cmd = ["ffmpeg", "-nostdin", "-loglevel", "warning", "-stats"]
+        cmd += get_hwaccel_input_args()
+        cmd += [
             "-i",
             filepath,
             "-ss",
@@ -1576,7 +1904,7 @@ def cut_file(
         elif codec:
             encoder = _CODEC_TO_ENCODER.get(codec, codec)
             if encoder in _VIDEO_ENCODERS:
-                cmd += ["-c:v", encoder]
+                cmd += ["-c:v", resolve_video_encoder(encoder)]
                 if keep_quality and source_video_bitrate and source_video_bitrate > 0:
                     cmd += ["-b:v", str(source_video_bitrate)]
 
@@ -1605,7 +1933,7 @@ def cut_file(
             if codec:
                 encoder = _CODEC_TO_ENCODER.get(codec, codec)
                 if encoder in _VIDEO_ENCODERS:
-                    cmd += ["-c:v", encoder]
+                    cmd += ["-c:v", resolve_video_encoder(encoder)]
                     # Audio codec for video re-encode: explicit or copy
                     if audio_codec:
                         a_enc = _CODEC_TO_ENCODER.get(audio_codec, audio_codec)
