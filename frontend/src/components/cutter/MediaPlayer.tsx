@@ -257,6 +257,25 @@ export default function MediaPlayer({
     }
   }, [audioUrl])
 
+  // Reset cursor to 00:00 after audio transcode completes to prevent
+  // video/audio desync from playback during the transcode.
+  const prevTranscodeState = useRef(transcodeState)
+  useEffect(() => {
+    const prev = prevTranscodeState.current
+    prevTranscodeState.current = transcodeState
+    if (prev != null && prev !== 'done' && transcodeState === 'done') {
+      const el = mediaRef.current
+      if (el) {
+        el.pause()
+        el.currentTime = 0
+        setIsPlaying(false)
+        stopLoop()
+      }
+      if (audioRef.current) audioRef.current.currentTime = 0
+      setCurrentTime(0)
+    }
+  }, [transcodeState, stopLoop])
+
   // ── Play / Pause toggle ───────────────────────────────────────
   const togglePlay = useCallback(() => {
     const el = mediaRef.current

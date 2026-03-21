@@ -125,7 +125,7 @@ export default function JobManager({
                     <span
                       className={`shrink-0 rounded px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase ${STATUS_COLORS[job.status] ?? STATUS_COLORS.ready}`}
                     >
-                      {job.status}
+                      {job.status.replace(/_/g, ' ')}
                     </span>
                     {job.status === 'ready' && job.browser_ready && (
                       <span
