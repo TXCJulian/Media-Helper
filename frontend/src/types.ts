@@ -158,6 +158,7 @@ export interface CutterJob {
   output_files: string[]
   cut_settings?: CutJobSettings | null
   preview_transcoded?: boolean
+  audio_transcoded_tracks?: number[]
   browser_ready?: boolean
   transcode_error?: string | null
   base?: string

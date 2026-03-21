@@ -793,13 +793,15 @@ def cutter_stream(
                 detail=status.get("message") or "Preview transcode failed",
             )
 
-        # Get or create the master preview (all audio tracks)
+        # Get or create the master preview (all audio tracks).
+        # Wait for the background thread event (set on completion) with a
+        # generous timeout.  If the event is never set (e.g. the thread was
+        # never started), fall back to a synchronous transcode.
         master_path = get_preview_path_if_ready(resolved, job_id)
         if not master_path:
-            logger.info("Stream: master not ready, waiting up to 120s...")
-            master_path = wait_for_preview(resolved, job_id, timeout=120)
+            master_path = wait_for_preview(resolved, job_id, timeout=7200)
         if not master_path:
-            logger.info("Stream: wait timed out, calling get_or_transcode_preview")
+            logger.info("Stream: preview not ready after wait, calling get_or_transcode_preview")
             try:
                 master_path = get_or_transcode_preview(resolved, job_id)
             except RuntimeError as e:

@@ -4,6 +4,7 @@ import ThumbnailStrip from '@/components/cutter/ThumbnailStrip'
 
 interface MediaPlayerProps {
   streamUrl: string
+  audioUrl?: string
   isVideo: boolean
   peaks: number[]
   duration: number
@@ -84,6 +85,7 @@ function getFriendlyMediaError(technical: string, code: number): string {
 
 export default function MediaPlayer({
   streamUrl,
+  audioUrl,
   isVideo,
   peaks,
   duration,
@@ -103,7 +105,9 @@ export default function MediaPlayer({
 }: MediaPlayerProps) {
   const END_TOLERANCE_SECONDS = 0.05
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
   const volumeControlRef = useRef<HTMLDivElement | null>(null)
+  const isDualMode = !!audioUrl
   const rafRef = useRef<number>(0)
   const inPointRef = useRef(inPoint)
   const outPointRef = useRef(outPoint)
@@ -116,7 +120,12 @@ export default function MediaPlayer({
   const [muted, setMuted] = useState(false)
   const [isMediaReady, setIsMediaReady] = useState(!needsTranscoding)
   const [loadedAspectRatio, setLoadedAspectRatio] = useState<string | null>(null)
-  const isTranscoding = needsTranscoding && !isMediaReady
+  // Backend is still producing the file — don't let the browser request it yet
+  const isTranscodeRunning =
+    needsTranscoding && transcodeState != null && transcodeState !== 'done'
+  const isTranscoding =
+    needsTranscoding &&
+    (!isMediaReady || isTranscodeRunning)
   const fallbackAspectRatio =
     sourceAspectRatio && sourceAspectRatio.trim().length > 0
       ? sourceAspectRatio
@@ -155,6 +164,12 @@ export default function MediaPlayer({
         return
       }
       enforceTrimBounds(el)
+      // Keep separate audio element in sync with video
+      const audioEl = audioRef.current
+      if (audioEl) {
+        const drift = Math.abs(audioEl.currentTime - el.currentTime)
+        if (drift > 0.1) audioEl.currentTime = el.currentTime
+      }
       setCurrentTime(el.currentTime)
       rafRef.current = requestAnimationFrame(tick)
     }
@@ -171,12 +186,18 @@ export default function MediaPlayer({
   // Clean up RAF on unmount
   useEffect(() => stopLoop, [stopLoop])
 
-  // Sync volume to media element
+  // Sync volume to media element (or audio element in dual mode)
   useEffect(() => {
-    if (mediaRef.current) {
-      mediaRef.current.volume = muted ? 0 : volume
+    if (isDualMode) {
+      if (mediaRef.current) mediaRef.current.muted = true
+      if (audioRef.current) audioRef.current.volume = muted ? 0 : volume
+    } else {
+      if (mediaRef.current) {
+        mediaRef.current.muted = false
+        mediaRef.current.volume = muted ? 0 : volume
+      }
     }
-  }, [volume, muted])
+  }, [volume, muted, isDualMode])
 
   // Persist volume to localStorage
   useEffect(() => {
@@ -209,11 +230,14 @@ export default function MediaPlayer({
     }
   }, [adjustVolumeByWheel])
 
-  // Reset ready/error state and force media reload when stream URL changes
+  // Reset ready/error state and force media reload when stream URL changes.
+  // Skip loading while the backend is still transcoding to avoid premature
+  // requests that block on the server.
   useEffect(() => {
     setMediaError('')
     setLoadedAspectRatio(null)
     if (needsTranscoding) setIsMediaReady(false)
+    if (isTranscodeRunning && !isDualMode) return
     const el = mediaRef.current
     if (el) {
       el.pause()
@@ -222,15 +246,30 @@ export default function MediaPlayer({
       el.load()
       setCurrentTime(0)
     }
-  }, [streamUrl, needsTranscoding, stopLoop])
+  }, [streamUrl, needsTranscoding, isTranscodeRunning, isDualMode, stopLoop])
+
+  // Sync separate audio element when audioUrl changes (track switch)
+  useEffect(() => {
+    const audioEl = audioRef.current
+    const videoEl = mediaRef.current
+    if (!audioEl || !audioUrl) return
+    audioEl.load()
+    if (videoEl) {
+      audioEl.currentTime = videoEl.currentTime
+      if (!videoEl.paused) audioEl.play().catch(() => {})
+    }
+  }, [audioUrl])
 
   // ── Play / Pause toggle ───────────────────────────────────────
   const togglePlay = useCallback(() => {
     const el = mediaRef.current
     if (!el) return
 
+    const audioEl = audioRef.current
+
     if (isPlaying) {
       el.pause()
+      audioEl?.pause()
       setIsPlaying(false)
       stopLoop()
     } else {
@@ -241,7 +280,12 @@ export default function MediaPlayer({
         el.ended
       ) {
         el.currentTime = inPoint
+        if (audioEl) audioEl.currentTime = inPoint
         setCurrentTime(inPoint)
+      }
+      if (audioEl) {
+        audioEl.currentTime = el.currentTime
+        audioEl.play().catch(() => {})
       }
       const playPromise = el.play()
       if (playPromise && typeof playPromise.then === 'function') {
@@ -266,11 +310,13 @@ export default function MediaPlayer({
     const el = mediaRef.current
     if (!el) return
     el.currentTime = inPoint
+    if (audioRef.current) audioRef.current.currentTime = inPoint
     setCurrentTime(inPoint)
   }, [inPoint])
 
   // ── Sync when media ends or pauses externally ─────────────────
   const handlePause = useCallback(() => {
+    audioRef.current?.pause()
     setIsPlaying(false)
     stopLoop()
   }, [stopLoop])
@@ -299,6 +345,10 @@ export default function MediaPlayer({
 
     const start = inPointRef.current
     el.currentTime = start
+    if (audioRef.current) {
+      audioRef.current.currentTime = start
+      audioRef.current.play().catch(() => {})
+    }
     setCurrentTime(start)
 
     const playPromise = el.play()
@@ -356,6 +406,7 @@ export default function MediaPlayer({
     const el = mediaRef.current
     if (!el) return
     el.currentTime = time
+    if (audioRef.current) audioRef.current.currentTime = time
     setCurrentTime(time)
   }, [])
 
@@ -457,7 +508,7 @@ export default function MediaPlayer({
         <div className="relative">
           <video
             ref={mediaRef as React.RefObject<HTMLVideoElement>}
-            src={streamUrl}
+            src={isTranscodeRunning && !isDualMode ? undefined : streamUrl}
             className="w-full cursor-pointer rounded-xl bg-black"
             style={{ aspectRatio: videoAspectRatio }}
             onClick={isTranscoding ? undefined : togglePlay}
@@ -473,6 +524,14 @@ export default function MediaPlayer({
             preload="none"
             playsInline
           />
+          {isDualMode && (
+            <audio
+              ref={audioRef}
+              src={audioUrl}
+              preload="auto"
+              style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }}
+            />
+          )}
           {isTranscoding && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-xl bg-black/70">
               <span className="spinner-md" />
@@ -544,7 +603,7 @@ export default function MediaPlayer({
     <div className="flex flex-col gap-2">
       <audio
         ref={mediaRef as React.RefObject<HTMLAudioElement>}
-        src={streamUrl}
+        src={isTranscodeRunning ? undefined : streamUrl}
         preload="none"
         onPause={handlePause}
         onTimeUpdate={handleTimeUpdate}

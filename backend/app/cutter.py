@@ -1467,17 +1467,31 @@ def transcode_audio_track_from_source(
             for attempt in range(5):
                 try:
                     os.replace(tmp_path, audio_path)
-                    return audio_path
+                    break
                 except PermissionError as exc:
                     if os.path.isfile(audio_path):
                         _safe_remove_file(tmp_path)
-                        return audio_path
+                        break
                     if attempt == 4:
                         _safe_remove_file(tmp_path)
                         raise RuntimeError(
                             f"Audio transcode finalize failed for {audio_path}: {exc}"
                         ) from exc
                     time.sleep(0.1 * (attempt + 1))
+
+            # Record transcoded track in job metadata
+            try:
+                meta = load_job_metadata(job_id)
+                if meta is not None:
+                    tracks = meta.get("audio_transcoded_tracks", [])
+                    if audio_stream_index not in tracks:
+                        tracks.append(audio_stream_index)
+                        meta["audio_transcoded_tracks"] = tracks
+                        save_job_metadata(job_id, meta)
+            except Exception:
+                logger.debug("Could not update audio_transcoded_tracks for job %s", job_id, exc_info=True)
+
+            return audio_path
 
         return audio_path
     finally:
@@ -1783,10 +1797,23 @@ def start_background_audio_transcode(
         },
     )
 
+    # Mark job as transcoding while audio is being built
+    _jmeta = load_job_metadata(job_id)
+    if _jmeta and _jmeta.get("status") == "ready":
+        _jmeta["status"] = "transcoding"
+        _jmeta.pop("transcode_error", None)
+        save_job_metadata(job_id, _jmeta)
+
     def _run():
         _transcode_semaphore.acquire()
         try:
             transcode_audio_track_from_source(filepath, audio_stream_index, job_id)
+            # Restore ready status on success
+            _meta = load_job_metadata(job_id)
+            if _meta and _meta.get("status") == "transcoding":
+                _meta["status"] = "ready"
+                _meta.pop("transcode_error", None)
+                save_job_metadata(job_id, _meta)
         except Exception as exc:
             _set_preview_status(
                 status_key,
@@ -1801,6 +1828,13 @@ def start_background_audio_transcode(
                 },
             )
             logger.exception("Background audio transcode failed")
+            # Restore ready status but record the error
+            _meta = load_job_metadata(job_id)
+            if _meta:
+                if _meta.get("status") == "transcoding":
+                    _meta["status"] = "ready"
+                _meta["transcode_error"] = str(exc)
+                save_job_metadata(job_id, _meta)
         finally:
             _transcode_semaphore.release()
             event.set()
@@ -2238,6 +2272,7 @@ def create_job(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": initial_status,
         "preview_transcoded": False,
+        "audio_transcoded_tracks": [],
         "browser_ready": False,
         "cut_settings": None,
         "output_files": [],

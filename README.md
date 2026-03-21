@@ -209,6 +209,7 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `BASE_PATH` | **Deprecated** - use `BASE_PATHS` instead | |
 | `BASE_PATHS` | Base path(s) to media in container (CSV) | `/media` |
 | `TVSHOW_FOLDER_NAME` | Name of TV shows folder | `TV Shows` |
 | `MUSIC_FOLDER_NAME` | Name of music folder | `Music` |

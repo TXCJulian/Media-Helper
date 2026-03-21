@@ -58,6 +58,7 @@ CUTTER_JOB_TTL = int(os.getenv("CUTTER_JOB_TTL", "86400"))
 CUTTER_MAX_DIRECT_REMUX_BYTES = int(
     os.getenv("CUTTER_MAX_DIRECT_REMUX_BYTES", str(1024 * 1024 * 1024))
 )
+HWACCEL = os.getenv("HWACCEL", "").lower().strip()
 
 _VALID_FEATURES = {"episodes", "music", "lyrics", "cutter"}
 _features_raw = os.getenv("ENABLED_FEATURES", "episodes,music,cutter")
