@@ -121,7 +121,7 @@ export default function MediaPlayer({
   const [isMediaReady, setIsMediaReady] = useState(!needsTranscoding)
   const [loadedAspectRatio, setLoadedAspectRatio] = useState<string | null>(null)
   // Backend is still producing the file — don't let the browser request it yet
-  const isTranscodeRunning = needsTranscoding && transcodeState != null && transcodeState !== 'done'
+  const isTranscodeRunning = needsTranscoding && transcodeState !== 'done'
   const isTranscoding = needsTranscoding && (!isMediaReady || isTranscodeRunning)
   const fallbackAspectRatio =
     sourceAspectRatio && sourceAspectRatio.trim().length > 0
@@ -246,7 +246,9 @@ export default function MediaPlayer({
   }, [streamUrl, needsTranscoding, isTranscodeRunning, isDualMode, stopLoop])
 
   // Sync separate audio element when audioUrl changes (track switch)
+  // or when transcode finishes (isTranscodeRunning goes false).
   useEffect(() => {
+    if (isTranscodeRunning) return
     const audioEl = audioRef.current
     const videoEl = mediaRef.current
     if (!audioEl || !audioUrl) return
@@ -255,7 +257,7 @@ export default function MediaPlayer({
       audioEl.currentTime = videoEl.currentTime
       if (!videoEl.paused) audioEl.play().catch(() => {})
     }
-  }, [audioUrl])
+  }, [audioUrl, isTranscodeRunning])
 
   // Reset cursor to 00:00 after audio transcode completes to prevent
   // video/audio desync from playback during the transcode.

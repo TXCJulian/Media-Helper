@@ -2215,8 +2215,16 @@ def cut_file(
     else:
         # -ss after -i: decode-level seek (frame-accurate, avoids black frames /
         # distortion at the start when re-encoding)
+        # Only add HW decode args when a GPU encoder will actually be used;
+        # forcing HW decode with a CPU encoder can cause ffmpeg failures.
+        _uses_gpu_encoder = False
+        if codec:
+            _base_enc = _CODEC_TO_ENCODER.get(codec, codec)
+            if _base_enc in _VIDEO_ENCODERS:
+                _uses_gpu_encoder = resolve_video_encoder(_base_enc) != _base_enc
         cmd = ["ffmpeg", "-nostdin", "-loglevel", "warning", "-stats"]
-        cmd += get_hwaccel_input_args()
+        if _uses_gpu_encoder:
+            cmd += get_hwaccel_input_args()
         cmd += [
             "-i",
             filepath,

@@ -765,16 +765,31 @@ def cutter_stream(
                 detail="job_id required for audio-only transcode",
             )
         start_background_audio_transcode(resolved, audio_stream, job_id)
+
+        # Non-blocking: if the file is already ready, use it; otherwise
+        # return 409 so the client can poll /cutter/preview-status and retry.
         audio_path = wait_for_audio_transcode(
-            resolved, job_id, audio_stream, timeout=120
+            resolved, job_id, audio_stream, timeout=0
         )
         if not audio_path:
-            try:
-                audio_path = transcode_audio_track_from_source(
-                    resolved, audio_stream, job_id
+            status = get_audio_transcode_status(resolved, job_id, audio_stream)
+            if status.get("state") == "error":
+                logger.error(
+                    "Stream: audio-only transcode error state: %s",
+                    status.get("message"),
                 )
-            except RuntimeError as e:
-                raise HTTPException(status_code=500, detail=str(e))
+                raise HTTPException(
+                    status_code=500,
+                    detail=status.get("message") or "Audio-only transcode failed",
+                )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Audio preview not ready yet — poll "
+                    "/cutter/preview-status?audio_transcode_stream="
+                    f"{audio_stream} and retry"
+                ),
+            )
         resolved = audio_path
     elif transcode and needs_tx:
         if not job_id:

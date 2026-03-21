@@ -1,18 +1,6 @@
 """Tests for audio-only transcode from source."""
 
 from unittest.mock import patch, MagicMock
-import subprocess
-import os
-import threading
-
-import pytest
-
-
-def _reload_cutter():
-    import importlib
-    import app.cutter as cutter_mod
-    importlib.reload(cutter_mod)
-    return cutter_mod
 
 
 class TestAudioTranscodeStatusKey:

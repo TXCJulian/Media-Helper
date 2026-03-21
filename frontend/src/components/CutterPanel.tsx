@@ -276,16 +276,15 @@ export default function CutterPanel({
       onError('')
       setSource({ probe: null, peaks: [], thumbnailUrl: '', isLoadingFile: true })
       try {
-        const [probeData, waveData] = await Promise.all([
-          fetchProbe(path, source, jid, base),
-          fetchWaveform(path, source, 800, jid, base),
-        ])
+        const probeData = await fetchProbe(path, source, jid, base)
+        const isVideo = probeData.video_codec != null
+        // Skip waveform for videos — they use the thumbnail strip instead.
+        const peaks = isVideo ? [] : (await fetchWaveform(path, source, 800, jid, base)).peaks
         setSource({
           probe: probeData,
-          peaks: waveData.peaks,
+          peaks,
           isLoadingFile: false,
-          thumbnailUrl:
-            probeData.video_codec != null ? getThumbnailUrl(path, source, jid, 30, base) : '',
+          thumbnailUrl: isVideo ? getThumbnailUrl(path, source, jid, 30, base) : '',
         })
         const probePatch = buildProbeSelectionPatch(path, probeData.duration, probeData)
         setPersisted((prev) => ({
