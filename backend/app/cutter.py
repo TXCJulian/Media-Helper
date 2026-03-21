@@ -1742,6 +1742,121 @@ def start_background_transcode(
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _audio_transcode_file_path(
+    filepath: str, job_id: str, audio_stream_index: int
+) -> str:
+    suffix = _preview_cache_key(filepath)
+    job_dir = os.path.join(CUTTER_JOBS_DIR, job_id)
+    return os.path.join(
+        job_dir, f"preview_{suffix}_srcaudio{audio_stream_index}.mp4"
+    )
+
+
+def start_background_audio_transcode(
+    filepath: str,
+    audio_stream_index: int,
+    job_id: str,
+) -> None:
+    """Kick off a background audio-only transcode for a single track."""
+    audio_path = _audio_transcode_file_path(filepath, job_id, audio_stream_index)
+
+    if os.path.isfile(audio_path):
+        return
+
+    with _transcode_lock_guard:
+        if audio_path in _transcode_locks:
+            return  # Already in progress
+        event = threading.Event()
+        _transcode_locks[audio_path] = event
+
+    status_key = _audio_transcode_status_key(filepath, job_id, audio_stream_index)
+    _set_preview_status(
+        status_key,
+        {
+            "state": "running",
+            "ready": False,
+            "percent": 0.0,
+            "eta_seconds": None,
+            "elapsed_seconds": 0.0,
+            "message": "Queued for audio transcode",
+            "updated_at": time.time(),
+        },
+    )
+
+    def _run():
+        _transcode_semaphore.acquire()
+        try:
+            transcode_audio_track_from_source(filepath, audio_stream_index, job_id)
+        except Exception as exc:
+            _set_preview_status(
+                status_key,
+                {
+                    "state": "error",
+                    "ready": False,
+                    "percent": 0.0,
+                    "eta_seconds": None,
+                    "elapsed_seconds": 0.0,
+                    "message": str(exc),
+                    "updated_at": time.time(),
+                },
+            )
+            logger.exception("Background audio transcode failed")
+        finally:
+            _transcode_semaphore.release()
+            event.set()
+            with _transcode_lock_guard:
+                _transcode_locks.pop(audio_path, None)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def get_audio_transcode_status(
+    filepath: str, job_id: str, audio_stream_index: int
+) -> dict:
+    """Return transcode status for a specific audio track from source."""
+    status_key = _audio_transcode_status_key(filepath, job_id, audio_stream_index)
+    with _preview_status_guard:
+        status = dict(_preview_status.get(status_key, {}))
+
+    # Check if the output file already exists (done)
+    audio_path = _audio_transcode_file_path(filepath, job_id, audio_stream_index)
+    if os.path.isfile(audio_path):
+        status.update(
+            {
+                "state": "done",
+                "ready": True,
+                "percent": 100.0,
+                "eta_seconds": 0.0,
+                "message": "",
+                "updated_at": time.time(),
+            }
+        )
+    else:
+        status.setdefault("state", "idle")
+        status.setdefault("ready", False)
+        status.setdefault("percent", 0.0)
+        status.setdefault("eta_seconds", None)
+        status.setdefault("elapsed_seconds", 0.0)
+        status.setdefault("message", "")
+        status.setdefault("updated_at", time.time())
+    return status
+
+
+def wait_for_audio_transcode(
+    filepath: str, job_id: str, audio_stream_index: int, timeout: float = 120
+) -> str | None:
+    """Wait for a background audio transcode to finish. Returns path or None."""
+    audio_path = _audio_transcode_file_path(filepath, job_id, audio_stream_index)
+
+    with _transcode_lock_guard:
+        event = _transcode_locks.get(audio_path)
+
+    if event:
+        event.wait(timeout=timeout)
+
+    return audio_path if os.path.isfile(audio_path) else None
+
+
 def get_preview_path_if_ready(
     filepath: str,
     job_id: str,

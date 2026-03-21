@@ -105,3 +105,43 @@ class TestTranscodeAudioTrackFromSource:
         from app.cutter import transcode_audio_track_from_source
         result = transcode_audio_track_from_source("/media/test.mkv", 1, "job123")
         assert "srcaudio1" in result
+
+
+class TestStartBackgroundAudioTranscode:
+
+    @patch("app.cutter.os.path.getmtime", return_value=1000.0)
+    @patch("app.cutter.os.path.isfile", return_value=True)
+    def test_skips_if_file_already_exists(self, mock_isfile, mock_getmtime):
+        from app.cutter import start_background_audio_transcode
+        # Should not raise or start a thread
+        start_background_audio_transcode("/media/test.mkv", 1, "job123")
+
+    @patch("app.cutter.os.path.getmtime", return_value=1000.0)
+    @patch("app.cutter.transcode_audio_track_from_source")
+    @patch("app.cutter.os.path.isfile", return_value=False)
+    def test_starts_background_thread(self, mock_isfile, mock_transcode, mock_getmtime):
+        import time as _time
+        from app.cutter import start_background_audio_transcode
+        start_background_audio_transcode("/media/test.mkv", 1, "job_bg")
+        _time.sleep(0.3)  # Give thread time to start
+        # Second call should be a no-op (already in progress or done)
+        start_background_audio_transcode("/media/test.mkv", 1, "job_bg")
+
+
+class TestGetAudioTranscodeStatus:
+
+    @patch("app.cutter.os.path.getmtime", return_value=1000.0)
+    @patch("app.cutter.os.path.isfile", return_value=False)
+    def test_returns_idle_when_no_status(self, mock_isfile, mock_getmtime):
+        from app.cutter import get_audio_transcode_status
+        status = get_audio_transcode_status("/media/nonexistent.mkv", "jobX", 1)
+        assert status["state"] == "idle"
+        assert status["ready"] is False
+
+    @patch("app.cutter.os.path.getmtime", return_value=1000.0)
+    @patch("app.cutter.os.path.isfile", return_value=True)
+    def test_returns_done_when_file_exists(self, mock_isfile, mock_getmtime):
+        from app.cutter import get_audio_transcode_status
+        status = get_audio_transcode_status("/media/test.mkv", "job123", 1)
+        assert status["state"] == "done"
+        assert status["ready"] is True
