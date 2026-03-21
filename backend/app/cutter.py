@@ -1451,6 +1451,32 @@ def transcode_audio_track_from_source(
                 )
                 raise RuntimeError(message)
 
+            for attempt in range(5):
+                try:
+                    os.replace(tmp_path, audio_path)
+                    break
+                except PermissionError as exc:
+                    if os.path.isfile(audio_path):
+                        _safe_remove_file(tmp_path)
+                        break
+                    if attempt == 4:
+                        _safe_remove_file(tmp_path)
+                        message = f"Audio transcode finalize failed for {audio_path}: {exc}"
+                        _set_preview_status(
+                            status_key,
+                            {
+                                "state": "error",
+                                "ready": False,
+                                "percent": 0.0,
+                                "eta_seconds": None,
+                                "elapsed_seconds": time.monotonic() - start_ts,
+                                "message": message,
+                                "updated_at": time.time(),
+                            },
+                        )
+                        raise RuntimeError(message) from exc
+                    time.sleep(0.1 * (attempt + 1))
+
             _set_preview_status(
                 status_key,
                 {
@@ -1463,21 +1489,6 @@ def transcode_audio_track_from_source(
                     "updated_at": time.time(),
                 },
             )
-
-            for attempt in range(5):
-                try:
-                    os.replace(tmp_path, audio_path)
-                    break
-                except PermissionError as exc:
-                    if os.path.isfile(audio_path):
-                        _safe_remove_file(tmp_path)
-                        break
-                    if attempt == 4:
-                        _safe_remove_file(tmp_path)
-                        raise RuntimeError(
-                            f"Audio transcode finalize failed for {audio_path}: {exc}"
-                        ) from exc
-                    time.sleep(0.1 * (attempt + 1))
 
             # Record transcoded track in job metadata
             try:
