@@ -264,6 +264,50 @@ def test_decode_file_id_handles_unpadded_base64():
     assert path == "clip.mp4"
 
 
+def test_encode_decode_file_id_roundtrip(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "test-key")
+    import importlib, app.config
+    importlib.reload(app.config)
+    importlib.reload(cutter)
+
+    file_id = cutter.encode_file_id("server", "path/to/file.mp4", job_id="", base="media")
+    source, job_id, base, path = cutter.decode_file_id(file_id)
+    assert source == "server"
+    assert path == "path/to/file.mp4"
+    assert base == "media"
+
+
+def test_decode_file_id_rejects_tampered_signature(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "test-key")
+    import importlib, app.config
+    importlib.reload(app.config)
+    importlib.reload(cutter)
+
+    file_id = cutter.encode_file_id("server", "path/to/file.mp4")
+    # Tamper with the file_id by flipping a character
+    import base64
+    decoded = base64.urlsafe_b64decode(file_id + "==").decode("utf-8")
+    tampered = decoded[:-1] + ("a" if decoded[-1] != "a" else "b")
+    tampered_id = base64.urlsafe_b64encode(tampered.encode("utf-8")).decode("ascii")
+
+    with pytest.raises(ValueError, match="signature"):
+        cutter.decode_file_id(tampered_id)
+
+
+def test_decode_file_id_rejects_unsigned_legacy_format(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "test-key")
+    import importlib, app.config
+    importlib.reload(app.config)
+    importlib.reload(cutter)
+
+    import base64
+    raw = "server||media|path/to/file.mp4"
+    unsigned_id = base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
+
+    with pytest.raises(ValueError, match="signature"):
+        cutter.decode_file_id(unsigned_id)
+
+
 @pytest.mark.parametrize(
     ("audio_codec", "filepath", "video_codec", "expected"),
     [
