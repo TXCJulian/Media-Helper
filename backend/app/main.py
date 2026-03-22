@@ -158,9 +158,9 @@ async def lifespan(app: FastAPI):
         else:
             import threading
 
-            from app.hwaccel import detect_gpu
+            from app.hwaccel import _ensure_detected
 
-            threading.Thread(target=detect_gpu, daemon=True).start()
+            threading.Thread(target=_ensure_detected, daemon=True).start()
         cleanup_task = asyncio.create_task(_cleanup_cutter_jobs())
 
     yield

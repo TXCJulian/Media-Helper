@@ -324,6 +324,8 @@ export default function OutputSettings({
                         </span>
                         <TrackModeSelect
                           options={modeOptions.filter((o) => {
+                            // Always keep the currently selected value visible
+                            if (o.value === mode) return true
                             if (
                               o.value === 'remove' &&
                               !isVideo &&
