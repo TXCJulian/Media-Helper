@@ -26,7 +26,6 @@ import {
   postRefresh,
   saveToSource,
 } from '@/lib/api'
-import { encodeCutterFileId } from '@/lib/cutterFileId'
 import {
   getBrowserCompatibilityMessage,
   getBrowserCompatibilityReport,
@@ -322,7 +321,7 @@ export default function CutterPanel({
         const { job_id } = await createJob(path, 'server', form.base)
         setSource({
           filePath: path,
-          fileId: encodeCutterFileId('server', path, job_id, form.base),
+          fileId: file.file_id ?? '',
           jobId: job_id,
         })
         setPersisted((prev) => ({
@@ -379,7 +378,7 @@ export default function CutterPanel({
       const settings = job.cut_settings ?? null
       const sourceStatePatch = {
         filePath,
-        fileId: encodeCutterFileId(source, filePath, job.job_id, jobBase),
+        fileId: job.source_file_id ?? '',
         jobId: job.job_id,
         outputFiles: job.output_files,
         probe: null,
