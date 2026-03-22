@@ -1338,7 +1338,7 @@ def cutter_cut(
         "m4a": {"aac", "ac3", "eac3", "mp3", "opus"},
         "mov": {"aac", "ac3", "eac3", "flac", "mp3"},
         "webm": {"opus", "vorbis"},
-        "ogg": {"opus", "vorbis", "flac"},
+        "ogg": {"opus", "vorbis"},
         "mp3": {"mp3"},
         "flac": {"flac"},
         "aac": {"aac"},

@@ -377,7 +377,11 @@ def probe_file(filepath: str) -> dict:
         ),
         "display_aspect_ratio": display_aspect_ratio,
         "sample_rate": first_audio["sample_rate"] if first_audio else 0,
-        "video_bitrate": _estimate_video_bitrate(video_stream, fmt, audio_streams) if video_stream else None,
+        "video_bitrate": (
+            _estimate_video_bitrate(video_stream, fmt, audio_streams)
+            if video_stream
+            else None
+        ),
         "audio_streams": audio_streams,
     }
     return info
@@ -828,8 +832,7 @@ def get_or_transcode_preview(
 
             # Check if GPU encoder is actually available before adding HW decode args
             _uses_gpu = (
-                needs_video_reencode
-                and resolve_video_encoder("libx264") != "libx264"
+                needs_video_reencode and resolve_video_encoder("libx264") != "libx264"
             )
 
             cmd = ["ffmpeg", "-nostdin", "-loglevel", "warning", "-stats", "-y"]

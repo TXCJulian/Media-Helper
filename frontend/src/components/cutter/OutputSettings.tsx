@@ -159,12 +159,14 @@ export default function OutputSettings({
     }
   }
 
-  // Auto-correct tracks whose mode is no longer valid for the current container.
-  // The container-change handler covers most cases, but initial render or
-  // external state changes can leave a track in passthru when the source codec
-  // can't be stream-copied into the target container.
+  // Auto-correct tracks whose mode is no longer valid for the current state.
+  // - Stream copy on: re-encode tracks switch to passthru
+  // - Passthru + source can't be stream-copied into container: switch to re-encode
   useEffect(() => {
     const corrected = audioTracks.map((t) => {
+      if (streamCopy && t.mode === 'reencode') {
+        return { ...t, mode: 'passthru' as const }
+      }
       if (t.mode !== 'passthru') return t
       const src = audioStreams.find((s) => s.index === t.streamIndex)
       if (!src || isPassthruCompatible(src.codec, container)) return t
@@ -177,7 +179,7 @@ export default function OutputSettings({
     if (corrected.some((t, i) => t !== audioTracks[i])) {
       onAudioTracksChange(corrected)
     }
-  }, [audioTracks, audioStreams, container, onAudioTracksChange])
+  }, [audioTracks, audioStreams, container, streamCopy, onAudioTracksChange])
 
   const filteredAudioCodecs = audioCodecsForContainer(audioCodecOptions, container)
 
@@ -189,25 +191,34 @@ export default function OutputSettings({
     ? incompatibleContainers(containerOptions, codec)
     : undefined
 
-  // In stream copy mode, hide containers that can't mux the source video codec
-  const sourceEncoderName = (() => {
-    if (!streamCopy || !isVideo || !sourceVideoCodec) return null
-    const map: Record<string, string> = {
-      h264: 'libx264',
-      hevc: 'libx265',
-      h265: 'libx265',
-      vp9: 'libvpx-vp9',
-      av1: 'libsvtav1',
-      mpeg2video: 'mpeg2video',
+  // In stream copy mode, hide containers that can't mux the source codec(s).
+  // For video: filter by video codec compatibility.
+  // For audio-only: filter by audio passthru compatibility.
+  const filteredContainerOptions = (() => {
+    if (!streamCopy) return containerOptions
+    if (isVideo && sourceVideoCodec) {
+      const map: Record<string, string> = {
+        h264: 'libx264',
+        hevc: 'libx265',
+        h265: 'libx265',
+        vp9: 'libvpx-vp9',
+        av1: 'libsvtav1',
+        mpeg2video: 'mpeg2video',
+      }
+      const encoderName = map[sourceVideoCodec.toLowerCase()] ?? null
+      if (encoderName) {
+        const incompat = incompatibleContainers(containerOptions, encoderName)
+        return containerOptions.filter((o) => !incompat.has(o.value))
+      }
     }
-    return map[sourceVideoCodec.toLowerCase()] ?? null
+    if (!isVideo && audioStreams.length > 0) {
+      // Keep only containers where ALL source audio codecs can be passthru'd
+      return containerOptions.filter((o) =>
+        audioStreams.every((s) => isPassthruCompatible(s.codec, o.value)),
+      )
+    }
+    return containerOptions
   })()
-  const streamCopyIncompat = sourceEncoderName
-    ? incompatibleContainers(containerOptions, sourceEncoderName)
-    : null
-  const filteredContainerOptions = streamCopyIncompat
-    ? containerOptions.filter((o) => !streamCopyIncompat.has(o.value))
-    : containerOptions
 
   // Auto-correct container if current selection is not in filtered options
   useEffect(() => {
@@ -215,7 +226,7 @@ export default function OutputSettings({
       filteredContainerOptions.length > 0 &&
       !filteredContainerOptions.some((o) => o.value === container)
     ) {
-      onContainerChange(filteredContainerOptions[0].value)
+      onContainerChange(filteredContainerOptions[0]!.value)
     }
   }, [filteredContainerOptions, container, onContainerChange])
 
@@ -329,7 +340,7 @@ export default function OutputSettings({
             />
           </FormSection>
 
-          {audioStreams.length > 0 && (
+          {audioStreams.length > 0 && !(streamCopy && !isVideo) && (
             <FormSection label="Audio Tracks">
               <div className="space-y-2">
                 {audioStreams.map((stream, i) => {
@@ -358,6 +369,8 @@ export default function OutputSettings({
                           options={modeOptions.filter((o) => {
                             // Always keep the currently selected value visible
                             if (o.value === mode) return true
+                            // Stream copy mode: no re-encoding, only passthru/remove
+                            if (o.value === 'reencode' && streamCopy) return false
                             if (
                               o.value === 'remove' &&
                               !isVideo &&

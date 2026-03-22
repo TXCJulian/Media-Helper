@@ -24,7 +24,7 @@ const containerAudioCodecs: Record<string, Set<string>> = {
   mov: new Set(['aac', 'ac3', 'eac3', 'flac', 'mp3']),
   // Audio-only containers
   mka: new Set(['aac', 'ac3', 'eac3', 'dts', 'truehd', 'flac', 'opus', 'vorbis', 'mp3']),
-  ogg: new Set(['opus', 'vorbis', 'flac']),
+  ogg: new Set(['opus', 'vorbis']),
   mp3: new Set(['mp3']),
   flac: new Set(['flac']),
 }
@@ -38,7 +38,7 @@ const containerPassthruBlacklist: Record<string, Set<string>> = {
   m4a: new Set(['dts', 'truehd', 'flac', 'vorbis', 'pcm_s16le', 'pcm_s24le']),
   mov: new Set(['dts', 'truehd', 'vorbis', 'opus', 'pcm_s16le', 'pcm_s24le']),
   webm: new Set(['aac', 'ac3', 'eac3', 'mp3', 'flac', 'truehd', 'dts', 'pcm_s16le', 'pcm_s24le']),
-  ogg: new Set(['aac', 'ac3', 'eac3', 'mp3', 'truehd', 'dts']),
+  ogg: new Set(['aac', 'ac3', 'eac3', 'mp3', 'flac', 'truehd', 'dts']),
   mp3: new Set(['aac', 'ac3', 'eac3', 'flac', 'opus', 'vorbis', 'truehd', 'dts']),
   flac: new Set(['aac', 'ac3', 'eac3', 'mp3', 'opus', 'vorbis', 'truehd', 'dts']),
 }

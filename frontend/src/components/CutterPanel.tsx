@@ -944,7 +944,7 @@ export default function CutterPanel({
                 onInPointChange={(t) => update('inPoint', t)}
                 onOutPointChange={(t) => update('outPoint', t)}
                 thumbnailUrl={thumbnailUrl || undefined}
-                needsTranscoding={probe.needs_transcoding && transcodeMode === 'full'}
+                needsTranscoding={probe.needs_transcoding && transcodeMode !== 'off'}
                 transcodePercent={previewStatus?.percent}
                 transcodeEtaSeconds={previewStatus?.eta_seconds ?? null}
                 transcodeState={previewStatus?.state}
