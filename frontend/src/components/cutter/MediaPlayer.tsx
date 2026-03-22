@@ -239,12 +239,15 @@ export default function MediaPlayer({
     setMediaError('')
     setLoadedAspectRatio(null)
     if (needsTranscoding) setIsMediaReady(false)
-    if (isTranscodeRunning && streamNeedsTranscode) return
     const el = mediaRef.current
     if (el) {
       el.pause()
       setIsPlaying(false)
       stopLoop()
+    }
+    // Don't load the new URL while the backend is still transcoding
+    if (isTranscodeRunning && streamNeedsTranscode) return
+    if (el) {
       el.load()
       setCurrentTime(0)
     }

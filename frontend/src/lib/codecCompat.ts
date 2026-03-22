@@ -11,7 +11,7 @@ type Option = { label: string; value: string }
 // ── Video codecs allowed per container ──────────────────────────────────────
 const containerVideoCodecs: Record<string, Set<string>> = {
   mp4: new Set(['libx264', 'libx265', 'libsvtav1']),
-  mkv: new Set(['libx264', 'libx265', 'libvpx-vp9', 'libsvtav1']),
+  mkv: new Set(['libx264', 'libx265', 'libvpx-vp9', 'libsvtav1', 'mpeg2video']),
   webm: new Set(['libvpx-vp9', 'libsvtav1']),
   mov: new Set(['libx264', 'libx265']),
 }

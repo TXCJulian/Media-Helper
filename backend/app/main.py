@@ -1402,17 +1402,14 @@ def cutter_cut(
     else:
         out_filename = original_name
 
-    # Ensure the output filename has a proper extension so ffmpeg can
-    # determine the muxer.  When stream-copying, keep the original
-    # container extension; when re-encoding, use the chosen container.
+    # Ensure the output filename extension matches the chosen container.
+    # When stream-copying without an explicit container, keep the original
+    # extension; otherwise use the container as extension.
     name_stem, name_ext = os.path.splitext(out_filename)
-    if not name_ext:
-        if stream_copy:
-            out_filename = name_stem + original_ext
-        elif container:
-            out_filename = name_stem + "." + container
-        else:
-            out_filename = name_stem + original_ext
+    if container:
+        out_filename = name_stem + "." + container
+    elif not name_ext:
+        out_filename = name_stem + original_ext
 
     output_dir = os.path.join(job_dir, "output")
     output_path = os.path.join(output_dir, out_filename)

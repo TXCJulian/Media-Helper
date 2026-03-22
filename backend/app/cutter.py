@@ -2460,9 +2460,19 @@ def cut_file(
                 else:
                     cmd += ["-c:a", encoder]
 
+    # Reset timestamps to zero so the output container reports the correct
+    # trimmed duration.  Without this, MOV (and sometimes MP4) retain the
+    # original PTS offsets, making the file appear to have the full source
+    # length even though only the selected segment was copied.
+    if stream_copy:
+        cmd += ["-avoid_negative_ts", "make_zero"]
+
     if container:
         ffmpeg_fmt = _CONTAINER_TO_FFMPEG_FORMAT.get(container, container)
         cmd += ["-f", ffmpeg_fmt]
+        # Move moov atom to the front for fast playback start in MP4/MOV
+        if container in {"mp4", "m4a", "mov"}:
+            cmd += ["-movflags", "+faststart"]
 
     cmd += ["-y", output_path]
 

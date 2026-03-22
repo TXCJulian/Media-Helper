@@ -24,6 +24,7 @@ interface OutputSettingsProps {
   audioTracks: AudioTrackConfig[]
   audioStreams: AudioStreamInfo[]
   isVideo: boolean
+  sourceVideoCodec: string | null
   sourceVideoBitrate: number | null
   onOutputNameChange: (name: string) => void
   onStreamCopyChange: (value: boolean) => void
@@ -96,6 +97,7 @@ export default function OutputSettings({
   audioTracks,
   audioStreams,
   isVideo,
+  sourceVideoCodec,
   sourceVideoBitrate,
   onOutputNameChange,
   onStreamCopyChange,
@@ -186,6 +188,30 @@ export default function OutputSettings({
   const incompatContainers = isReencode
     ? incompatibleContainers(containerOptions, codec)
     : undefined
+
+  // In stream copy mode, hide containers that can't mux the source video codec
+  const sourceEncoderName = (() => {
+    if (!streamCopy || !isVideo || !sourceVideoCodec) return null
+    const map: Record<string, string> = {
+      h264: 'libx264', hevc: 'libx265', h265: 'libx265',
+      vp9: 'libvpx-vp9', av1: 'libsvtav1',
+      mpeg2video: 'mpeg2video',
+    }
+    return map[sourceVideoCodec.toLowerCase()] ?? null
+  })()
+  const streamCopyIncompat = sourceEncoderName
+    ? incompatibleContainers(containerOptions, sourceEncoderName)
+    : null
+  const filteredContainerOptions = streamCopyIncompat
+    ? containerOptions.filter((o) => !streamCopyIncompat.has(o.value))
+    : containerOptions
+
+  // Auto-correct container if current selection is not in filtered options
+  useEffect(() => {
+    if (filteredContainerOptions.length > 0 && !filteredContainerOptions.some((o) => o.value === container)) {
+      onContainerChange(filteredContainerOptions[0].value)
+    }
+  }, [filteredContainerOptions, container, onContainerChange])
 
   const updateTrack = (streamIndex: number, updates: Partial<AudioTrackConfig>) => {
     onAudioTracksChange(
@@ -289,7 +315,7 @@ export default function OutputSettings({
 
           <FormSection label="Container">
             <SegmentedControl
-              options={containerOptions}
+              options={filteredContainerOptions}
               value={container}
               onChange={handleContainerChange}
               incompatible={incompatContainers}

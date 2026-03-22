@@ -52,6 +52,7 @@ const SOURCE_CODEC_TO_ENCODER: Record<string, string> = {
   h265: 'libx265',
   vp9: 'libvpx-vp9',
   av1: 'libsvtav1',
+  mpeg2video: 'libx264',
 }
 
 const EXT_TO_CONTAINER: Record<string, string> = {
@@ -986,6 +987,7 @@ export default function CutterPanel({
               audioTracks={form.audioTracks}
               audioStreams={probe.audio_streams ?? []}
               isVideo={isVideo}
+              sourceVideoCodec={probe.video_codec ?? null}
               sourceVideoBitrate={probe.video_bitrate ?? null}
               onOutputNameChange={(v) => update('outputName', v)}
               onStreamCopyChange={(v) => {

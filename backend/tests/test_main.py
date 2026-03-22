@@ -246,12 +246,10 @@ class TestCutterStreamValidation:
         )
         monkeypatch.setattr(main_mod, "needs_transcoding", lambda *_args, **_kwargs: True)
         transcode_called = False
-        _orig = main_mod.start_background_transcode
 
-        def _no_transcode(*args, **kwargs):
+        def _no_transcode(*_args, **_kwargs):
             nonlocal transcode_called
             transcode_called = True
-            return _orig(*args, **kwargs)
 
         monkeypatch.setattr(main_mod, "start_background_transcode", _no_transcode)
 
