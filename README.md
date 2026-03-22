@@ -502,7 +502,7 @@ docker compose logs renamer-backend
 docker network inspect renamer-network
 ```
 
-1. Check service names in `nginx-app.conf`:
+2. Check service names in `nginx-app.conf`:
 
 ```nginx
 proxy_pass http://renamer-backend:3332;  # Must match docker-compose.yml
