@@ -18,6 +18,8 @@ services:
       #- CUTTER_MAX_DIRECT_REMUX_BYTES=VALID_MAX_DIRECT_REMUX_BYTES_HERE #maximum file size in bytes for direct remuxing in cutter module, defaults to 1073741824 (1 GB)
       #- HWACCEL=off  # Uncomment to disable GPU-accelerated video encoding
       #- VAAPI_DEVICE=/dev/dri/renderD128  # Uncomment to override VAAPI device path defaults to /dev/dri/renderD128
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
     # --- GPU passthrough (uncomment ONE section matching your hardware) ---
     # NVIDIA GPU:
     #deploy:
@@ -30,10 +32,11 @@ services:
     # Intel/AMD iGPU:
     #devices:
     #  - /dev/dri:/dev/dri
-    ports:
-      - target: 3332
-        published: 3332
-        protocol: tcp
+    # Backend accessed via internal renamer-network only (through nginx on port 3333)
+    # ports:
+    #   - target: 3332
+    #     published: 3332
+    #     protocol: tcp
     restart: unless-stopped
     volumes:
       - /path/to/your/media:/media:rw
