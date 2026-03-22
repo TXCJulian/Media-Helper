@@ -27,11 +27,18 @@ export function connectSSE(
         method: 'POST',
         body: formData,
         signal: controller.signal,
+        credentials: 'include',
       })
     } catch {
       if (!controller.signal.aborted) {
         callbacks.onError('Connection failed')
       }
+      return
+    }
+
+    if (response.status === 401) {
+      window.dispatchEvent(new Event('auth:expired'))
+      callbacks.onError('Session expired')
       return
     }
 

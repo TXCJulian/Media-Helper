@@ -24,7 +24,11 @@ export async function fetchJson<T>(
       if (v) url.searchParams.set(k, v)
     }
   }
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), credentials: 'include' })
+  if (res.status === 401) {
+    window.dispatchEvent(new Event('auth:expired'))
+    throw new Error('Session expired')
+  }
   if (!res.ok) {
     throw new Error(await extractErrorMessage(res))
   }
@@ -45,7 +49,12 @@ export async function postForm<T>(
     method: 'POST',
     body: formData,
     signal: AbortSignal.timeout(timeoutMs),
+    credentials: 'include',
   })
+  if (res.status === 401) {
+    window.dispatchEvent(new Event('auth:expired'))
+    throw new Error('Session expired')
+  }
   if (!res.ok) {
     throw new Error(await extractErrorMessage(res))
   }
@@ -82,6 +91,7 @@ export function uploadFile(
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', new URL('/cutter/upload', API_BASE).href)
+    xhr.withCredentials = true
     xhr.setRequestHeader('Content-Type', 'application/octet-stream')
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name))
 
@@ -94,6 +104,11 @@ export function uploadFile(
     }
 
     xhr.addEventListener('load', () => {
+      if (xhr.status === 401) {
+        window.dispatchEvent(new Event('auth:expired'))
+        reject(new Error('Session expired'))
+        return
+      }
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
           resolve(JSON.parse(xhr.responseText))
@@ -235,7 +250,12 @@ export async function deleteJob(jobId: string): Promise<void> {
   const res = await fetch(url, {
     method: 'DELETE',
     signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    credentials: 'include',
   })
+  if (res.status === 401) {
+    window.dispatchEvent(new Event('auth:expired'))
+    throw new Error('Session expired')
+  }
   if (!res.ok) throw new Error(await extractErrorMessage(res))
 }
 
@@ -251,7 +271,27 @@ export async function saveToSource(
     `/cutter/jobs/${encodeURIComponent(jobId)}/save/${encodeURIComponent(filename)}`,
     API_BASE,
   )
-  const res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS) })
+  const res = await fetch(url, {
+    method: 'POST',
+    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    credentials: 'include',
+  })
+  if (res.status === 401) {
+    window.dispatchEvent(new Event('auth:expired'))
+    throw new Error('Session expired')
+  }
   if (!res.ok) throw new Error(await extractErrorMessage(res))
   return res.json()
+}
+
+export async function fetchAuthStatus(): Promise<{
+  auth_enabled: boolean
+  authenticated: boolean
+}> {
+  return fetchJson('/auth/status')
+}
+
+export async function postLogout(): Promise<void> {
+  const url = new URL('/auth/logout', API_BASE)
+  await fetch(url, { method: 'POST', credentials: 'include' })
 }
