@@ -1,6 +1,7 @@
 import base64
 import functools
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -2994,20 +2995,24 @@ def cleanup_old_jobs() -> None:
 
 
 def encode_file_id(source: str, path: str, job_id: str = "", base: str = "") -> str:
-    """URL-safe base64 encode of 'source|job_id|base|path'."""
-    raw = f"{source}|{job_id}|{base}|{path}"
+    """URL-safe base64 encode of 'source|job_id|base|path|hmac_signature'."""
+    from app.config import SECRET_KEY
+    payload = f"{source}|{job_id}|{base}|{path}"
+    sig = hmac.new(SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    raw = f"{payload}|{sig}"
     return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
 
 
 def decode_file_id(file_id: str) -> tuple[str, str, str, str]:
-    """Decode a file_id back to (source, job_id, base, path). Raises ValueError on invalid input.
+    """Decode and verify a signed file_id. Returns (source, job_id, base, path).
+    Raises ValueError on invalid/tampered input.
 
     Security note: This function performs NO path validation. Callers MUST
     validate the returned path against allowed base directories before use
     (e.g., via ``validate_path()``) to prevent directory traversal attacks.
     """
+    from app.config import SECRET_KEY
     try:
-        # Re-add padding stripped by the frontend (btoa → strip '=')
         padding = 4 - len(file_id) % 4
         if padding != 4:
             file_id += "=" * padding
@@ -3015,24 +3020,23 @@ def decode_file_id(file_id: str) -> tuple[str, str, str, str]:
     except Exception as e:
         raise ValueError(f"Invalid file_id: {e}") from e
 
-    # Try new format first (pipe-separated): "source|job_id|base|path"
-    if "|" in decoded:
-        parts = decoded.split("|", 3)
-        if len(parts) == 4:
-            return parts[0], parts[1], parts[2], parts[3]
-        raise ValueError("Invalid file_id format: expected 'source|job_id|base|path'")
+    # Split off HMAC signature (last pipe-separated segment, hex-only)
+    last_pipe = decoded.rfind("|")
+    if last_pipe == -1:
+        raise ValueError("Invalid file_id format: no signature")
 
-    # Legacy colon-separated formats (no Windows paths)
-    parts = decoded.split(":", 3)
-    if len(parts) == 2:
-        # Legacy format: "source:path"
-        return parts[0], "", "", parts[1]
-    if len(parts) == 3:
-        # Legacy format: "source:job_id:path"
-        return parts[0], parts[1], "", parts[2]
+    payload = decoded[:last_pipe]
+    provided_sig = decoded[last_pipe + 1:]
+
+    # Verify HMAC
+    expected_sig = hmac.new(
+        SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(provided_sig, expected_sig):
+        raise ValueError("Invalid file_id: signature verification failed")
+
+    # Parse payload: "source|job_id|base|path"
+    parts = payload.split("|", 3)
     if len(parts) == 4:
         return parts[0], parts[1], parts[2], parts[3]
-
-    raise ValueError(
-        "Invalid file_id format: expected 'source|job_id|base|path' or legacy format"
-    )
+    raise ValueError("Invalid file_id format: expected 'source|job_id|base|path'")
