@@ -33,7 +33,7 @@ from app.config import (
     ENABLED_FEATURES_SET,
     AUTH_ENABLED,
 )
-from app.auth import require_auth, verify_login, create_session_cookie, clear_session_cookie, check_session
+from app.auth import verify_login, create_session_cookie, clear_session_cookie, check_session
 from app.rename_episodes import rename_episodes
 from app.rename_music import rename_music, load_audio_file, get_first_tag_value
 from app.get_dirs import (
