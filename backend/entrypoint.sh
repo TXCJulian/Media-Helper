@@ -8,9 +8,11 @@ PGID=${PGID:-1000}
 if [ "$(id -u appuser)" != "$PUID" ] || [ "$(id -g appuser)" != "$PGID" ]; then
     groupmod -o -g "$PGID" appgroup 2>/dev/null || true
     usermod -o -u "$PUID" -g "$PGID" appuser 2>/dev/null || true
-    chown appuser:appgroup /data/cutter-jobs 2>/dev/null || true
-    chown -R appuser:appgroup /var/lib/media-renamer 2>/dev/null || true
 fi
+
+# Ensure ownership of data directories for appuser, even when UID/GID haven't changed
+chown appuser:appgroup /data/cutter-jobs 2>/dev/null || true
+chown -R appuser:appgroup /var/lib/media-renamer 2>/dev/null || true
 
 # Grant GPU access: match host render/video group GIDs for /dev/dri
 if [ -d /dev/dri ]; then

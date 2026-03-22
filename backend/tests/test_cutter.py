@@ -286,7 +286,8 @@ def test_decode_file_id_rejects_tampered_signature(monkeypatch):
     file_id = cutter.encode_file_id("server", "path/to/file.mp4")
     # Tamper with the file_id by flipping a character
     import base64
-    decoded = base64.urlsafe_b64decode(file_id + "==").decode("utf-8")
+    padding = "=" * (-len(file_id) % 4)
+    decoded = base64.urlsafe_b64decode(file_id + padding).decode("utf-8")
     tampered = decoded[:-1] + ("a" if decoded[-1] != "a" else "b")
     tampered_id = base64.urlsafe_b64encode(tampered.encode("utf-8")).decode("ascii")
 

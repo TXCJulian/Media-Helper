@@ -202,12 +202,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 # Auth added FIRST (inner), CORS added SECOND (outer) — LIFO means CORS runs first
 app.add_middleware(AuthMiddleware)
+_cors_credentials = "*" not in ALLOWED_ORIGINS
+if not _cors_credentials and AUTH_ENABLED:
+    logger.warning(
+        "ALLOWED_ORIGINS contains '*' but AUTH is enabled — credentials cannot be sent. "
+        "Set explicit origins in ALLOWED_ORIGINS for auth to work correctly."
+    )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=_cors_credentials,
     allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-File-Name"],
 )
 
 

@@ -100,6 +100,8 @@ def _load_or_generate_secret_key() -> str:
             stored = f.read().strip()
             if stored:
                 return stored
+    except FileNotFoundError:
+        pass  # Expected on first run
     except OSError as e:
         logger.warning("Could not read SECRET_KEY from %s: %s", _SECRET_KEY_PATH, e)
     # Generate and persist

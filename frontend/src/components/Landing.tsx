@@ -43,7 +43,7 @@ const cards: {
     id: 'cutter',
     icon: '✂',
     title: 'Media Cutter',
-    desc: 'Trim audio and video files with ffmpeg.',
+    desc: 'Trim audio and video files with FFmpeg.',
     colorClass: 'card-cutter',
     iconClass: 'bg-[var(--accent-4-glow)] text-[var(--accent-4)]',
   },
