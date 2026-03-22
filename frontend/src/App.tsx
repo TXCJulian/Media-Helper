@@ -50,12 +50,14 @@ export default function App() {
     'checking',
   )
   const [authState, setAuthState] = useState<'loading' | 'login' | 'authenticated'>('loading')
+  const [authEnabled, setAuthEnabled] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     fetchAuthStatus()
       .then((status) => {
         if (cancelled) return
+        setAuthEnabled(status.auth_enabled)
         if (!status.auth_enabled || status.authenticated) {
           setAuthState('authenticated')
         } else {
@@ -182,7 +184,7 @@ export default function App() {
         onNavigate={showPanel}
         enabledFeatures={enabledFeatures}
         backendStatus={backendStatus}
-        onLogout={handleLogout}
+        onLogout={authEnabled ? handleLogout : undefined}
       />
     )
   }
