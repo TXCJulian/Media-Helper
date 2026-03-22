@@ -88,7 +88,7 @@ AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "").strip()
 AUTH_ENABLED = bool(AUTH_USERNAME and AUTH_PASSWORD)
 
 # --- Secret key (for session cookies and file ID signing) ---
-_SECRET_KEY_PATH = os.path.join(CUTTER_JOBS_DIR, ".secret_key")
+_SECRET_KEY_PATH = "/var/lib/media-renamer/.secret_key"
 
 def _load_or_generate_secret_key() -> str:
     env_key = os.getenv("SECRET_KEY", "").strip()

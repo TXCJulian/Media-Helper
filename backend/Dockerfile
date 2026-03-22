@@ -30,8 +30,8 @@ COPY entrypoint.sh /entrypoint.sh
 RUN apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf /var/lib/apt/lists/* && \
     groupadd -g 1000 appgroup && \
     useradd -u 1000 -g appgroup -M -s /bin/false appuser && \
-    mkdir -p /data/cutter-jobs && \
-    chown appuser:appgroup /data/cutter-jobs && \
+    mkdir -p /data/cutter-jobs /var/lib/media-renamer && \
+    chown appuser:appgroup /data/cutter-jobs /var/lib/media-renamer && \
     chmod +x /entrypoint.sh
 
 EXPOSE 3332
