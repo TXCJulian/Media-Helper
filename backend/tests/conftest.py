@@ -72,10 +72,15 @@ def client(tmp_media_dir):
         "TVSHOW_FOLDER_NAME": "TV Shows",
         "MUSIC_FOLDER_NAME": "Music",
         "TMDB_API_KEY": "test_key",
+        "AUTH_USERNAME": "",
+        "AUTH_PASSWORD": "",
+        "SECRET_KEY": "test-secret-key",
     }):
         import importlib
         import app.config as config_mod
         importlib.reload(config_mod)
+        import app.auth as auth_mod
+        importlib.reload(auth_mod)
         import app.get_dirs as get_dirs_mod
         importlib.reload(get_dirs_mod)
         import app.main as main_mod

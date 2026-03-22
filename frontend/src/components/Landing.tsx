@@ -4,6 +4,7 @@ interface LandingProps {
   onNavigate: (panel: PanelName) => void
   enabledFeatures: PanelName[]
   backendStatus: 'checking' | 'connected' | 'unreachable'
+  onLogout?: () => void
 }
 
 const cards: {
@@ -42,13 +43,18 @@ const cards: {
     id: 'cutter',
     icon: '✂',
     title: 'Media Cutter',
-    desc: 'Trim audio and video files with ffmpeg.',
+    desc: 'Trim audio and video files with FFmpeg.',
     colorClass: 'card-cutter',
     iconClass: 'bg-[var(--accent-4-glow)] text-[var(--accent-4)]',
   },
 ]
 
-export default function Landing({ onNavigate, enabledFeatures, backendStatus }: LandingProps) {
+export default function Landing({
+  onNavigate,
+  enabledFeatures,
+  backendStatus,
+  onLogout,
+}: LandingProps) {
   const visibleCards = cards
     .filter((card) => enabledFeatures.includes(card.id))
     .sort((a, b) => enabledFeatures.indexOf(a.id) - enabledFeatures.indexOf(b.id))
@@ -64,6 +70,16 @@ export default function Landing({ onNavigate, enabledFeatures, backendStatus }: 
       <p className="mb-12 text-[0.9rem] font-normal tracking-[0.01em] text-[var(--text-tertiary)]">
         Organize your media library
       </p>
+
+      {onLogout && (
+        <button
+          type="button"
+          onClick={onLogout}
+          className="absolute right-6 top-6 cursor-pointer rounded-lg border border-[var(--glass-border)] bg-transparent px-3 py-1.5 text-xs text-[var(--text-tertiary)] transition-colors hover:border-[var(--glass-border-hover)] hover:text-[var(--text-secondary)]"
+        >
+          Sign out
+        </button>
+      )}
 
       {backendStatus === 'unreachable' ? (
         <div className="flex max-w-[400px] flex-col items-center justify-center rounded-2xl border border-red-500/30 bg-red-500/5 p-8 text-center">

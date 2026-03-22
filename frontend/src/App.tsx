@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import Landing from '@/components/Landing'
 import type { PanelName } from '@/components/Landing'
+import Login from '@/components/Login'
 import EpisodePanel from '@/components/EpisodePanel'
 import MusicPanel from '@/components/MusicPanel'
 import LyricsPanel from '@/components/LyricsPanel'
 import CutterPanel from '@/components/CutterPanel'
-import { fetchConfig } from '@/lib/api'
+import { fetchAuthStatus, fetchConfig, postLogout } from '@/lib/api'
 import type { CutterPersistedState, CutterSourceState } from '@/types'
 
 const EMPTY_SOURCE_STATE: CutterSourceState = {
@@ -48,6 +49,45 @@ export default function App() {
   const [backendStatus, setBackendStatus] = useState<'checking' | 'connected' | 'unreachable'>(
     'checking',
   )
+  const [authState, setAuthState] = useState<'loading' | 'login' | 'authenticated'>('loading')
+  const [authEnabled, setAuthEnabled] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    fetchAuthStatus()
+      .then((status) => {
+        if (cancelled) return
+        setAuthEnabled(status.auth_enabled)
+        if (!status.auth_enabled || status.authenticated) {
+          setAuthState('authenticated')
+        } else {
+          setAuthState('login')
+        }
+      })
+      .catch(() => {
+        if (cancelled) return
+        setAuthState('authenticated')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    const handler = () => setAuthState('login')
+    window.addEventListener('auth:expired', handler)
+    return () => window.removeEventListener('auth:expired', handler)
+  }, [])
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await postLogout()
+    } catch (err) {
+      console.warn('Logout request failed', err)
+    } finally {
+      setAuthState('login')
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -124,12 +164,32 @@ export default function App() {
     window.scrollTo(0, 0)
   }, [])
 
+  if (authState === 'loading') return null
+
+  if (authState === 'login') {
+    return (
+      <Login
+        onSuccess={() => {
+          setAuthState('authenticated')
+          fetchConfig()
+            .then((cfg) => {
+              setEnabledFeatures(cfg.features as PanelName[])
+              setBasePaths(cfg.base_paths ?? [])
+              setBackendStatus('connected')
+            })
+            .catch(() => setBackendStatus('unreachable'))
+        }}
+      />
+    )
+  }
+
   if (activeView === 'home') {
     return (
       <Landing
         onNavigate={showPanel}
         enabledFeatures={enabledFeatures}
         backendStatus={backendStatus}
+        onLogout={authEnabled ? handleLogout : undefined}
       />
     )
   }

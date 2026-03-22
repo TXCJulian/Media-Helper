@@ -1,4 +1,4 @@
-import { API_BASE } from './api'
+import { API_BASE, assertAuthenticated } from './api'
 
 interface SSECallbacks {
   onProgress: (data: string) => void
@@ -27,11 +27,19 @@ export function connectSSE(
         method: 'POST',
         body: formData,
         signal: controller.signal,
+        credentials: 'include',
       })
     } catch {
       if (!controller.signal.aborted) {
         callbacks.onError('Connection failed')
       }
+      return
+    }
+
+    try {
+      assertAuthenticated(response)
+    } catch {
+      callbacks.onError('Session expired')
       return
     }
 
