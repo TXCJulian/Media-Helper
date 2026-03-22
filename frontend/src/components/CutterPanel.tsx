@@ -17,6 +17,8 @@ import {
   fetchWaveform,
   fetchCutterFiles,
   getStreamUrl,
+  getAudioStreamUrl,
+  getAudioOnlyTranscodeUrl,
   fetchPreviewStatus,
   getThumbnailUrl,
   getDownloadUrl,
@@ -39,6 +41,7 @@ import type {
   CutterPreviewStatus,
   DirectoriesResponse,
   AudioTrackConfig,
+  ProbeResult,
 } from '@/types'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -48,7 +51,8 @@ const SOURCE_CODEC_TO_ENCODER: Record<string, string> = {
   hevc: 'libx265',
   h265: 'libx265',
   vp9: 'libvpx-vp9',
-  av1: 'libaom-av1',
+  av1: 'libsvtav1',
+  mpeg2video: 'libx264',
 }
 
 const EXT_TO_CONTAINER: Record<string, string> = {
@@ -147,7 +151,7 @@ export default function CutterPanel({
   const [uploadProgress, setUploadProgress] = useState(-1)
   const [isDragOver, setIsDragOver] = useState(false)
   const [previewStatus, setPreviewStatus] = useState<CutterPreviewStatus | null>(null)
-  const [transcodePreviewEnabled, setTranscodePreviewEnabled] = useState(false)
+  const [transcodeMode, setTranscodeMode] = useState<'off' | 'audio_only' | 'full'>('off')
   const [previewAudioStreamIndex, setPreviewAudioStreamIndex] = useState<number | null>(null)
 
   const debouncedSearch = useDebounce(search, 500)
@@ -270,34 +274,40 @@ export default function CutterPanel({
 
   // ── Load probe + waveform for a file ──────────────────────────
   const loadFileData = useCallback(
-    async (path: string, source: 'server' | 'upload', jid = '', base = '') => {
+    async (
+      path: string,
+      source: 'server' | 'upload',
+      jid = '',
+      base = '',
+    ): Promise<ProbeResult | null> => {
       onError('')
       setSource({ probe: null, peaks: [], thumbnailUrl: '', isLoadingFile: true })
       try {
-        const [probeData, waveData] = await Promise.all([
-          fetchProbe(path, source, jid, base),
-          fetchWaveform(path, source, 800, jid, base),
-        ])
+        const probeData = await fetchProbe(path, source, jid, base)
+        const isVideo = probeData.video_codec != null
+        // Skip waveform for videos — they use the thumbnail strip instead.
+        const peaks = isVideo ? [] : (await fetchWaveform(path, source, 800, jid, base)).peaks
         setSource({
           probe: probeData,
-          peaks: waveData.peaks,
+          peaks,
           isLoadingFile: false,
-          thumbnailUrl:
-            probeData.video_codec != null ? getThumbnailUrl(path, source, jid, 30, base) : '',
+          thumbnailUrl: isVideo ? getThumbnailUrl(path, source, jid, 30, base) : '',
         })
         const probePatch = buildProbeSelectionPatch(path, probeData.duration, probeData)
         setPersisted((prev) => ({
           form: { ...prev.form, ...probePatch },
         }))
         setPreviewStatus(null)
-        setTranscodePreviewEnabled(false)
+        setTranscodeMode('off')
         setPreviewAudioStreamIndex(null)
+        return probeData
       } catch (err) {
         onError(`Error loading file: ${err instanceof Error ? err.message : String(err)}`)
         setSource({ isLoadingFile: false })
         setPreviewStatus(null)
-        setTranscodePreviewEnabled(false)
+        setTranscodeMode('off')
         setPreviewAudioStreamIndex(null)
+        return null
       }
     },
     [onError, setSource, setPersisted, buildProbeSelectionPatch],
@@ -340,7 +350,7 @@ export default function CutterPanel({
       outputFiles: [],
     })
     setPreviewStatus(null)
-    setTranscodePreviewEnabled(false)
+    setTranscodeMode('off')
     setPreviewAudioStreamIndex(null)
     // Reset prevDir so the files effect fires
     prevDir.current = ''
@@ -349,8 +359,16 @@ export default function CutterPanel({
   // ── Reopen job from job manager ───────────────────────────────
   const handleOpenJob = useCallback(
     async (job: CutterJob) => {
-      const shouldAutoUseTranscodedPreview =
-        job.status === 'ready' && !job.browser_ready && !!job.preview_transcoded
+      const hasFullTranscodedPreview = !!job.preview_transcoded
+      const hasAudioOnlyTranscode = !!job.audio_transcoded_tracks?.length
+      const reopenTranscodeMode: 'off' | 'audio_only' | 'full' = hasFullTranscodedPreview
+        ? 'full'
+        : hasAudioOnlyTranscode
+          ? 'audio_only'
+          : 'off'
+      const reopenAudioStreamIndex = hasAudioOnlyTranscode
+        ? (job.audio_transcoded_tracks?.[0] ?? null)
+        : null
 
       const source: CutterForm['source'] = job.source
       const jobBase = source === 'server' ? (job.base ?? '') : ''
@@ -397,21 +415,19 @@ export default function CutterPanel({
           source === 'upload' ? { ...prev.uploadState, ...sourceStatePatch } : prev.uploadState,
       }))
       setPreviewStatus(null)
-      setTranscodePreviewEnabled(false)
+      setTranscodeMode('off')
       setPreviewAudioStreamIndex(null)
-      try {
-        await loadFileData(filePath, source, job.job_id, jobBase)
-        if (shouldAutoUseTranscodedPreview) {
-          setTranscodePreviewEnabled(true)
-        }
-        // Restore saved in/out points — loadFileData resets them to 0/duration
-        if (settings) {
-          setPersisted((prev) => ({
-            form: { ...prev.form, inPoint: settings.in_point, outPoint: settings.out_point },
-          }))
-        }
-      } catch (err) {
-        onError(`Error reopening job: ${err instanceof Error ? err.message : String(err)}`)
+      const probeResult = await loadFileData(filePath, source, job.job_id, jobBase)
+      if (!probeResult) return
+      if (reopenTranscodeMode === 'audio_only') {
+        setPreviewAudioStreamIndex(reopenAudioStreamIndex)
+      }
+      setTranscodeMode(reopenTranscodeMode)
+      // Restore saved in/out points — loadFileData resets them to 0/duration
+      if (settings) {
+        setPersisted((prev) => ({
+          form: { ...prev.form, inPoint: settings.in_point, outPoint: settings.out_point },
+        }))
       }
     },
     [loadFileData, setPersisted, onError],
@@ -479,7 +495,7 @@ export default function CutterPanel({
           },
         }))
         setPreviewStatus(null)
-        setTranscodePreviewEnabled(false)
+        setTranscodeMode('off')
         setPreviewAudioStreamIndex(null)
 
         // Generate waveform lazily after UI is ready so uploads feel instant.
@@ -546,7 +562,7 @@ export default function CutterPanel({
     }
     if (form.source === 'server' && form.base) params.base = form.base
     if (form.outputName) params.output_name = form.outputName
-    if (!form.streamCopy && form.codec) {
+    if (!form.streamCopy && form.codec && isVideo) {
       params.codec = form.codec
     }
     params.container = form.container
@@ -618,13 +634,14 @@ export default function CutterPanel({
   })()
   const streamAudioIndex = (() => {
     if (selectedPreviewAudioStreamIndex == null) return null
-    if (!transcodePreviewEnabled && selectedPreviewAudioStreamIndex === defaultAudioStreamIndex) {
+    if (transcodeMode === 'off' && selectedPreviewAudioStreamIndex === defaultAudioStreamIndex) {
       return null
     }
     return selectedPreviewAudioStreamIndex
   })()
 
   const compatibilityReport = hasFile ? getBrowserCompatibilityReport(filePath, probe) : null
+  const showAudioOnlyButton = isVideo && compatibilityReport && !compatibilityReport.videoIssue
   const compatibilityMessage = (() => {
     if (!hasFile || !probe) return null
 
@@ -635,15 +652,15 @@ export default function CutterPanel({
     // Backend compatibility rules are authoritative for whether original
     // playback may fail. Show a clear warning even if frontend heuristics
     // did not classify this file as problematic.
-    if (probe.needs_transcoding && !transcodePreviewEnabled) {
-      return 'This file is likely not browser-compatible in original playback mode. Enable Transcoded Preview for reliable playback.'
+    if (probe.needs_transcoding && transcodeMode === 'off') {
+      return 'This file is likely not browser-compatible in original playback mode. Use "Transcode Audio Only" or "Full Transcode" for reliable playback.'
     }
 
     return null
   })()
 
   useEffect(() => {
-    if (!hasFile || !probe?.needs_transcoding || !fileId || !transcodePreviewEnabled) {
+    if (!hasFile || !probe?.needs_transcoding || !fileId || transcodeMode === 'off') {
       setPreviewStatus(null)
       return
     }
@@ -654,7 +671,12 @@ export default function CutterPanel({
 
     const poll = async () => {
       try {
-        const status = await fetchPreviewStatus(fileId)
+        const status = await fetchPreviewStatus(
+          fileId,
+          transcodeMode === 'audio_only' && selectedPreviewAudioStreamIndex != null
+            ? { audioTranscodeStream: selectedPreviewAudioStreamIndex }
+            : undefined,
+        )
         if (cancelled) return
         setPreviewStatus(status)
         lastState = status.state
@@ -687,7 +709,14 @@ export default function CutterPanel({
       cancelled = true
       if (timeoutId) clearTimeout(timeoutId)
     }
-  }, [hasFile, probe?.needs_transcoding, fileId, transcodePreviewEnabled, onError])
+  }, [
+    hasFile,
+    probe?.needs_transcoding,
+    fileId,
+    transcodeMode,
+    selectedPreviewAudioStreamIndex,
+    onError,
+  ])
 
   return (
     <PanelLayout title="Media Cutter" onBack={onBack} maxWidth="1100px">
@@ -850,18 +879,29 @@ export default function CutterPanel({
                 <p>{compatibilityMessage}</p>
                 {probe?.needs_transcoding && (
                   <div className="mt-2 flex items-center gap-2">
-                    {!transcodePreviewEnabled ? (
-                      <button
-                        type="button"
-                        onClick={() => setTranscodePreviewEnabled(true)}
-                        className="rounded-md border border-amber-300/40 bg-amber-300/12 px-2.5 py-1 text-[0.72rem] font-semibold text-amber-100 transition hover:bg-amber-300/18"
-                      >
-                        Enable Transcoded Preview
-                      </button>
+                    {transcodeMode === 'off' ? (
+                      <>
+                        {showAudioOnlyButton && (
+                          <button
+                            type="button"
+                            onClick={() => setTranscodeMode('audio_only')}
+                            className="rounded-md border border-amber-300/40 bg-amber-300/12 px-2.5 py-1 text-[0.72rem] font-semibold text-amber-100 transition hover:bg-amber-300/18"
+                          >
+                            Transcode Audio Only
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setTranscodeMode('full')}
+                          className="rounded-md border border-amber-300/40 bg-amber-300/12 px-2.5 py-1 text-[0.72rem] font-semibold text-amber-100 transition hover:bg-amber-300/18"
+                        >
+                          Full Transcode
+                        </button>
+                      </>
                     ) : (
                       <button
                         type="button"
-                        onClick={() => setTranscodePreviewEnabled(false)}
+                        onClick={() => setTranscodeMode('off')}
                         className="rounded-md border border-white/20 bg-white/8 px-2.5 py-1 text-[0.72rem] font-semibold text-white/80 transition hover:bg-white/12"
                       >
                         Use Original Playback
@@ -874,7 +914,25 @@ export default function CutterPanel({
 
             <FormSection label="Preview">
               <MediaPlayer
-                streamUrl={getStreamUrl(fileId, streamAudioIndex, transcodePreviewEnabled)}
+                streamUrl={
+                  transcodeMode === 'full' && isVideo
+                    ? getStreamUrl(fileId, null, true)
+                    : getStreamUrl(
+                        fileId,
+                        transcodeMode === 'off' ? streamAudioIndex : null,
+                        transcodeMode === 'full',
+                      )
+                }
+                audioUrl={
+                  transcodeMode === 'audio_only' && selectedPreviewAudioStreamIndex != null
+                    ? getAudioOnlyTranscodeUrl(fileId, selectedPreviewAudioStreamIndex)
+                    : isVideo &&
+                        transcodeMode === 'full' &&
+                        selectedPreviewAudioStreamIndex != null &&
+                        selectedPreviewAudioStreamIndex !== defaultAudioStreamIndex
+                      ? getAudioStreamUrl(fileId, selectedPreviewAudioStreamIndex, true)
+                      : undefined
+                }
                 isVideo={isVideo}
                 peaks={peaks}
                 duration={probe.duration}
@@ -886,7 +944,7 @@ export default function CutterPanel({
                 onInPointChange={(t) => update('inPoint', t)}
                 onOutPointChange={(t) => update('outPoint', t)}
                 thumbnailUrl={thumbnailUrl || undefined}
-                needsTranscoding={probe.needs_transcoding && transcodePreviewEnabled}
+                needsTranscoding={probe.needs_transcoding && transcodeMode !== 'off'}
                 transcodePercent={previewStatus?.percent}
                 transcodeEtaSeconds={previewStatus?.eta_seconds ?? null}
                 transcodeState={previewStatus?.state}
@@ -926,6 +984,7 @@ export default function CutterPanel({
               audioTracks={form.audioTracks}
               audioStreams={probe.audio_streams ?? []}
               isVideo={isVideo}
+              sourceVideoCodec={probe.video_codec ?? null}
               sourceVideoBitrate={probe.video_bitrate ?? null}
               onOutputNameChange={(v) => update('outputName', v)}
               onStreamCopyChange={(v) => {

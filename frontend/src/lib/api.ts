@@ -172,13 +172,39 @@ export function getStreamUrl(
   return query ? `${base}?${query}` : base
 }
 
+export function getAudioStreamUrl(
+  fileId: string,
+  audioStreamIndex: number,
+  transcode = false,
+): string {
+  const base = `/cutter/stream/${encodeURIComponent(fileId)}`
+  const params = new URLSearchParams()
+  params.set('audio_stream', String(audioStreamIndex))
+  params.set('audio_only', 'true')
+  if (transcode) params.set('transcode', 'true')
+  return `${base}?${params.toString()}`
+}
+
+export function getAudioOnlyTranscodeUrl(fileId: string, audioStreamIndex: number): string {
+  const base = `/cutter/stream/${encodeURIComponent(fileId)}`
+  const params = new URLSearchParams()
+  params.set('audio_stream', String(audioStreamIndex))
+  params.set('transcode_audio_only', 'true')
+  return `${base}?${params}`
+}
+
 export function fetchPreviewStatus(
   fileId: string,
+  options?: { audioTranscodeStream?: number },
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<import('@/types').CutterPreviewStatus> {
+  const params: Record<string, string> = {}
+  if (options?.audioTranscodeStream != null) {
+    params.audio_transcode_stream = String(options.audioTranscodeStream)
+  }
   return fetchJson<import('@/types').CutterPreviewStatus>(
     `/cutter/preview-status/${encodeURIComponent(fileId)}`,
-    undefined,
+    Object.keys(params).length > 0 ? params : undefined,
     timeoutMs,
   )
 }

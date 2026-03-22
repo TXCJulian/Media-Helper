@@ -39,6 +39,8 @@ def resolve_base(base_label: str) -> str:
     if path is None:
         raise ValueError(f"Unknown base: '{base_label}'")
     return path
+
+
 TVSHOW_FOLDER_NAME = os.getenv("TVSHOW_FOLDER_NAME") or "TV Shows"
 MUSIC_FOLDER_NAME = os.getenv("MUSIC_FOLDER_NAME") or "Music"
 TMDB_API_KEY = os.getenv("TMDB_API_KEY") or "YOUR_TMDB_API_KEY"
@@ -50,7 +52,7 @@ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3333").split(",
 VALID_CUTTER_EXT = set(
     os.getenv(
         "VALID_CUTTER_EXT",
-        ".mp4,.mkv,.mov,.avi,.webm,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.opus,.ogg,.aiff",
+        ".mp4,.mkv,.mov,.avi,.webm,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.thd,.opus,.ogg,.aiff",
     ).split(",")
 )
 CUTTER_JOBS_DIR = os.getenv("CUTTER_JOBS_DIR", "/tmp/cutter-jobs")
@@ -58,6 +60,8 @@ CUTTER_JOB_TTL = int(os.getenv("CUTTER_JOB_TTL", "86400"))
 CUTTER_MAX_DIRECT_REMUX_BYTES = int(
     os.getenv("CUTTER_MAX_DIRECT_REMUX_BYTES", str(1024 * 1024 * 1024))
 )
+HWACCEL = os.getenv("HWACCEL", "").lower().strip()
+VAAPI_DEVICE = os.getenv("VAAPI_DEVICE", "/dev/dri/renderD128")
 
 _VALID_FEATURES = {"episodes", "music", "lyrics", "cutter"}
 _features_raw = os.getenv("ENABLED_FEATURES", "episodes,music,cutter")

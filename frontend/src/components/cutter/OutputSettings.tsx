@@ -3,6 +3,16 @@ import FormSection from '@/components/ui/FormSection'
 import ToggleSwitch from '@/components/ui/ToggleSwitch'
 import SegmentedControl from '@/components/ui/SegmentedControl'
 import TrackModeSelect from '@/components/cutter/TrackModeSelect'
+import {
+  isAudioCodecCompatible,
+  isPassthruCompatible,
+  audioCodecsForContainer,
+  incompatibleVideoCodecs,
+  incompatibleContainers,
+  bestContainerForCodec,
+  bestCodecForContainer,
+  bestAudioCodecForContainer,
+} from '@/lib/codecCompat'
 import type { AudioTrackConfig, AudioStreamInfo } from '@/types'
 
 interface OutputSettingsProps {
@@ -14,6 +24,7 @@ interface OutputSettingsProps {
   audioTracks: AudioTrackConfig[]
   audioStreams: AudioStreamInfo[]
   isVideo: boolean
+  sourceVideoCodec: string | null
   sourceVideoBitrate: number | null
   onOutputNameChange: (name: string) => void
   onStreamCopyChange: (value: boolean) => void
@@ -26,8 +37,12 @@ interface OutputSettingsProps {
 const audioCodecOptions = [
   { label: 'AAC', value: 'aac' },
   { label: 'AC3', value: 'ac3' },
+  { label: 'EAC3', value: 'eac3' },
+  { label: 'DTS', value: 'dts' },
+  { label: 'TrueHD', value: 'truehd' },
   { label: 'FLAC', value: 'flac' },
   { label: 'Opus', value: 'opus' },
+  { label: 'Vorbis', value: 'vorbis' },
   { label: 'MP3', value: 'mp3' },
 ]
 
@@ -35,7 +50,7 @@ const videoCodecOptions = [
   { label: 'H.264', value: 'libx264' },
   { label: 'H.265', value: 'libx265' },
   { label: 'VP9', value: 'libvpx-vp9' },
-  { label: 'AV1', value: 'libaom-av1' },
+  { label: 'AV1', value: 'libsvtav1' },
 ]
 
 const audioContainerOptions = [
@@ -82,6 +97,7 @@ export default function OutputSettings({
   audioTracks,
   audioStreams,
   isVideo,
+  sourceVideoCodec,
   sourceVideoBitrate,
   onOutputNameChange,
   onStreamCopyChange,
@@ -92,6 +108,127 @@ export default function OutputSettings({
 }: OutputSettingsProps) {
   const containerOptions = isVideo ? videoContainerOptions : audioContainerOptions
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const isReencode = !streamCopy && isVideo
+
+  // ── "Last touch wins" handlers ─────────────────────────────────
+  // All options stay visible. When the user picks a value, the *other*
+  // field auto-corrects if the combination is incompatible.
+
+  const handleCodecChange = (newCodec: string) => {
+    onCodecChange(newCodec)
+    if (isReencode) {
+      const fixed = bestContainerForCodec(newCodec, container, containerOptions)
+      if (fixed !== container) onContainerChange(fixed)
+    }
+  }
+
+  const handleContainerChange = (newContainer: string) => {
+    onContainerChange(newContainer)
+    if (isReencode) {
+      const fixed = bestCodecForContainer(newContainer, codec, videoCodecOptions)
+      if (fixed !== codec) onCodecChange(fixed)
+    }
+    // Auto-correct audio tracks when container changes:
+    // - Passthru + source can't be stream-copied → re-encode with best codec
+    // - Re-encode + source can now be stream-copied → switch back to passthru
+    // - Re-encode + target codec incompatible → pick best compatible codec
+    const corrected = audioTracks.map((t) => {
+      const src = audioStreams.find((s) => s.index === t.streamIndex)
+      const canPassthru = !src || isPassthruCompatible(src.codec, newContainer)
+
+      if (t.mode === 'passthru' && !canPassthru) {
+        return {
+          ...t,
+          mode: 'reencode' as const,
+          codec: bestAudioCodecForContainer(newContainer, src!.codec, audioCodecOptions),
+        }
+      }
+      if (t.mode === 'reencode' && canPassthru) {
+        return { ...t, mode: 'passthru' as const }
+      }
+      if (t.mode === 'reencode' && !isAudioCodecCompatible(t.codec, newContainer)) {
+        return {
+          ...t,
+          codec: bestAudioCodecForContainer(newContainer, t.codec, audioCodecOptions),
+        }
+      }
+      return t
+    })
+    if (corrected.some((t, i) => t !== audioTracks[i])) {
+      onAudioTracksChange(corrected)
+    }
+  }
+
+  // Auto-correct tracks whose mode is no longer valid for the current state.
+  // - Stream copy on: re-encode tracks switch to passthru
+  // - Passthru + source can't be stream-copied into container: switch to re-encode
+  useEffect(() => {
+    const corrected = audioTracks.map((t) => {
+      if (streamCopy && t.mode === 'reencode') {
+        return { ...t, mode: 'passthru' as const }
+      }
+      if (t.mode !== 'passthru') return t
+      const src = audioStreams.find((s) => s.index === t.streamIndex)
+      if (!src || isPassthruCompatible(src.codec, container)) return t
+      return {
+        ...t,
+        mode: 'reencode' as const,
+        codec: bestAudioCodecForContainer(container, src.codec, audioCodecOptions),
+      }
+    })
+    if (corrected.some((t, i) => t !== audioTracks[i])) {
+      onAudioTracksChange(corrected)
+    }
+  }, [audioTracks, audioStreams, container, streamCopy, onAudioTracksChange])
+
+  const filteredAudioCodecs = audioCodecsForContainer(audioCodecOptions, container)
+
+  // Sets of values that conflict with the *other* field's current selection
+  const incompatCodecs = isReencode
+    ? incompatibleVideoCodecs(videoCodecOptions, container)
+    : undefined
+  const incompatContainers = isReencode
+    ? incompatibleContainers(containerOptions, codec)
+    : undefined
+
+  // In stream copy mode, hide containers that can't mux the source codec(s).
+  // For video: filter by video codec compatibility.
+  // For audio-only: filter by audio passthru compatibility.
+  const filteredContainerOptions = (() => {
+    if (!streamCopy) return containerOptions
+    if (isVideo && sourceVideoCodec) {
+      const map: Record<string, string> = {
+        h264: 'libx264',
+        hevc: 'libx265',
+        h265: 'libx265',
+        vp9: 'libvpx-vp9',
+        av1: 'libsvtav1',
+        mpeg2video: 'mpeg2video',
+      }
+      const encoderName = map[sourceVideoCodec.toLowerCase()] ?? null
+      if (encoderName) {
+        const incompat = incompatibleContainers(containerOptions, encoderName)
+        return containerOptions.filter((o) => !incompat.has(o.value))
+      }
+    }
+    if (!isVideo && audioStreams.length > 0) {
+      // Keep only containers where ALL source audio codecs can be passthru'd
+      return containerOptions.filter((o) =>
+        audioStreams.every((s) => isPassthruCompatible(s.codec, o.value)),
+      )
+    }
+    return containerOptions
+  })()
+
+  // Auto-correct container if current selection is not in filtered options
+  useEffect(() => {
+    if (
+      filteredContainerOptions.length > 0 &&
+      !filteredContainerOptions.some((o) => o.value === container)
+    ) {
+      onContainerChange(filteredContainerOptions[0]!.value)
+    }
+  }, [filteredContainerOptions, container, onContainerChange])
 
   const updateTrack = (streamIndex: number, updates: Partial<AudioTrackConfig>) => {
     onAudioTracksChange(
@@ -100,6 +237,9 @@ export default function OutputSettings({
       ),
     )
   }
+
+  const wouldRemoveAllAudio = (streamIndex: number) =>
+    audioTracks.every((t) => t.streamIndex === streamIndex || t.mode === 'remove')
 
   const hasTrackReencode = audioTracks.some((track) => track.mode === 'reencode')
   const showAdvancedContent = !streamCopy || showAdvanced
@@ -183,7 +323,8 @@ export default function OutputSettings({
               <SegmentedControl
                 options={videoCodecOptions}
                 value={codec}
-                onChange={onCodecChange}
+                onChange={handleCodecChange}
+                incompatible={incompatCodecs}
                 color="emerald"
               />
             </FormSection>
@@ -191,14 +332,15 @@ export default function OutputSettings({
 
           <FormSection label="Container">
             <SegmentedControl
-              options={containerOptions}
+              options={filteredContainerOptions}
               value={container}
-              onChange={onContainerChange}
+              onChange={handleContainerChange}
+              incompatible={incompatContainers}
               color="emerald"
             />
           </FormSection>
 
-          {audioStreams.length > 0 && (
+          {audioStreams.length > 0 && !(streamCopy && !isVideo) && (
             <FormSection label="Audio Tracks">
               <div className="space-y-2">
                 {audioStreams.map((stream, i) => {
@@ -224,7 +366,24 @@ export default function OutputSettings({
                           {formatTrackLabel(stream, i)}
                         </span>
                         <TrackModeSelect
-                          options={modeOptions}
+                          options={modeOptions.filter((o) => {
+                            // Always keep the currently selected value visible
+                            if (o.value === mode) return true
+                            // Stream copy mode: no re-encoding, only passthru/remove
+                            if (o.value === 'reencode' && streamCopy) return false
+                            if (
+                              o.value === 'remove' &&
+                              !isVideo &&
+                              wouldRemoveAllAudio(stream.index)
+                            )
+                              return false
+                            if (
+                              o.value === 'passthru' &&
+                              !isPassthruCompatible(stream.codec, container)
+                            )
+                              return false
+                            return true
+                          })}
                           value={mode}
                           onChange={(value) =>
                             updateTrack(stream.index, {
@@ -236,7 +395,7 @@ export default function OutputSettings({
                       {mode === 'reencode' && (
                         <div className="mt-2">
                           <SegmentedControl
-                            options={audioCodecOptions}
+                            options={filteredAudioCodecs}
                             value={trackCodec}
                             onChange={(value) => updateTrack(stream.index, { codec: value })}
                             color="emerald"

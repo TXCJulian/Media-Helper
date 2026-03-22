@@ -54,15 +54,15 @@ Object.defineProperty(HTMLMediaElement.prototype, 'load', {
 
 describe('MediaPlayer', () => {
   it('exits transcoding state when media load fails', () => {
-    const { container } = render(<MediaPlayer {...baseProps()} />)
+    const { container } = render(<MediaPlayer {...baseProps({ transcodeState: 'done' })} />)
 
-    expect(screen.getByText(/Transcoding preview/)).toBeTruthy()
+    expect(screen.getByText(/Preparing stream/)).toBeTruthy()
 
     const video = container.querySelector('video')
     expect(video).toBeTruthy()
     fireEvent.error(video as HTMLVideoElement)
 
-    expect(screen.queryByText(/Transcoding preview/)).toBeNull()
+    expect(screen.queryByText(/Preparing stream/)).toBeNull()
     expect(screen.getByText(/Playback failed/)).toBeTruthy()
   })
 
@@ -73,13 +73,17 @@ describe('MediaPlayer', () => {
     fireEvent.error(firstVideo as HTMLVideoElement)
     expect(screen.getByText(/Playback failed/)).toBeTruthy()
 
-    rerender(<MediaPlayer {...baseProps({ streamUrl: '/cutter/stream/demo?audio_stream=2' })} />)
+    rerender(
+      <MediaPlayer
+        {...baseProps({ streamUrl: '/cutter/stream/demo?audio_stream=2', transcodeState: 'done' })}
+      />,
+    )
     expect(screen.queryByText('Unknown media error')).toBeNull()
-    expect(screen.getByText(/Transcoding preview/)).toBeTruthy()
+    expect(screen.getByText(/Preparing stream/)).toBeTruthy()
 
     const secondVideo = container.querySelector('video')
     fireEvent.canPlay(secondVideo as HTMLVideoElement)
-    expect(screen.queryByText(/Transcoding preview/)).toBeNull()
+    expect(screen.queryByText(/Preparing stream/)).toBeNull()
   })
 
   it('shows percent and eta when provided', () => {

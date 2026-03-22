@@ -17,6 +17,8 @@ const STATUS_COLORS: Record<string, string> = {
   uploading: 'bg-cyan-400/15 text-cyan-300',
   ready: 'bg-white/10 text-white/50',
   cutting: 'bg-amber-400/15 text-amber-300',
+  full_transcoding: 'bg-blue-400/15 text-blue-300',
+  audio_transcoding: 'bg-blue-400/15 text-blue-300',
   transcoding: 'bg-blue-400/15 text-blue-300',
   done: 'bg-emerald-400/15 text-emerald-300',
   error: 'bg-red-400/15 text-red-300',
@@ -124,7 +126,7 @@ export default function JobManager({
                     <span
                       className={`shrink-0 rounded px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase ${STATUS_COLORS[job.status] ?? STATUS_COLORS.ready}`}
                     >
-                      {job.status}
+                      {job.status.replace(/_/g, ' ')}
                     </span>
                     {job.status === 'ready' && job.browser_ready && (
                       <span
@@ -140,6 +142,14 @@ export default function JobManager({
                         title="Transcoded preview exists on disk; player may still be preparing the stream"
                       >
                         preview cached
+                      </span>
+                    )}
+                    {job.audio_transcoded_tracks && job.audio_transcoded_tracks.length > 0 && (
+                      <span
+                        className="shrink-0 rounded bg-violet-400/15 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase text-violet-300"
+                        title={`Audio tracks transcoded: ${job.audio_transcoded_tracks.join(', ')}`}
+                      >
+                        audio cached
                       </span>
                     )}
                     {job.transcode_error && (

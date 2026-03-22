@@ -50,12 +50,11 @@ from app.cutter import (
     generate_thumbnail_strip,
     generate_thumbnail_strip_cached,
     needs_transcoding,
-    get_or_transcode_preview,
     get_preview_path_if_ready,
     get_preview_status,
     start_background_transcode,
-    wait_for_preview,
     get_track_preview,
+    get_audio_track_preview,
     get_track_remux,
     cut_file,
     encode_file_id,
@@ -68,6 +67,9 @@ from app.cutter import (
     delete_job,
     cleanup_old_jobs,
     get_job_meta_lock,
+    start_background_audio_transcode,
+    get_audio_transcode_status,
+    wait_for_audio_transcode,
 )
 
 logging.basicConfig(
@@ -153,6 +155,12 @@ async def lifespan(app: FastAPI):
         migrate_jobs()
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
             logger.error("Cutter feature requires ffmpeg and ffprobe on PATH")
+        else:
+            import threading
+
+            from app.hwaccel import _ensure_detected
+
+            threading.Thread(target=_ensure_detected, daemon=True).start()
         cleanup_task = asyncio.create_task(_cleanup_cutter_jobs())
 
     yield
@@ -546,9 +554,7 @@ def resolve_cutter_path(
         try:
             base_path = resolve_base(base_label)
         except ValueError:
-            raise HTTPException(
-                status_code=400, detail=f"Unknown base: '{base_label}'"
-            )
+            raise HTTPException(status_code=400, detail=f"Unknown base: '{base_label}'")
         return validate_path(base_path, path)
     elif source == "upload":
         if not job_id:
@@ -701,6 +707,8 @@ def cutter_stream(
     request: Request,
     audio_stream: int | None = Query(None),
     transcode: bool = Query(False),
+    audio_only: bool = Query(False),
+    transcode_audio_only: bool = Query(False),
 ):
     require_feature("cutter")
     try:
@@ -738,7 +746,50 @@ def cutter_stream(
     audio_streams = probe.get("audio_streams", [])
     default_audio_index = audio_streams[0].get("index") if audio_streams else None
 
-    if transcode and needs_tx:
+    # Reject conflicting parameters
+    if transcode_audio_only and (transcode or audio_only):
+        raise HTTPException(
+            status_code=400,
+            detail="transcode_audio_only cannot be combined with transcode or audio_only",
+        )
+
+    if transcode_audio_only:
+        if audio_stream is None:
+            raise HTTPException(
+                status_code=400,
+                detail="audio_stream required for audio-only transcode",
+            )
+        if not job_id:
+            raise HTTPException(
+                status_code=400,
+                detail="job_id required for audio-only transcode",
+            )
+        start_background_audio_transcode(resolved, audio_stream, job_id)
+
+        # Non-blocking: if the file is already ready, use it; otherwise
+        # return 409 so the client can poll /cutter/preview-status and retry.
+        audio_path = wait_for_audio_transcode(resolved, job_id, audio_stream, timeout=0)
+        if not audio_path:
+            status = get_audio_transcode_status(resolved, job_id, audio_stream)
+            if status.get("state") == "error":
+                logger.error(
+                    "Stream: audio-only transcode error state: %s",
+                    status.get("message"),
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=status.get("message") or "Audio-only transcode failed",
+                )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Audio preview not ready yet — poll "
+                    f"/cutter/preview-status/{file_id}"
+                    f"?audio_transcode_stream={audio_stream} and retry"
+                ),
+            )
+        resolved = audio_path
+    elif transcode and needs_tx:
         if not job_id:
             raise HTTPException(
                 status_code=400, detail="job_id required for transcoded preview"
@@ -747,27 +798,44 @@ def cutter_stream(
         start_background_transcode(resolved, job_id)
         status = get_preview_status(resolved, job_id)
         if status.get("state") == "error":
+            logger.error(
+                "Stream: cached preview error state: %s", status.get("message")
+            )
             raise HTTPException(
                 status_code=500,
                 detail=status.get("message") or "Preview transcode failed",
             )
 
-        # Get or create the master preview (all audio tracks)
+        # Serve the master preview if ready; otherwise return 409 so the
+        # frontend can poll /preview-status and retry when ready.
         master_path = get_preview_path_if_ready(resolved, job_id)
         if not master_path:
-            master_path = wait_for_preview(resolved, job_id, timeout=120)
-        if not master_path:
-            try:
-                master_path = get_or_transcode_preview(resolved, job_id)
-            except RuntimeError as e:
-                raise HTTPException(status_code=500, detail=str(e))
-        # If a specific audio track is requested, do a fast stream-copy remux
+            raise HTTPException(
+                status_code=409,
+                detail="Preview not ready yet — poll /cutter/preview-status and retry",
+            )
+        # If a specific audio track is requested, extract it from the master
         if audio_stream is not None:
             try:
-                resolved = get_track_preview(
-                    master_path, audio_stream, resolved, job_id
-                )
+                if audio_only:
+                    logger.info(
+                        "Stream: extracting audio-only track %d from master",
+                        audio_stream,
+                    )
+                    resolved = get_audio_track_preview(
+                        master_path, audio_stream, resolved, job_id
+                    )
+                else:
+                    logger.info(
+                        "Stream: extracting full track %d from master %s",
+                        audio_stream,
+                        master_path,
+                    )
+                    resolved = get_track_preview(
+                        master_path, audio_stream, resolved, job_id
+                    )
             except RuntimeError as e:
+                logger.error("Stream: track extraction failed: %s", e)
                 raise HTTPException(status_code=500, detail=str(e))
         else:
             resolved = master_path
@@ -856,7 +924,10 @@ def cutter_stream(
 
 
 @app.get("/cutter/preview-status/{file_id}")
-def cutter_preview_status(file_id: str):
+def cutter_preview_status(
+    file_id: str,
+    audio_transcode_stream: int | None = Query(None),
+):
     require_feature("cutter")
     try:
         source, job_id, base, path = decode_file_id(file_id)
@@ -866,6 +937,29 @@ def cutter_preview_status(file_id: str):
     resolved = resolve_cutter_path(path, source, job_id, base_label=base)
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
+
+    # Audio-only transcode status — uses separate key, bypasses master preview check.
+    # Also kicks off the transcode if not already started, so polling alone is
+    # sufficient to start the work (matches master preview behavior).
+    if audio_transcode_stream is not None:
+        if not job_id:
+            raise HTTPException(
+                status_code=400,
+                detail="job_id required for audio transcode status",
+            )
+        try:
+            info = probe_file(resolved)
+            stream_indices = {s["index"] for s in info.get("audio_streams", [])}
+            if audio_transcode_stream not in stream_indices:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Audio stream index {audio_transcode_stream} not found. "
+                    f"Available: {sorted(stream_indices)}",
+                )
+        except RuntimeError:
+            pass  # Probe failed — let the transcode attempt handle it
+        start_background_audio_transcode(resolved, audio_transcode_stream, job_id)
+        return get_audio_transcode_status(resolved, job_id, audio_transcode_stream)
 
     def _done_status() -> dict:
         return {
@@ -1171,7 +1265,7 @@ def cutter_cut(
         "libx264",
         "libx265",
         "libvpx-vp9",
-        "libaom-av1",
+        "libsvtav1",
     }
     valid_audio_codecs = {
         "copy",
@@ -1183,6 +1277,9 @@ def cutter_cut(
         "vorbis",
         "pcm_s16le",
         "pcm_s24le",
+        "dts",
+        "truehd",
+        "eac3",
     }
     valid_containers = {
         "",
@@ -1235,7 +1332,21 @@ def cutter_cut(
                     detail=f"Invalid audio track codec: {track_codec}",
                 )
 
-    # Validate against file duration
+    # Validate container/codec compatibility for audio tracks
+    _container_audio_compat = {
+        "mp4": {"aac", "ac3", "eac3", "mp3", "opus"},
+        "m4a": {"aac", "ac3", "eac3", "mp3", "opus"},
+        "mov": {"aac", "ac3", "eac3", "flac", "mp3"},
+        "webm": {"opus", "vorbis"},
+        "ogg": {"opus", "vorbis"},
+        "mp3": {"mp3"},
+        "flac": {"flac"},
+        "aac": {"aac"},
+        "ac3": {"ac3"},
+        "opus": {"opus"},
+        "wav": {"pcm_s16le", "pcm_s24le"},
+    }
+    # Validate against file duration and probe source
     try:
         file_info = probe_file(resolved)
         file_duration = file_info.get("duration", 0)
@@ -1247,6 +1358,33 @@ def cutter_cut(
     except RuntimeError as exc:
         logger.warning("Could not probe source for cutter validation: %s", exc)
         file_info = {}
+
+    # Validate container/codec compatibility for audio tracks
+    if container and container in _container_audio_compat:
+        allowed_audio = _container_audio_compat[container]
+        probed_streams = {
+            s["index"]: s.get("codec", "unknown").lower()
+            for s in file_info.get("audio_streams", [])
+        }
+        for track in audio_tracks_parsed:
+            if track["mode"] == "reencode":
+                track_codec = track.get("codec", "")
+                if track_codec and track_codec not in allowed_audio:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Audio codec '{track_codec}' is not compatible "
+                        f"with container '{container}'. "
+                        f"Allowed: {sorted(allowed_audio)}",
+                    )
+            elif track["mode"] == "passthru" and probed_streams:
+                src_codec = probed_streams.get(track.get("index", -1), "")
+                if src_codec and src_codec not in allowed_audio:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Cannot passthru '{src_codec}' audio into "
+                        f"'{container}' container. Either re-encode the "
+                        f"track or use a compatible container (e.g. mkv).",
+                    )
 
     source_video_bitrate = file_info.get("video_bitrate") if keep_quality else None
     source_audio_bitrates = {}
@@ -1264,17 +1402,14 @@ def cutter_cut(
     else:
         out_filename = original_name
 
-    # Ensure the output filename has a proper extension so ffmpeg can
-    # determine the muxer.  When stream-copying, keep the original
-    # container extension; when re-encoding, use the chosen container.
+    # Ensure the output filename extension matches the chosen container.
+    # When stream-copying without an explicit container, keep the original
+    # extension; otherwise use the container as extension.
     name_stem, name_ext = os.path.splitext(out_filename)
-    if not name_ext:
-        if stream_copy:
-            out_filename = name_stem + original_ext
-        elif container:
-            out_filename = name_stem + "." + container
-        else:
-            out_filename = name_stem + original_ext
+    if container:
+        out_filename = name_stem + "." + container
+    elif not name_ext:
+        out_filename = name_stem + original_ext
 
     output_dir = os.path.join(job_dir, "output")
     output_path = os.path.join(output_dir, out_filename)

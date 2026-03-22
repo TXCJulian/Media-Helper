@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app import cutter
+from app import hwaccel
 
 
 def test_audio_relative_index_raises_for_unknown_stream():
@@ -67,7 +68,9 @@ def test_probe_file_includes_audio_bitrate(monkeypatch):
     info = cutter.probe_file("/fake/file.mkv")
     assert info["audio_streams"][0]["bit_rate"] == 192000
     assert info["audio_streams"][1]["bit_rate"] == 384000
-    assert info["video_bitrate"] == 0
+    # Video stream has no bit_rate; estimated from container total minus audio
+    # 1000000 - 192000 - 384000 = 424000
+    assert info["video_bitrate"] == 424000
 
 
 def test_get_track_preview_uses_mp4_output_and_absolute_track_cache_key(tmp_path, monkeypatch):
@@ -352,6 +355,7 @@ def test_cut_file_multi_track_mapping(tmp_path, monkeypatch):
 def test_cut_file_keep_quality_adds_bitrate_flags(tmp_path, monkeypatch):
     monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
     monkeypatch.setattr(cutter, "collision_safe_path", lambda p: p)
+    monkeypatch.setattr(hwaccel, "_detected", True)
 
     captured_cmd = {}
 
@@ -404,6 +408,7 @@ def test_cut_file_keep_quality_adds_bitrate_flags(tmp_path, monkeypatch):
 def test_cut_file_keep_quality_skips_zero_bitrate(tmp_path, monkeypatch):
     monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
     monkeypatch.setattr(cutter, "collision_safe_path", lambda p: p)
+    monkeypatch.setattr(hwaccel, "_detected", True)
 
     captured_cmd = {}
 
@@ -621,7 +626,7 @@ def test_migrate_jobs_adds_base_to_old_job(tmp_path, monkeypatch):
     assert count == 1
     meta = json.loads((tmp_path / job_id / "job.json").read_text())
     assert meta["base"] == "media"
-    assert meta["schema_version"] == 1
+    assert meta["schema_version"] == 2
 
 
 def test_migrate_jobs_infers_base_from_absolute_path(tmp_path, monkeypatch):
@@ -663,7 +668,7 @@ def test_migrate_jobs_skips_already_migrated(tmp_path, monkeypatch):
         "original_name": "clip.mkv",
         "original_path": "clip.mkv",
         "base": "media",
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "ready",
     })
 
@@ -698,4 +703,4 @@ def test_create_job_includes_schema_version(tmp_path, monkeypatch):
     )
 
     meta = cutter.load_job_metadata(job_id)
-    assert meta["schema_version"] == 1
+    assert meta["schema_version"] == 2

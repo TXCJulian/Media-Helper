@@ -154,10 +154,19 @@ export interface CutterJob {
   original_name: string
   original_path: string
   created_at: string
-  status: 'uploading' | 'ready' | 'transcoding' | 'cutting' | 'done' | 'error'
+  status:
+    | 'uploading'
+    | 'ready'
+    | 'full_transcoding'
+    | 'audio_transcoding'
+    | 'transcoding'
+    | 'cutting'
+    | 'done'
+    | 'error'
   output_files: string[]
   cut_settings?: CutJobSettings | null
   preview_transcoded?: boolean
+  audio_transcoded_tracks?: number[]
   browser_ready?: boolean
   transcode_error?: string | null
   base?: string

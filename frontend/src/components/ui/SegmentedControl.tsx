@@ -3,6 +3,10 @@ interface SegmentedControlProps {
   value: string
   onChange: (value: string) => void
   disabled?: boolean
+  /** Values that are incompatible with the current state of another field.
+   *  They remain clickable (auto-correction fixes the other field) but are
+   *  visually dimmed so the user knows the pairing will trigger a change. */
+  incompatible?: Set<string>
   color?: 'blue' | 'indigo' | 'rose' | 'emerald'
 }
 
@@ -18,6 +22,7 @@ export default function SegmentedControl({
   value,
   onChange,
   disabled,
+  incompatible,
   color = 'blue',
 }: SegmentedControlProps) {
   return (
@@ -25,23 +30,29 @@ export default function SegmentedControl({
       className="inline-flex gap-[2px] rounded-[10px] border border-[var(--border)] bg-[var(--bg-input)] p-[3px]"
       role="radiogroup"
     >
-      {options.map((opt) => (
-        <button
-          key={opt.value}
-          type="button"
-          role="radio"
-          aria-checked={value === opt.value}
-          disabled={disabled}
-          onClick={() => onChange(opt.value)}
-          className={`cursor-pointer rounded-lg border-none px-4 py-[0.45rem] font-[Geist,sans-serif] text-[0.78rem] font-medium transition-all duration-250 ${
-            value === opt.value
-              ? activeClasses[color]
-              : 'bg-transparent text-[var(--text-tertiary)] hover:bg-[rgba(255,255,255,0.025)] hover:text-[var(--text-secondary)]'
-          } ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
-        >
-          {opt.label}
-        </button>
-      ))}
+      {options.map((opt) => {
+        const isActive = value === opt.value
+        const isIncompat = !isActive && incompatible?.has(opt.value)
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            role="radio"
+            aria-checked={isActive}
+            disabled={disabled}
+            onClick={() => onChange(opt.value)}
+            className={`cursor-pointer rounded-lg border-none px-4 py-[0.45rem] font-[Geist,sans-serif] text-[0.78rem] font-medium transition-all duration-250 ${
+              isActive
+                ? activeClasses[color]
+                : isIncompat
+                  ? 'bg-transparent text-[var(--text-tertiary)] opacity-50 line-through hover:opacity-70'
+                  : 'bg-transparent text-[var(--text-tertiary)] hover:bg-[rgba(255,255,255,0.025)] hover:text-[var(--text-secondary)]'
+            } ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
+          >
+            {opt.label}
+          </button>
+        )
+      })}
     </div>
   )
 }
