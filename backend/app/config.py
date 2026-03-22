@@ -52,7 +52,7 @@ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3333").split(",
 VALID_CUTTER_EXT = set(
     os.getenv(
         "VALID_CUTTER_EXT",
-        ".mp4,.mkv,.mov,.avi,.webm,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.opus,.ogg,.aiff",
+        ".mp4,.mkv,.mov,.avi,.webm,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.thd,.opus,.ogg,.aiff",
     ).split(",")
 )
 CUTTER_JOBS_DIR = os.getenv("CUTTER_JOBS_DIR", "/tmp/cutter-jobs")

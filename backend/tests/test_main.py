@@ -286,10 +286,18 @@ class TestCutterStreamValidation:
         monkeypatch.setattr(main_mod, "needs_transcoding", lambda *_args, **_kwargs: True)
         monkeypatch.setattr(main_mod, "get_preview_status", lambda *_args, **_kwargs: {"state": "idle"})
         monkeypatch.setattr(main_mod, "get_preview_path_if_ready", lambda *_args, **_kwargs: str(preview_file))
+        transcode_called = False
+
+        def _fake_transcode(*_args, **_kwargs):
+            nonlocal transcode_called
+            transcode_called = True
+
+        monkeypatch.setattr(main_mod, "start_background_transcode", _fake_transcode)
 
         resp = client.get("/cutter/stream/demo", params={"transcode": "true"})
         assert resp.status_code == 200
         assert resp.content == b"preview"
+        assert transcode_called, "start_background_transcode should be called when transcode=true"
 
     def test_stream_returns_409_when_preview_not_ready(self, client, tmp_path, monkeypatch):
         import app.main as main_mod

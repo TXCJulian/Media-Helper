@@ -5,6 +5,7 @@ import SegmentedControl from '@/components/ui/SegmentedControl'
 import TrackModeSelect from '@/components/cutter/TrackModeSelect'
 import {
   isAudioCodecCompatible,
+  isPassthruCompatible,
   audioCodecsForContainer,
   incompatibleVideoCodecs,
   incompatibleContainers,
@@ -35,6 +36,8 @@ interface OutputSettingsProps {
 const audioCodecOptions = [
   { label: 'AAC', value: 'aac' },
   { label: 'AC3', value: 'ac3' },
+  { label: 'DTS', value: 'dts' },
+  { label: 'TrueHD', value: 'truehd' },
   { label: 'FLAC', value: 'flac' },
   { label: 'Opus', value: 'opus' },
   { label: 'Vorbis', value: 'vorbis' },
@@ -123,21 +126,21 @@ export default function OutputSettings({
       if (fixed !== codec) onCodecChange(fixed)
     }
     // Auto-correct audio tracks when container changes:
-    // - Passthru + source incompatible → re-encode with best compatible codec
-    // - Re-encode + source now compatible → switch back to passthru
-    // - Re-encode + codec incompatible → pick best compatible codec
+    // - Passthru + source can't be stream-copied → re-encode with best codec
+    // - Re-encode + source can now be stream-copied → switch back to passthru
+    // - Re-encode + target codec incompatible → pick best compatible codec
     const corrected = audioTracks.map((t) => {
       const src = audioStreams.find((s) => s.index === t.streamIndex)
-      const srcCompatible = !src || isAudioCodecCompatible(src.codec, newContainer)
+      const canPassthru = !src || isPassthruCompatible(src.codec, newContainer)
 
-      if (t.mode === 'passthru' && !srcCompatible) {
+      if (t.mode === 'passthru' && !canPassthru) {
         return {
           ...t,
           mode: 'reencode' as const,
           codec: bestAudioCodecForContainer(newContainer, src!.codec, audioCodecOptions),
         }
       }
-      if (t.mode === 'reencode' && srcCompatible) {
+      if (t.mode === 'reencode' && canPassthru) {
         return { ...t, mode: 'passthru' as const }
       }
       if (t.mode === 'reencode' && !isAudioCodecCompatible(t.codec, newContainer)) {
@@ -156,12 +159,12 @@ export default function OutputSettings({
   // Auto-correct tracks whose mode is no longer valid for the current container.
   // The container-change handler covers most cases, but initial render or
   // external state changes can leave a track in passthru when the source codec
-  // is incompatible.
+  // can't be stream-copied into the target container.
   useEffect(() => {
     const corrected = audioTracks.map((t) => {
       if (t.mode !== 'passthru') return t
       const src = audioStreams.find((s) => s.index === t.streamIndex)
-      if (!src || isAudioCodecCompatible(src.codec, container)) return t
+      if (!src || isPassthruCompatible(src.codec, container)) return t
       return {
         ...t,
         mode: 'reencode' as const,
@@ -322,7 +325,7 @@ export default function OutputSettings({
                           options={modeOptions.filter((o) => {
                             if (o.value === 'remove' && !isVideo && wouldRemoveAllAudio(stream.index))
                               return false
-                            if (o.value === 'passthru' && !isAudioCodecCompatible(stream.codec, container))
+                            if (o.value === 'passthru' && !isPassthruCompatible(stream.codec, container))
                               return false
                             return true
                           })}

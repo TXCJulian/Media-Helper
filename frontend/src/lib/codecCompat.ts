@@ -16,17 +16,28 @@ const containerVideoCodecs: Record<string, Set<string>> = {
   mov: new Set(['libx264', 'libx265']),
 }
 
-// ── Audio codecs allowed per container ──────────────────────────────────────
+// ── Audio codecs allowed per container (for re-encoding targets) ────────────
 const containerAudioCodecs: Record<string, Set<string>> = {
   mp4: new Set(['aac', 'ac3', 'mp3', 'opus']),
-  mkv: new Set(['aac', 'ac3', 'flac', 'opus', 'vorbis', 'mp3']),
+  mkv: new Set(['aac', 'ac3', 'dts', 'truehd', 'flac', 'opus', 'vorbis', 'mp3']),
   webm: new Set(['opus', 'vorbis']),
   mov: new Set(['aac', 'ac3', 'flac', 'mp3']),
   // Audio-only containers
-  mka: new Set(['aac', 'ac3', 'flac', 'opus', 'vorbis', 'mp3']),
+  mka: new Set(['aac', 'ac3', 'dts', 'truehd', 'flac', 'opus', 'vorbis', 'mp3']),
   ogg: new Set(['opus', 'vorbis', 'flac']),
   mp3: new Set(['mp3']),
   flac: new Set(['flac']),
+}
+
+// ── Containers that reject stream-copy (passthru) for specific codecs ──────
+// Passthru copies the bitstream as-is. Most containers (especially MKV/MKA)
+// accept virtually any codec via stream copy. Only list containers with real
+// muxing restrictions here — if a container isn't listed, passthru is allowed.
+const containerPassthruBlacklist: Record<string, Set<string>> = {
+  webm: new Set(['aac', 'ac3', 'mp3', 'flac', 'truehd', 'dts', 'pcm_s16le', 'pcm_s24le']),
+  ogg: new Set(['aac', 'ac3', 'mp3', 'truehd', 'dts']),
+  mp3: new Set(['aac', 'ac3', 'flac', 'opus', 'vorbis', 'truehd', 'dts']),
+  flac: new Set(['aac', 'ac3', 'mp3', 'opus', 'vorbis', 'truehd', 'dts']),
 }
 
 // ── Containers allowed per video codec (inverse of containerVideoCodecs) ────
@@ -45,10 +56,16 @@ export function isVideoCodecCompatible(videoCodec: string, container: string): b
   return !allowed || allowed.has(videoCodec)
 }
 
-/** Check whether an audio codec is compatible with a container. */
+/** Check whether an audio codec is compatible with a container (for re-encoding). */
 export function isAudioCodecCompatible(audioCodec: string, container: string): boolean {
   const allowed = containerAudioCodecs[container]
   return !allowed || allowed.has(audioCodec)
+}
+
+/** Check whether a source audio codec can be stream-copied (passthru) into a container. */
+export function isPassthruCompatible(sourceCodec: string, container: string): boolean {
+  const blacklist = containerPassthruBlacklist[container]
+  return !blacklist || !blacklist.has(sourceCodec.toLowerCase())
 }
 
 /** Return the set of video codec values incompatible with `container`. */

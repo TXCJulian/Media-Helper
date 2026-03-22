@@ -111,6 +111,8 @@ _CODEC_TO_ENCODER = {
     "vorbis": "libvorbis",
     "pcm_s16le": "pcm_s16le",
     "pcm_s24le": "pcm_s24le",
+    "dts": "dca",
+    "truehd": "truehd",
 }
 
 _VIDEO_ENCODERS = {"libx264", "libx265", "libvpx-vp9", "libsvtav1"}
@@ -1546,6 +1548,23 @@ def transcode_audio_track_from_source(
                     "updated_at": time.time(),
                 },
             )
+            # Ensure metadata reflects the cached track (may be missing after
+            # a crash or migration that left the file but not the metadata).
+            try:
+                with get_job_meta_lock(job_id):
+                    meta = load_job_metadata(job_id)
+                    if meta is not None:
+                        tracks = meta.get("audio_transcoded_tracks", [])
+                        if audio_stream_index not in tracks:
+                            tracks.append(audio_stream_index)
+                            meta["audio_transcoded_tracks"] = tracks
+                            save_job_metadata(job_id, meta)
+            except Exception:
+                logger.debug(
+                    "Could not update audio_transcoded_tracks for job %s",
+                    job_id,
+                    exc_info=True,
+                )
             return audio_path
 
         with _get_preview_build_lock(audio_path):
@@ -1931,6 +1950,23 @@ def get_job_meta_lock(job_id: str) -> threading.Lock:
         return _job_meta_locks.setdefault(job_id, threading.Lock())
 
 
+def _derive_job_status(meta: dict) -> str:
+    """Derive the job ``status`` from independent transcode flags.
+
+    Uses ``full_transcode_active`` and ``audio_transcode_active`` booleans
+    so concurrent operations don't clobber each other's state.
+    """
+    if meta.get("full_transcode_active"):
+        return "full_transcoding"
+    if meta.get("audio_transcode_active"):
+        return "audio_transcoding"
+    base = meta.get("status", "ready")
+    # Don't return a stale transcoding status when neither flag is set
+    if base in ("full_transcoding", "audio_transcoding"):
+        return "ready"
+    return base
+
+
 def _set_preview_status(status_key: str, payload: dict) -> None:
     with _preview_status_guard:
         current = _preview_status.get(status_key, {})
@@ -2013,25 +2049,28 @@ def start_background_transcode(
     )
 
     # Mark job as transcoding while the preview is being built
-    _jmeta = load_job_metadata(job_id)
-    if _jmeta and _jmeta.get("status") == "ready":
-        _jmeta["status"] = "full_transcoding"
-        _jmeta["preview_transcoded"] = False
-        _jmeta.pop("transcode_error", None)
-        save_job_metadata(job_id, _jmeta)
+    with get_job_meta_lock(job_id):
+        _jmeta = load_job_metadata(job_id)
+        if _jmeta:
+            _jmeta["full_transcode_active"] = True
+            _jmeta["preview_transcoded"] = False
+            _jmeta.pop("transcode_error", None)
+            _jmeta["status"] = _derive_job_status(_jmeta)
+            save_job_metadata(job_id, _jmeta)
 
     def _run():
         _transcode_semaphore.acquire()
         try:
             get_or_transcode_preview(filepath, job_id)
-            # Transcode succeeded — restore ready status
-            _meta = load_job_metadata(job_id)
-            if _meta:
-                if _meta.get("status") == "full_transcoding":
-                    _meta["status"] = "ready"
-                _meta["preview_transcoded"] = True
-                _meta.pop("transcode_error", None)
-                save_job_metadata(job_id, _meta)
+            # Transcode succeeded — clear active flag
+            with get_job_meta_lock(job_id):
+                _meta = load_job_metadata(job_id)
+                if _meta:
+                    _meta["full_transcode_active"] = False
+                    _meta["preview_transcoded"] = True
+                    _meta.pop("transcode_error", None)
+                    _meta["status"] = _derive_job_status(_meta)
+                    save_job_metadata(job_id, _meta)
         except Exception as exc:
             _set_preview_status(
                 status_key,
@@ -2045,14 +2084,15 @@ def start_background_transcode(
                 },
             )
             logger.exception("Background preview transcode failed")
-            # Restore ready status but record the error for the UI
-            _meta = load_job_metadata(job_id)
-            if _meta:
-                if _meta.get("status") == "full_transcoding":
-                    _meta["status"] = "ready"
-                _meta["preview_transcoded"] = False
-                _meta["transcode_error"] = str(exc)
-                save_job_metadata(job_id, _meta)
+            # Clear active flag but record the error for the UI
+            with get_job_meta_lock(job_id):
+                _meta = load_job_metadata(job_id)
+                if _meta:
+                    _meta["full_transcode_active"] = False
+                    _meta["preview_transcoded"] = False
+                    _meta["transcode_error"] = str(exc)
+                    _meta["status"] = _derive_job_status(_meta)
+                    save_job_metadata(job_id, _meta)
         finally:
             _transcode_semaphore.release()
             event.set()
@@ -2102,22 +2142,26 @@ def start_background_audio_transcode(
     )
 
     # Mark job as transcoding while audio is being built
-    _jmeta = load_job_metadata(job_id)
-    if _jmeta and _jmeta.get("status") == "ready":
-        _jmeta["status"] = "audio_transcoding"
-        _jmeta.pop("transcode_error", None)
-        save_job_metadata(job_id, _jmeta)
+    with get_job_meta_lock(job_id):
+        _jmeta = load_job_metadata(job_id)
+        if _jmeta:
+            _jmeta["audio_transcode_active"] = True
+            _jmeta.pop("transcode_error", None)
+            _jmeta["status"] = _derive_job_status(_jmeta)
+            save_job_metadata(job_id, _jmeta)
 
     def _run():
         _transcode_semaphore.acquire()
         try:
             transcode_audio_track_from_source(filepath, audio_stream_index, job_id)
-            # Restore ready status on success
-            _meta = load_job_metadata(job_id)
-            if _meta and _meta.get("status") == "audio_transcoding":
-                _meta["status"] = "ready"
-                _meta.pop("transcode_error", None)
-                save_job_metadata(job_id, _meta)
+            # Clear active flag on success
+            with get_job_meta_lock(job_id):
+                _meta = load_job_metadata(job_id)
+                if _meta:
+                    _meta["audio_transcode_active"] = False
+                    _meta.pop("transcode_error", None)
+                    _meta["status"] = _derive_job_status(_meta)
+                    save_job_metadata(job_id, _meta)
         except Exception as exc:
             _set_preview_status(
                 status_key,
@@ -2132,13 +2176,14 @@ def start_background_audio_transcode(
                 },
             )
             logger.exception("Background audio transcode failed")
-            # Restore ready status but record the error
-            _meta = load_job_metadata(job_id)
-            if _meta:
-                if _meta.get("status") == "audio_transcoding":
-                    _meta["status"] = "ready"
-                _meta["transcode_error"] = str(exc)
-                save_job_metadata(job_id, _meta)
+            # Clear active flag but record the error
+            with get_job_meta_lock(job_id):
+                _meta = load_job_metadata(job_id)
+                if _meta:
+                    _meta["audio_transcode_active"] = False
+                    _meta["transcode_error"] = str(exc)
+                    _meta["status"] = _derive_job_status(_meta)
+                    save_job_metadata(job_id, _meta)
         finally:
             _transcode_semaphore.release()
             event.set()
@@ -2604,6 +2649,8 @@ def create_job(
         "status": initial_status,
         "preview_transcoded": False,
         "audio_transcoded_tracks": [],
+        "full_transcode_active": False,
+        "audio_transcode_active": False,
         "browser_ready": False,
         "cut_settings": None,
         "output_files": [],
@@ -2765,6 +2812,13 @@ def migrate_jobs() -> int:
         # --- v1 -> v2: rename "transcoding" status to "full_transcoding" ---
         if meta.get("status") == "transcoding":
             meta["status"] = "full_transcoding"
+
+        # Add independent transcode flags
+        meta.setdefault("full_transcode_active", False)
+        meta.setdefault("audio_transcode_active", False)
+        # On startup no transcodes are running; clear stale statuses
+        if meta.get("status") in ("full_transcoding", "audio_transcoding"):
+            meta["status"] = "ready"
 
         meta["schema_version"] = 2
         # Ensure schema_version appears first in the JSON output
