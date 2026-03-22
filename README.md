@@ -162,9 +162,11 @@ Browser                    Frontend Container               Backend Container
 
 - **No CORS issues**: all requests are same-origin from the browser's perspective
 - **Single entry point**: only port 3333 needs to be exposed
-- **Backend stays private**: port 3332 doesn't have to be published
+- **Backend stays private**: port 3332 is not published — the backend is only reachable via Nginx
 - **SSE support**: Nginx configured with disabled buffering for real-time streaming
 - **Feature isolation**: each module can be independently enabled/disabled
+- **Session-based auth**: when `AUTH_USERNAME`/`AUTH_PASSWORD` are set, all endpoints require a valid signed session
+- **HMAC-signed file IDs**: cutter file identifiers are HMAC-signed to prevent forgery or path traversal via crafted IDs
 
 ## Prerequisites
 
@@ -241,6 +243,27 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `CUTTER_MAX_DIRECT_REMUX_BYTES` | Max file size for direct remux preview | `1073741824` (1 GB) |
 | `HWACCEL` | Cutter hardware acceleration mode (`off` disables; otherwise auto-detect) | auto-detect |
 | `VAAPI_DEVICE` | VAAPI render node path (used for VAAPI backend) | `/dev/dri/renderD128` |
+| `AUTH_USERNAME` | Login username (optional — auth disabled if unset) | - |
+| `AUTH_PASSWORD` | Login password (optional — auth disabled if unset) | - |
+| `SECRET_KEY` | Session signing key (optional — auto-generated and persisted if unset) | auto-generated |
+| `PUID` | User ID the container process runs as | `1000` |
+| `PGID` | Group ID the container process runs as | `1000` |
+
+### Authentication
+
+Authentication is opt-in for backward compatibility. If `AUTH_USERNAME` and `AUTH_PASSWORD` are not set, the application runs without any login requirement.
+
+When both are set, all endpoints are protected by a session-based login. The session is signed with `SECRET_KEY`; if that variable is unset a key is auto-generated and written to `/data/secret_key` so sessions survive container restarts (as long as the volume is preserved).
+
+**Enabling auth in `docker-compose.yml`:**
+
+```yaml
+environment:
+  - AUTH_USERNAME=admin
+  - AUTH_PASSWORD=changeme
+  # SECRET_KEY is optional — omit to auto-generate, or set for reproducibility:
+  # - SECRET_KEY=your-random-secret-here
+```
 
 ### Directory Structure
 
@@ -525,6 +548,28 @@ mount -t cifs //server/share /mnt -o username=user,actimeo=0
 
 # NFS: reduce attribute cache
 mount -t nfs server:/export /mnt -o actimeo=1,vers=4
+```
+
+### Session expired / Can't log in
+
+- Click "Log in" again — sessions expire after inactivity or a container restart without a persisted key.
+- Set a fixed `SECRET_KEY` environment variable so sessions remain valid across restarts.
+- If you changed `AUTH_USERNAME` or `AUTH_PASSWORD`, existing sessions are invalidated immediately; log in again with the new credentials.
+
+### Permission denied on media files in Docker
+
+The container process runs as UID/GID `1000` by default. If your host media files are owned by a different user, set `PUID` and `PGID` to match:
+
+```bash
+# Find your host user/group IDs
+id -u   # e.g. 1001
+id -g   # e.g. 1001
+```
+
+```yaml
+environment:
+  - PUID=1001
+  - PGID=1001
 ```
 
 ### Umlauts displayed incorrectly
