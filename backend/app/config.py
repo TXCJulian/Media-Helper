@@ -1,5 +1,6 @@
 import logging
 import os
+import secrets
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "dependencies", ".env"))
@@ -80,3 +81,48 @@ if not _parsed_features:
     )
 ENABLED_FEATURES: list[str] = _parsed_features or sorted(_VALID_FEATURES)
 ENABLED_FEATURES_SET: set[str] = set(ENABLED_FEATURES)
+
+# --- Authentication (optional) ---
+AUTH_USERNAME = os.getenv("AUTH_USERNAME", "").strip()
+AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "").strip()
+AUTH_ENABLED = bool(AUTH_USERNAME and AUTH_PASSWORD)
+
+# --- Secret key (for session cookies and file ID signing) ---
+_SECRET_KEY_PATH = os.path.join(CUTTER_JOBS_DIR, ".secret_key")
+
+def _load_or_generate_secret_key() -> str:
+    env_key = os.getenv("SECRET_KEY", "").strip()
+    if env_key:
+        return env_key
+    # Try loading from persistent storage
+    try:
+        with open(_SECRET_KEY_PATH) as f:
+            stored = f.read().strip()
+            if stored:
+                return stored
+    except FileNotFoundError:
+        pass
+    # Generate and persist
+    key = secrets.token_hex(32)
+    try:
+        os.makedirs(os.path.dirname(_SECRET_KEY_PATH), exist_ok=True)
+        with open(_SECRET_KEY_PATH, "w") as f:
+            f.write(key)
+        logger.warning(
+            "Generated SECRET_KEY and saved to %s. Set SECRET_KEY env var for explicit control.",
+            _SECRET_KEY_PATH,
+        )
+    except OSError as e:
+        logger.warning("Could not persist SECRET_KEY to %s: %s", _SECRET_KEY_PATH, e)
+    return key
+
+SECRET_KEY = _load_or_generate_secret_key()
+
+# Hash password at startup if auth is enabled
+_PASSWORD_HASH: bytes | None = None
+if AUTH_ENABLED:
+    import bcrypt as _bcrypt
+    _PASSWORD_HASH = _bcrypt.hashpw(AUTH_PASSWORD.encode("utf-8"), _bcrypt.gensalt())
+    logger.info("Authentication enabled for user '%s'", AUTH_USERNAME)
+else:
+    logger.info("Authentication disabled (AUTH_USERNAME/AUTH_PASSWORD not set)")
