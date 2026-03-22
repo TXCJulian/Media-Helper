@@ -13,6 +13,14 @@ async function extractErrorMessage(res: Response): Promise<string> {
   return `HTTP ${res.status}: ${res.statusText}`
 }
 
+export function assertAuthenticated(res: Response | XMLHttpRequest): void {
+  const status = res instanceof Response ? res.status : res.status
+  if (status === 401) {
+    window.dispatchEvent(new Event('auth:expired'))
+    throw new Error('Session expired')
+  }
+}
+
 export async function fetchJson<T>(
   path: string,
   params?: Record<string, string>,
@@ -25,10 +33,7 @@ export async function fetchJson<T>(
     }
   }
   const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), credentials: 'include' })
-  if (res.status === 401) {
-    window.dispatchEvent(new Event('auth:expired'))
-    throw new Error('Session expired')
-  }
+  assertAuthenticated(res)
   if (!res.ok) {
     throw new Error(await extractErrorMessage(res))
   }
@@ -51,10 +56,7 @@ export async function postForm<T>(
     signal: AbortSignal.timeout(timeoutMs),
     credentials: 'include',
   })
-  if (res.status === 401) {
-    window.dispatchEvent(new Event('auth:expired'))
-    throw new Error('Session expired')
-  }
+  assertAuthenticated(res)
   if (!res.ok) {
     throw new Error(await extractErrorMessage(res))
   }
@@ -104,9 +106,10 @@ export function uploadFile(
     }
 
     xhr.addEventListener('load', () => {
-      if (xhr.status === 401) {
-        window.dispatchEvent(new Event('auth:expired'))
-        reject(new Error('Session expired'))
+      try {
+        assertAuthenticated(xhr)
+      } catch (e) {
+        reject(e)
         return
       }
       if (xhr.status >= 200 && xhr.status < 300) {
@@ -252,10 +255,7 @@ export async function deleteJob(jobId: string): Promise<void> {
     signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
     credentials: 'include',
   })
-  if (res.status === 401) {
-    window.dispatchEvent(new Event('auth:expired'))
-    throw new Error('Session expired')
-  }
+  assertAuthenticated(res)
   if (!res.ok) throw new Error(await extractErrorMessage(res))
 }
 
@@ -276,10 +276,7 @@ export async function saveToSource(
     signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
     credentials: 'include',
   })
-  if (res.status === 401) {
-    window.dispatchEvent(new Event('auth:expired'))
-    throw new Error('Session expired')
-  }
+  assertAuthenticated(res)
   if (!res.ok) throw new Error(await extractErrorMessage(res))
   return res.json()
 }

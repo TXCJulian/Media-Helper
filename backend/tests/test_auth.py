@@ -85,9 +85,13 @@ class TestAuthEnabled:
         assert resp.status_code == 401
 
     def test_exempt_routes_accessible_without_session(self, auth_client):
-        for path in ("/health", "/config", "/auth/status"):
+        for path in ("/health", "/auth/status"):
             resp = auth_client.get(path)
             assert resp.status_code == 200, f"Expected 200 for {path}, got {resp.status_code}"
+
+    def test_config_requires_auth(self, auth_client):
+        resp = auth_client.get("/config")
+        assert resp.status_code == 401
 
     def test_login_with_valid_credentials(self, auth_client):
         resp = _do_login(auth_client)

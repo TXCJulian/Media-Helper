@@ -121,11 +121,13 @@ def _load_or_generate_secret_key() -> str:
 
 SECRET_KEY = _load_or_generate_secret_key()
 
-# Hash password at startup if auth is enabled
+# Hash password at startup if auth is enabled, then scrub plaintext
 _PASSWORD_HASH: bytes | None = None
 if AUTH_ENABLED:
     import bcrypt as _bcrypt
     _PASSWORD_HASH = _bcrypt.hashpw(AUTH_PASSWORD.encode("utf-8"), _bcrypt.gensalt())
+    os.environ.pop("AUTH_PASSWORD", None)
+    AUTH_PASSWORD = ""
     logger.info("Authentication enabled for user '%s'", AUTH_USERNAME)
 else:
     logger.info("Authentication disabled (AUTH_USERNAME/AUTH_PASSWORD not set)")

@@ -1,7 +1,8 @@
+import hmac
 import logging
 
 import bcrypt
-from fastapi import HTTPException, Request, Response
+from fastapi import Request, Response
 from itsdangerous import TimestampSigner, BadSignature, SignatureExpired
 
 from app.config import AUTH_ENABLED, AUTH_USERNAME, SECRET_KEY, _PASSWORD_HASH
@@ -17,9 +18,9 @@ _signer = TimestampSigner(SECRET_KEY)
 def verify_login(username: str, password: str) -> bool:
     if not AUTH_ENABLED or _PASSWORD_HASH is None:
         return False
-    if username != AUTH_USERNAME:
-        return False
-    return bcrypt.checkpw(password.encode("utf-8"), _PASSWORD_HASH)
+    username_ok = hmac.compare_digest(username, AUTH_USERNAME)
+    password_ok = bcrypt.checkpw(password.encode("utf-8"), _PASSWORD_HASH)
+    return username_ok and password_ok
 
 
 def create_session_cookie(response: Response, *, secure: bool = False) -> None:
@@ -44,13 +45,6 @@ def check_session(request: Request) -> bool:
         return False
     try:
         username = _signer.unsign(cookie, max_age=SESSION_MAX_AGE).decode("utf-8")
-        return username == AUTH_USERNAME
+        return hmac.compare_digest(username, AUTH_USERNAME)
     except (BadSignature, SignatureExpired):
         return False
-
-
-def require_auth(request: Request) -> None:
-    if not AUTH_ENABLED:
-        return
-    if not check_session(request):
-        raise HTTPException(status_code=401, detail="Authentication required")

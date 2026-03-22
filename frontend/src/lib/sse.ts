@@ -1,4 +1,4 @@
-import { API_BASE } from './api'
+import { API_BASE, assertAuthenticated } from './api'
 
 interface SSECallbacks {
   onProgress: (data: string) => void
@@ -36,8 +36,9 @@ export function connectSSE(
       return
     }
 
-    if (response.status === 401) {
-      window.dispatchEvent(new Event('auth:expired'))
+    try {
+      assertAuthenticated(response)
+    } catch {
       callbacks.onError('Session expired')
       return
     }

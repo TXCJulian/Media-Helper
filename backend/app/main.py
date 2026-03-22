@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Query, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 from contextlib import asynccontextmanager
 import asyncio
 import json
@@ -182,22 +182,30 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-_AUTH_EXEMPT_EXACT = {"/health", "/config", "/openapi.json"}
+_AUTH_EXEMPT_EXACT = {"/health", "/openapi.json"}
 _AUTH_EXEMPT_PREFIXES = ("/auth/", "/docs")
 
 
-class AuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        from fastapi.responses import JSONResponse
+class AuthMiddleware:
+    """Pure ASGI middleware — avoids BaseHTTPMiddleware's streaming/SSE buffering issues."""
 
-        if not AUTH_ENABLED:
-            return await call_next(request)
-        path = request.url.path
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not AUTH_ENABLED:
+            await self.app(scope, receive, send)
+            return
+        path: str = scope.get("path", "")
         if path in _AUTH_EXEMPT_EXACT or any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope)
         if not check_session(request):
-            return JSONResponse({"detail": "Authentication required"}, status_code=401)
-        return await call_next(request)
+            response = JSONResponse({"detail": "Authentication required"}, status_code=401)
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 # Auth added FIRST (inner), CORS added SECOND (outer) — LIFO means CORS runs first
@@ -241,12 +249,12 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/auth/login")
-def auth_login(body: LoginRequest, request: Request):
+async def auth_login(body: LoginRequest, request: Request):
     if not AUTH_ENABLED:
         raise HTTPException(status_code=404, detail="Authentication is not enabled")
     if not verify_login(body.username, body.password):
+        await asyncio.sleep(1)  # rate-limit brute-force attempts
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    from fastapi.responses import JSONResponse
     response = JSONResponse({"ok": True})
     is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
     create_session_cookie(response, secure=is_https)
@@ -255,7 +263,6 @@ def auth_login(body: LoginRequest, request: Request):
 
 @app.post("/auth/logout")
 def auth_logout():
-    from fastapi.responses import JSONResponse
     response = JSONResponse({"ok": True})
     clear_session_cookie(response)
     return response
