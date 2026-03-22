@@ -123,7 +123,7 @@ export interface CutterFileInfo {
   name: string
   size: number
   extension: string
-  file_id?: string
+  file_id: string
 }
 
 export interface CutterSourceState {

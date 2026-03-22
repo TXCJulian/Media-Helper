@@ -80,8 +80,13 @@ export default function App() {
   }, [])
 
   const handleLogout = useCallback(async () => {
-    await postLogout()
-    setAuthState('login')
+    try {
+      await postLogout()
+    } catch (err) {
+      console.warn('Logout request failed', err)
+    } finally {
+      setAuthState('login')
+    }
   }, [])
 
   useEffect(() => {

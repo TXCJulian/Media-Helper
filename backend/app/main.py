@@ -1191,7 +1191,11 @@ def cutter_get_job(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
     if meta.get("source") == "server" and meta.get("base") and meta.get("original_path"):
         meta["source_file_id"] = encode_file_id(
-            "server", meta["original_path"], job_id="", base=meta["base"]
+            "server", meta["original_path"], job_id=job_id, base=meta["base"]
+        )
+    elif meta.get("source") == "upload" and meta.get("original_name"):
+        meta["source_file_id"] = encode_file_id(
+            "upload", meta["original_name"], job_id=job_id, base=""
         )
     return meta
 
