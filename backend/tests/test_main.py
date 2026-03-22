@@ -245,10 +245,20 @@ class TestCutterStreamValidation:
             },
         )
         monkeypatch.setattr(main_mod, "needs_transcoding", lambda *_args, **_kwargs: True)
+        transcode_called = False
+        _orig = main_mod.start_background_transcode
+
+        def _no_transcode(*args, **kwargs):
+            nonlocal transcode_called
+            transcode_called = True
+            return _orig(*args, **kwargs)
+
+        monkeypatch.setattr(main_mod, "start_background_transcode", _no_transcode)
 
         resp = client.get("/cutter/stream/demo")
         assert resp.status_code == 200
         assert resp.content == b"demo"
+        assert not transcode_called, "start_background_transcode should not be called without transcode=true"
 
     def test_cutter_stream_transcodes_when_flag_enabled(self, client, tmp_path, monkeypatch):
         import app.main as main_mod

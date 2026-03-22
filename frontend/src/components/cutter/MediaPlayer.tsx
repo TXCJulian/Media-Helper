@@ -108,6 +108,10 @@ export default function MediaPlayer({
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const volumeControlRef = useRef<HTMLDivElement | null>(null)
   const isDualMode = !!audioUrl
+  // In audio-only transcode mode, the main streamUrl is the original file
+  // (no transcode=true) so it's safe to load immediately.  In full transcode
+  // mode the streamUrl itself depends on the backend preview being ready.
+  const streamNeedsTranscode = streamUrl?.includes('transcode=true') ?? false
   const rafRef = useRef<number>(0)
   const inPointRef = useRef(inPoint)
   const outPointRef = useRef(outPoint)
@@ -235,7 +239,7 @@ export default function MediaPlayer({
     setMediaError('')
     setLoadedAspectRatio(null)
     if (needsTranscoding) setIsMediaReady(false)
-    if (isTranscodeRunning && !isDualMode) return
+    if (isTranscodeRunning && streamNeedsTranscode) return
     const el = mediaRef.current
     if (el) {
       el.pause()
@@ -244,7 +248,7 @@ export default function MediaPlayer({
       el.load()
       setCurrentTime(0)
     }
-  }, [streamUrl, needsTranscoding, isTranscodeRunning, isDualMode, stopLoop])
+  }, [streamUrl, needsTranscoding, isTranscodeRunning, streamNeedsTranscode, stopLoop])
 
   // Sync separate audio element when audioUrl changes (track switch)
   // or when transcode finishes (isTranscodeRunning goes false).
@@ -528,7 +532,7 @@ export default function MediaPlayer({
         <div className="relative">
           <video
             ref={mediaRef as React.RefObject<HTMLVideoElement>}
-            src={isTranscodeRunning && !isDualMode ? undefined : streamUrl}
+            src={isTranscodeRunning && streamNeedsTranscode ? undefined : streamUrl}
             className="w-full cursor-pointer rounded-xl bg-black"
             style={{ aspectRatio: videoAspectRatio }}
             onClick={isTranscoding ? undefined : togglePlay}

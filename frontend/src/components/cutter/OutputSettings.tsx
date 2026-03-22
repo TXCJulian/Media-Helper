@@ -153,6 +153,26 @@ export default function OutputSettings({
     }
   }
 
+  // Auto-correct tracks whose mode is no longer valid for the current container.
+  // The container-change handler covers most cases, but initial render or
+  // external state changes can leave a track in passthru when the source codec
+  // is incompatible.
+  useEffect(() => {
+    const corrected = audioTracks.map((t) => {
+      if (t.mode !== 'passthru') return t
+      const src = audioStreams.find((s) => s.index === t.streamIndex)
+      if (!src || isAudioCodecCompatible(src.codec, container)) return t
+      return {
+        ...t,
+        mode: 'reencode' as const,
+        codec: bestAudioCodecForContainer(container, src.codec, audioCodecOptions),
+      }
+    })
+    if (corrected.some((t, i) => t !== audioTracks[i])) {
+      onAudioTracksChange(corrected)
+    }
+  }, [audioTracks, audioStreams, container, onAudioTracksChange])
+
   const filteredAudioCodecs = audioCodecsForContainer(audioCodecOptions, container)
 
   // Sets of values that conflict with the *other* field's current selection
