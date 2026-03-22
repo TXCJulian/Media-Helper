@@ -293,5 +293,10 @@ export async function fetchAuthStatus(): Promise<{
 
 export async function postLogout(): Promise<void> {
   const url = new URL('/auth/logout', API_BASE)
-  await fetch(url, { method: 'POST', credentials: 'include' })
+  const res = await fetch(url, {
+    method: 'POST',
+    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    credentials: 'include',
+  })
+  if (!res.ok) throw new Error(await extractErrorMessage(res))
 }

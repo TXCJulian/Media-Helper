@@ -235,14 +235,15 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/auth/login")
-def auth_login(body: LoginRequest):
+def auth_login(body: LoginRequest, request: Request):
     if not AUTH_ENABLED:
         raise HTTPException(status_code=404, detail="Authentication is not enabled")
     if not verify_login(body.username, body.password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     from fastapi.responses import JSONResponse
     response = JSONResponse({"ok": True})
-    create_session_cookie(response)
+    is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    create_session_cookie(response, secure=is_https)
     return response
 
 

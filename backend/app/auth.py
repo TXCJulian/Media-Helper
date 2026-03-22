@@ -22,7 +22,7 @@ def verify_login(username: str, password: str) -> bool:
     return bcrypt.checkpw(password.encode("utf-8"), _PASSWORD_HASH)
 
 
-def create_session_cookie(response: Response) -> None:
+def create_session_cookie(response: Response, *, secure: bool = False) -> None:
     signed = _signer.sign(AUTH_USERNAME).decode("utf-8")
     response.set_cookie(
         SESSION_COOKIE,
@@ -30,6 +30,7 @@ def create_session_cookie(response: Response) -> None:
         max_age=SESSION_MAX_AGE,
         httponly=True,
         samesite="lax",
+        secure=secure,
     )
 
 
