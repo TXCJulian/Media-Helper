@@ -1320,8 +1320,8 @@ def cutter_cut(
 
     # Validate container/codec compatibility for audio tracks
     _container_audio_compat = {
-        "mp4": {"aac", "ac3", "mp3", "opus"},
-        "mov": {"aac", "ac3", "flac", "mp3"},
+        "mp4": {"aac", "ac3", "eac3", "mp3", "opus"},
+        "mov": {"aac", "ac3", "eac3", "flac", "mp3"},
         "webm": {"opus", "vorbis"},
         "ogg": {"opus", "vorbis", "flac"},
         "mp3": {"mp3"},
