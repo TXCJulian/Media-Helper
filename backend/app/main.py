@@ -1318,6 +1318,28 @@ def cutter_cut(
                     detail=f"Invalid audio track codec: {track_codec}",
                 )
 
+    # Validate container/codec compatibility for audio tracks
+    _container_audio_compat = {
+        "mp4": {"aac", "ac3", "mp3", "opus"},
+        "mov": {"aac", "ac3", "flac", "mp3"},
+        "webm": {"opus", "vorbis"},
+        "ogg": {"opus", "vorbis", "flac"},
+        "mp3": {"mp3"},
+        "flac": {"flac"},
+    }
+    if container and container in _container_audio_compat:
+        allowed_audio = _container_audio_compat[container]
+        for track in audio_tracks_parsed:
+            if track["mode"] == "reencode":
+                track_codec = track.get("codec", "")
+                if track_codec and track_codec not in allowed_audio:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Audio codec '{track_codec}' is not compatible "
+                        f"with container '{container}'. "
+                        f"Allowed: {sorted(allowed_audio)}",
+                    )
+
     # Validate against file duration
     try:
         file_info = probe_file(resolved)

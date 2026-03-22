@@ -38,6 +38,8 @@ _PASSTHROUGH_CODECS = {
     "pcm_s32le",
     "pcm_f32le",
 }
+# Subset of _PASSTHROUGH_CODECS that can be muxed into MP4 (used for previews)
+_MP4_AUDIO_PASSTHROUGH = {"aac", "mp3", "opus", "ac3", "eac3"}
 _BROWSER_VIDEO_CODECS = {"h264", "hevc", "h265", "vp8", "vp9", "av1"}
 _PREVIEW_X264_PRESET = "superfast"
 _PREVIEW_MAX_THREADS = "2"
@@ -483,8 +485,8 @@ def transcode_for_preview(
     else:
         cmd += ["-vn"]
 
-    # Copy audio if browser-compatible, otherwise transcode to AAC
-    if audio_codec in _PASSTHROUGH_CODECS:
+    # Copy audio if MP4-muxable, otherwise transcode to AAC
+    if audio_codec in _MP4_AUDIO_PASSTHROUGH:
         cmd += ["-c:a", "copy"]
     else:
         cmd += ["-c:a", "aac", "-b:a", "192k"]
@@ -852,7 +854,7 @@ def get_or_transcode_preview(
             audio_streams = info.get("audio_streams", [])
             for i, stream in enumerate(audio_streams):
                 codec = stream.get("codec", "unknown").lower()
-                if codec in _PASSTHROUGH_CODECS:
+                if codec in _MP4_AUDIO_PASSTHROUGH:
                     cmd += [f"-c:a:{i}", "copy"]
                 else:
                     cmd += [f"-c:a:{i}", "aac", f"-b:a:{i}", "192k"]
@@ -864,7 +866,7 @@ def get_or_transcode_preview(
 
             if not audio_streams:
                 audio_codec = info.get("audio_codec", "unknown").lower()
-                if audio_codec in _PASSTHROUGH_CODECS:
+                if audio_codec in _MP4_AUDIO_PASSTHROUGH:
                     cmd += ["-c:a", "copy"]
                 else:
                     cmd += ["-c:a", "aac", "-b:a", "192k"]

@@ -269,7 +269,7 @@ The application expects the following structure in your media directory:
     └── ...
 ```
 
-> **Note:** The Episode Renamer and Music Renamer only scan their respective subdirectories (`TV Shows/`, `Music/`). The Media Cutter scans the entire `BASE_PATH` so it can access files in any subdirectory (Movies, TV Shows, Music, etc.).
+> **Note:** The Episode Renamer and Music Renamer only scan their respective subdirectories (`TV Shows/`, `Music/`). The Media Cutter scans the entire `BASE_PATHS` so it can access files in any subdirectory (Movies, TV Shows, Music, etc.).
 
 ## API Endpoints
 
