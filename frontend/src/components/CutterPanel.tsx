@@ -417,20 +417,17 @@ export default function CutterPanel({
       setPreviewStatus(null)
       setTranscodeMode('off')
       setPreviewAudioStreamIndex(null)
-      try {
-        await loadFileData(filePath, source, job.job_id, jobBase)
-        if (reopenTranscodeMode === 'audio_only') {
-          setPreviewAudioStreamIndex(reopenAudioStreamIndex)
-        }
-        setTranscodeMode(reopenTranscodeMode)
-        // Restore saved in/out points — loadFileData resets them to 0/duration
-        if (settings) {
-          setPersisted((prev) => ({
-            form: { ...prev.form, inPoint: settings.in_point, outPoint: settings.out_point },
-          }))
-        }
-      } catch (err) {
-        onError(`Error reopening job: ${err instanceof Error ? err.message : String(err)}`)
+      const probeResult = await loadFileData(filePath, source, job.job_id, jobBase)
+      if (!probeResult) return
+      if (reopenTranscodeMode === 'audio_only') {
+        setPreviewAudioStreamIndex(reopenAudioStreamIndex)
+      }
+      setTranscodeMode(reopenTranscodeMode)
+      // Restore saved in/out points — loadFileData resets them to 0/duration
+      if (settings) {
+        setPersisted((prev) => ({
+          form: { ...prev.form, inPoint: settings.in_point, outPoint: settings.out_point },
+        }))
       }
     },
     [loadFileData, setPersisted, onError],

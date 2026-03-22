@@ -6,20 +6,20 @@
 [![Jellyfin FFmpeg x64](https://img.shields.io/badge/Jellyfin%20FFmpeg-x64-00A4DC?style=flat)](https://github.com/jellyfin/jellyfin-ffmpeg)
 [![FFmpeg ARM](https://img.shields.io/badge/FFmpeg-ARM-007808?style=flat&logo=ffmpeg&logoColor=white)](https://www.ffmpeg.org/)
 
-*A media management tool for renaming TV shows, music files, transcribing lyrics, and cutting media*
+A media management tool for renaming TV shows, music files, transcribing lyrics, and cutting media.
 
 ## Screenshots
 
 | Landing Page | Episode Renamer |
-|:---:|:---:|
+| --- | --- |
 | ![Landing Page](docs/screenshots/landing.png) | ![Episode Panel](docs/screenshots/episode-panel.png) |
 
 | Music Renamer | Lyrics Transcriber |
-|:---:|:---:|
+| --- | --- |
 | ![Music Panel](docs/screenshots/music-panel.png) | ![Lyrics Panel](docs/screenshots/lyrics-panel.png) |
 
 | Media Cutter (Server) | Media Cutter (Upload) |
-|:---:|:---:|
+| --- | --- |
 | ![Cutter Panel](docs/screenshots/cutter-panel.png) | ![Cutter Upload](docs/screenshots/cutter-upload.png) |
 
 ## Table of Contents
@@ -49,6 +49,7 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 ## Features
 
 ### TV Shows
+
 - Automatic series search via TMDB API (multi-language: DE, EN, etc.)
 - Episode renaming: `S01E01 - Episode title.ext`
 - Intelligent filename-to-episode matching with configurable threshold
@@ -57,6 +58,7 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 - Dry-run preview before renaming
 
 ### Music
+
 - Metadata-based renaming from ID3, FLAC, Vorbis, Opus, AIFF, ASF, Musepack tags
 - Supported formats: FLAC, WAV, MP3, OGG Vorbis, OGG Opus, AIFF, ASF, Musepack
 - Umlaut normalization for filesystem compatibility
@@ -64,6 +66,7 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 - Artist and album directory filters
 
 ### Lyrics Transcription
+
 - AI-powered lyrics transcription from audio files
 - Three-stage pipeline: Vocal separation (HDemucs) → Speech-to-text (faster-whisper) → Lyrics correction (Genius API)
 - Output formats: LRC (timestamped), TXT (plain text), or both
@@ -92,6 +95,7 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 - Supported formats: MP4, MKV, MOV, AVI, WebM, MP3, FLAC, M4A, WAV, AAC, AC3, DTS, Opus, OGG, AIFF
 
 ### General
+
 - Modern dark-themed web interface with glassmorphism design
 - Feature toggle system — enable/disable modules via environment variable
 - Landing page with module navigation
@@ -106,6 +110,7 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 ### Technology Stack
 
 **Backend:**
+
 - Python 3.12 (LTS)
 - FastAPI + Uvicorn
 - TMDB API (The Movie Database)
@@ -115,6 +120,7 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 - Watchdog (filesystem monitoring)
 
 **Frontend:**
+
 - React 19 (Functional Components + Hooks)
 - Vite 7 (build tool + HMR)
 - Tailwind CSS 4
@@ -122,6 +128,7 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 - Vitest (testing)
 
 **Infrastructure:**
+
 - Docker + Docker Compose
 - Multi-stage Docker builds
 - Nginx reverse proxy
@@ -131,7 +138,7 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 
 ### Request Flow
 
-```
+```text
 Browser                    Frontend Container               Backend Container
   |                             (Nginx)                          (FastAPI)
   |                               |                                  |
@@ -208,16 +215,16 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 
 ### Step 5: Open Application
 
-- **Frontend**: http://localhost:3333
-- **Backend API**: http://localhost:3332
-- **API Documentation**: http://localhost:3332/docs
+- **Frontend**: <http://localhost:3333>
+- **Backend API**: <http://localhost:3332>
+- **API Documentation**: <http://localhost:3332/docs>
 
 ## Configuration
 
 ### Backend Environment Variables
 
 | Variable | Description | Default |
-|----------|-------------|---------|
+| -------- | ----------- | ------- |
 | `BASE_PATH` | **Deprecated** - use `BASE_PATHS` instead | |
 | `BASE_PATHS` | Base path(s) to media in container (CSV) | `/media` |
 | `TVSHOW_FOLDER_NAME` | Name of TV shows folder | `TV Shows` |
@@ -239,7 +246,7 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 
 The application expects the following structure in your media directory:
 
-```
+```text
 /media/
 ├── TV Shows/
 │   ├── Breaking Bad/
@@ -273,40 +280,40 @@ The application expects the following structure in your media directory:
 
 ## API Endpoints
 
-### Configuration
+### Configuration Endpoints
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| ------ | -------- | ----------- |
 | `GET` | `/config` | Returns enabled features |
 | `GET` | `/health` | Backend health check |
 
-### TV Shows
+### TV Shows Endpoints
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| ------ | -------- | ----------- |
 | `GET` | `/directories/tvshows` | List TV show directories (query: `series`, `season`) |
 | `POST` | `/directories/refresh` | Force refresh directory cache |
 | `POST` | `/rename/episodes` | Rename episodes (form: `directory`, `series`, `season`, `language`, `dry_run`, `assign_seq`, `threshold`) |
 
-### Music
+### Music Endpoints
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| ------ | -------- | ----------- |
 | `GET` | `/directories/music` | List music directories (query: `artist`, `album`) |
 | `POST` | `/rename/music` | Rename music files (form: `directory`, `dry_run`) |
 
-### Lyrics Transcription
+### Lyrics Transcription Endpoints
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| ------ | -------- | ----------- |
 | `GET` | `/transcribe/health` | Transcriber service health + GPU info |
 | `GET` | `/transcribe/files` | List music files with lyrics status (query: `directory`) |
 | `GET` | `/transcribe/start` | Start transcription (SSE stream, query: `directory`, `files`, `output_format`, `skip_existing`, `language`, `skip_separation`, `skip_correction`) |
 
-### Media Cutter
+### Media Cutter Endpoints
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| ------ | -------- | ----------- |
 | `GET` | `/cutter/files` | List media files in a directory (query: `directory`) |
 | `GET` | `/cutter/probe` | Probe file metadata with ffprobe (query: `path`, `source`, `job_id`) |
 | `GET` | `/cutter/waveform` | Generate audio waveform data (query: `path`, `source`, `job_id`, `peaks`) |
@@ -378,7 +385,7 @@ docker buildx build --platform linux/amd64,linux/arm64 -t bosscock/media-renamer
 
 ### Project Structure
 
-```
+```text
 Media-Helper/
 ├── backend/
 │   ├── app/
@@ -490,11 +497,13 @@ docker compose logs renamer-backend
 ### Frontend cannot reach backend (502 Bad Gateway)
 
 1. Check that both containers are in the same network:
+
 ```bash
 docker network inspect renamer-network
 ```
 
-2. Check service names in `nginx-app.conf`:
+1. Check service names in `nginx-app.conf`:
+
 ```nginx
 proxy_pass http://renamer-backend:3332;  # Must match docker-compose.yml
 ```

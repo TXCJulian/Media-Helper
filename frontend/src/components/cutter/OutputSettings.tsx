@@ -193,8 +193,11 @@ export default function OutputSettings({
   const sourceEncoderName = (() => {
     if (!streamCopy || !isVideo || !sourceVideoCodec) return null
     const map: Record<string, string> = {
-      h264: 'libx264', hevc: 'libx265', h265: 'libx265',
-      vp9: 'libvpx-vp9', av1: 'libsvtav1',
+      h264: 'libx264',
+      hevc: 'libx265',
+      h265: 'libx265',
+      vp9: 'libvpx-vp9',
+      av1: 'libsvtav1',
       mpeg2video: 'mpeg2video',
     }
     return map[sourceVideoCodec.toLowerCase()] ?? null
@@ -208,7 +211,10 @@ export default function OutputSettings({
 
   // Auto-correct container if current selection is not in filtered options
   useEffect(() => {
-    if (filteredContainerOptions.length > 0 && !filteredContainerOptions.some((o) => o.value === container)) {
+    if (
+      filteredContainerOptions.length > 0 &&
+      !filteredContainerOptions.some((o) => o.value === container)
+    ) {
       onContainerChange(filteredContainerOptions[0].value)
     }
   }, [filteredContainerOptions, container, onContainerChange])
