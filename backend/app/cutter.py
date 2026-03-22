@@ -2499,6 +2499,7 @@ def cut_file(
     try:
         time_pattern = re.compile(r"time=(\d+):(\d+):(\d+)\.(\d+)")
         stderr_lines: list[str] = []
+        _seen_warnings: set[str] = set()
 
         stderr_iter = iter(proc.stderr.readline, "") if proc.stderr else iter([])
         for line in stderr_iter:
@@ -2522,7 +2523,14 @@ def cut_file(
                 stripped = line.strip()
                 if stripped:
                     stderr_lines.append(stripped)
-                    progress_cb(f"[ffmpeg] {stripped}")
+                    # Deduplicate repetitive warnings (e.g. per-frame
+                    # "Non-monotonic DTS" messages) — show only the first
+                    # occurrence to avoid flooding the log.
+                    # Strip varying numeric values to normalise the key.
+                    dedup_key = re.sub(r"\d+", "#", stripped)
+                    if dedup_key not in _seen_warnings:
+                        _seen_warnings.add(dedup_key)
+                        progress_cb(f"[ffmpeg] {stripped}")
 
         try:
             proc.wait(timeout=3600)
