@@ -1264,6 +1264,8 @@ def cutter_cut(
         "vorbis",
         "pcm_s16le",
         "pcm_s24le",
+        "dts",
+        "truehd",
     }
     valid_containers = {
         "",

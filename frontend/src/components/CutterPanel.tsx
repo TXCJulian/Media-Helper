@@ -41,6 +41,7 @@ import type {
   CutterPreviewStatus,
   DirectoriesResponse,
   AudioTrackConfig,
+  ProbeResult,
 } from '@/types'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
