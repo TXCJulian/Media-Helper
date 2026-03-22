@@ -2355,6 +2355,7 @@ def cut_file(
             str(duration),
         ]
 
+    included_tracks: list[dict] = []
     if audio_tracks is not None:
         cmd += ["-map", "0:v?"]
 
@@ -2458,6 +2459,7 @@ def cut_file(
     if job_id is not None:
         _register_job_process(job_id, proc)
 
+    _cleaned_up = False
     try:
         time_pattern = re.compile(r"time=(\d+):(\d+):(\d+)\.(\d+)")
         stderr_lines: list[str] = []
@@ -2503,6 +2505,8 @@ def cut_file(
                 progress_cb(
                     f"GPU encoder {_gpu_encoder_name} failed — retrying with CPU"
                 )
+                # Clean up before recursive retry; set flag so finally doesn't repeat
+                _cleaned_up = True
                 if job_id is not None:
                     _unregister_job_process(job_id, proc)
                     _end_job_operation(job_id, cancel_event)
@@ -2533,11 +2537,12 @@ def cut_file(
         progress_cb(f"Saved {os.path.basename(output_path)}")
         return output_path
     finally:
-        if job_id is not None:
-            _unregister_job_process(job_id, proc)
-            _end_job_operation(job_id, cancel_event)
-        _close_pipe(proc.stdout)
-        _close_pipe(proc.stderr)
+        if not _cleaned_up:
+            if job_id is not None:
+                _unregister_job_process(job_id, proc)
+                _end_job_operation(job_id, cancel_event)
+            _close_pipe(proc.stdout)
+            _close_pipe(proc.stderr)
 
 
 def generate_thumbnail_strip(filepath: str, count: int = 30) -> bytes:

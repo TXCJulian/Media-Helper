@@ -323,9 +323,16 @@ export default function OutputSettings({
                         </span>
                         <TrackModeSelect
                           options={modeOptions.filter((o) => {
-                            if (o.value === 'remove' && !isVideo && wouldRemoveAllAudio(stream.index))
+                            if (
+                              o.value === 'remove' &&
+                              !isVideo &&
+                              wouldRemoveAllAudio(stream.index)
+                            )
                               return false
-                            if (o.value === 'passthru' && !isPassthruCompatible(stream.codec, container))
+                            if (
+                              o.value === 'passthru' &&
+                              !isPassthruCompatible(stream.codec, container)
+                            )
                               return false
                             return true
                           })}

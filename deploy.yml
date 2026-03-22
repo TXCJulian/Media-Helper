@@ -17,7 +17,7 @@ services:
       #- CUTTER_JOB_TTL=VALID_JOB_TTL_HERE #time in seconds after which cutter jobs are automatically deleted, defaults to 86400 (24 hours)
       #- CUTTER_MAX_DIRECT_REMUX_BYTES=VALID_MAX_DIRECT_REMUX_BYTES_HERE #maximum file size in bytes for direct remuxing in cutter module, defaults to 1073741824 (1 GB)
       #- HWACCEL=off  # Uncomment to disable GPU-accelerated video encoding
-      #- VAAPI_DEVICE=/dev/dri/renderD128  # Uncomment to override VAAPI device path deaults to /dev/dri/renderD128
+      #- VAAPI_DEVICE=/dev/dri/renderD128  # Uncomment to override VAAPI device path defaults to /dev/dri/renderD128
     # --- GPU passthrough (uncomment ONE section matching your hardware) ---
     # NVIDIA GPU:
     #deploy:

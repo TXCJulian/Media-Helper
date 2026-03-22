@@ -272,7 +272,12 @@ export default function CutterPanel({
 
   // ── Load probe + waveform for a file ──────────────────────────
   const loadFileData = useCallback(
-    async (path: string, source: 'server' | 'upload', jid = '', base = ''): Promise<ProbeResult | null> => {
+    async (
+      path: string,
+      source: 'server' | 'upload',
+      jid = '',
+      base = '',
+    ): Promise<ProbeResult | null> => {
       onError('')
       setSource({ probe: null, peaks: [], thumbnailUrl: '', isLoadingFile: true })
       try {
@@ -637,8 +642,7 @@ export default function CutterPanel({
   })()
 
   const compatibilityReport = hasFile ? getBrowserCompatibilityReport(filePath, probe) : null
-  const showAudioOnlyButton =
-    isVideo && compatibilityReport && !compatibilityReport.videoIssue
+  const showAudioOnlyButton = isVideo && compatibilityReport && !compatibilityReport.videoIssue
   const compatibilityMessage = (() => {
     if (!hasFile || !probe) return null
 

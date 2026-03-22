@@ -69,30 +69,21 @@ export function isPassthruCompatible(sourceCodec: string, container: string): bo
 }
 
 /** Return the set of video codec values incompatible with `container`. */
-export function incompatibleVideoCodecs(
-  allOptions: Option[],
-  container: string,
-): Set<string> {
+export function incompatibleVideoCodecs(allOptions: Option[], container: string): Set<string> {
   const allowed = containerVideoCodecs[container]
   if (!allowed) return new Set()
   return new Set(allOptions.filter((o) => !allowed.has(o.value)).map((o) => o.value))
 }
 
 /** Return the set of container values incompatible with `videoCodec`. */
-export function incompatibleContainers(
-  allOptions: Option[],
-  videoCodec: string,
-): Set<string> {
+export function incompatibleContainers(allOptions: Option[], videoCodec: string): Set<string> {
   const allowed = videoCodecContainers[videoCodec]
   if (!allowed) return new Set()
   return new Set(allOptions.filter((o) => !allowed.has(o.value)).map((o) => o.value))
 }
 
 /** Filter audio codec options to those compatible with `container`. */
-export function audioCodecsForContainer(
-  allOptions: Option[],
-  container: string,
-): Option[] {
+export function audioCodecsForContainer(allOptions: Option[], container: string): Option[] {
   const allowed = containerAudioCodecs[container]
   if (!allowed) return allOptions
   return allOptions.filter((o) => allowed.has(o.value))
