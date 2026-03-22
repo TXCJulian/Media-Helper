@@ -253,7 +253,7 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 
 Authentication is opt-in for backward compatibility. If `AUTH_USERNAME` and `AUTH_PASSWORD` are not set, the application runs without any login requirement.
 
-When both are set, all endpoints are protected by a session-based login. The session is signed with `SECRET_KEY`; if that variable is unset a key is auto-generated and written to `/data/secret_key` so sessions survive container restarts (as long as the volume is preserved).
+When both are set, all endpoints are protected by a session-based login. The session is signed with `SECRET_KEY`; if that variable is unset a key is auto-generated and written to `/var/lib/media-renamer/.secret_key` inside the container so sessions survive container restarts.
 
 **Enabling auth in `docker-compose.yml`:**
 
@@ -552,9 +552,9 @@ mount -t nfs server:/export /mnt -o actimeo=1,vers=4
 
 ### Session expired / Can't log in
 
-- Click "Log in" again — sessions expire after inactivity or a container restart without a persisted key.
-- Set a fixed `SECRET_KEY` environment variable so sessions remain valid across restarts.
-- If you changed `AUTH_USERNAME` or `AUTH_PASSWORD`, existing sessions are invalidated immediately; log in again with the new credentials.
+- Click "Log in" again — sessions expire after 30 days or when the secret key changes (e.g. container recreated without a persisted key).
+- Set a fixed `SECRET_KEY` environment variable so sessions remain valid across container recreations.
+- If you changed `AUTH_USERNAME`, existing sessions are invalidated immediately. If you changed `AUTH_PASSWORD`, existing sessions remain valid until they expire (the password is only checked at login time).
 
 ### Permission denied on media files in Docker
 

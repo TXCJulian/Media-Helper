@@ -42,8 +42,8 @@ def check_session(request: Request) -> bool:
     if not cookie:
         return False
     try:
-        _signer.unsign(cookie, max_age=SESSION_MAX_AGE)
-        return True
+        username = _signer.unsign(cookie, max_age=SESSION_MAX_AGE).decode("utf-8")
+        return username == AUTH_USERNAME
     except (BadSignature, SignatureExpired):
         return False
 

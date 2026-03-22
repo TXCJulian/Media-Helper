@@ -182,7 +182,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-_AUTH_EXEMPT_PREFIXES = ("/auth/", "/health", "/config", "/docs", "/openapi.json")
+_AUTH_EXEMPT_EXACT = {"/health", "/config", "/openapi.json"}
+_AUTH_EXEMPT_PREFIXES = ("/auth/", "/docs")
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -192,7 +193,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if not AUTH_ENABLED:
             return await call_next(request)
         path = request.url.path
-        if any(path.startswith(p) or path == p.rstrip("/") for p in _AUTH_EXEMPT_PREFIXES):
+        if path in _AUTH_EXEMPT_EXACT or any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES):
             return await call_next(request)
         if not check_session(request):
             return JSONResponse({"detail": "Authentication required"}, status_code=401)

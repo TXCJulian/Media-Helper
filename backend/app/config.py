@@ -100,8 +100,8 @@ def _load_or_generate_secret_key() -> str:
             stored = f.read().strip()
             if stored:
                 return stored
-    except FileNotFoundError:
-        pass
+    except OSError as e:
+        logger.warning("Could not read SECRET_KEY from %s: %s", _SECRET_KEY_PATH, e)
     # Generate and persist
     key = secrets.token_hex(32)
     try:
