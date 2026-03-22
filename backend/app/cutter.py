@@ -450,8 +450,11 @@ def transcode_for_preview(
     video_codec = str(info.get("video_codec") or "").lower()
     needs_video_reencode = has_video and video_codec not in _BROWSER_VIDEO_CODECS
 
+    # Check if GPU encoder is actually available before adding HW decode args
+    _uses_gpu = needs_video_reencode and resolve_video_encoder("libx264") != "libx264"
+
     cmd = ["ffmpeg", "-nostdin", "-loglevel", "warning"]
-    if needs_video_reencode:
+    if _uses_gpu:
         cmd += get_hwaccel_input_args()
     cmd += ["-i", filepath]
 
@@ -818,8 +821,14 @@ def get_or_transcode_preview(
                 has_video and video_codec not in _BROWSER_VIDEO_CODECS
             )
 
+            # Check if GPU encoder is actually available before adding HW decode args
+            _uses_gpu = (
+                needs_video_reencode
+                and resolve_video_encoder("libx264") != "libx264"
+            )
+
             cmd = ["ffmpeg", "-nostdin", "-loglevel", "warning", "-stats", "-y"]
-            if needs_video_reencode:
+            if _uses_gpu:
                 cmd += get_hwaccel_input_args()
             cmd += ["-i", filepath]
 

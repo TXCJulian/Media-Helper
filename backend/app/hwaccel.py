@@ -297,7 +297,8 @@ def build_video_encode_args(
     crf:
         CRF / quality value (translated to backend-specific flag).
     preset:
-        CPU preset (translated to backend-specific preset).
+        Encoding preset, used only on the CPU path.  GPU backends ignore
+        this and use the hard-coded ``preview_preset`` for the active backend.
     pix_fmt:
         Pixel format for CPU path.
     bitrate:

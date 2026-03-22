@@ -3,6 +3,8 @@
 [![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=flat&logo=docker&logoColor=white)](https://www.docker.com/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/React-61DAFB?style=flat&logo=react&logoColor=black)](https://react.dev/)
+[![Jellyfin FFmpeg x64](https://img.shields.io/badge/Jellyfin%20FFmpeg-x64-00A4DC?style=flat)](https://github.com/jellyfin/jellyfin-ffmpeg)
+[![FFmpeg ARM](https://img.shields.io/badge/FFmpeg-ARM-007808?style=flat&logo=ffmpeg&logoColor=white)](https://www.ffmpeg.org/)
 
 *A media management tool for renaming TV shows, music files, transcribing lyrics, and cutting media*
 
