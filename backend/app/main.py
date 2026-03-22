@@ -156,9 +156,11 @@ async def lifespan(app: FastAPI):
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
             logger.error("Cutter feature requires ffmpeg and ffprobe on PATH")
         else:
+            import threading
+
             from app.hwaccel import detect_gpu
 
-            detect_gpu()
+            threading.Thread(target=detect_gpu, daemon=True).start()
         cleanup_task = asyncio.create_task(_cleanup_cutter_jobs())
 
     yield

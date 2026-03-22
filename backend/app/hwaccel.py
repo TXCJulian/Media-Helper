@@ -8,6 +8,7 @@ Set ``HWACCEL=off`` to force CPU-only encoding.
 
 import logging
 import subprocess
+import threading
 
 from app import config
 
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _backend: str = "off"  # "nvidia" | "intel" | "amd" | "vaapi" | "off"
 _available_encoders: set[str] = set()
+_detected = False  # True once detect_gpu() has completed
+_detect_lock = threading.Lock()  # Serializes lazy detection
 
 # ---------------------------------------------------------------------------
 # GPU encoder mapping: CPU encoder -> {backend -> GPU encoder}
@@ -176,67 +179,87 @@ def _probe_encoder(encoder: str, backend: str | None = None) -> bool:
         return False
 
 
+def _ensure_detected() -> None:
+    """Block until GPU detection has completed (lazy trigger)."""
+    global _detected
+    if _detected:
+        return
+    with _detect_lock:
+        if _detected:
+            return
+        detect_gpu()
+
+
 def detect_gpu() -> None:
-    """Detect available GPU encoding backend. Call once at startup."""
-    global _backend, _available_encoders
+    """Detect available GPU encoding backend.
 
-    if config.HWACCEL == "off":
+    Safe to call from a background thread at startup.  Public API
+    functions call ``_ensure_detected()`` lazily, so the server can
+    start accepting requests immediately while detection runs in the
+    background.
+    """
+    global _backend, _available_encoders, _detected
+
+    try:
+        if config.HWACCEL == "off":
+            _backend = "off"
+            logger.info("Hardware acceleration disabled via HWACCEL=off")
+            return
+
+        if config.HWACCEL and config.HWACCEL != "off":
+            logger.warning(
+                "Unrecognized HWACCEL value '%s' — ignoring, proceeding with auto-detection",
+                config.HWACCEL,
+            )
+
+        _available_encoders = _query_encoders()
+        if not _available_encoders:
+            _backend = "off"
+            logger.info("Hardware acceleration: no GPU encoders found, using CPU")
+            return
+
+        # Try backends in priority order
+        for be in _DETECTION_ORDER:
+            min_enc = _MIN_ENCODER[be]
+            if min_enc in _available_encoders:
+                # Verify with a test encode
+                if _probe_encoder(min_enc, backend=be):
+                    _backend = be
+                    # Probe each encoder individually — some (e.g. vp9_qsv)
+                    # are reported as available but fail on actual hardware.
+                    be_encoders = _BACKEND_ENCODERS.get(be, set())
+                    candidates = _available_encoders & be_encoders
+                    probed: set[str] = set()
+                    for enc in candidates:
+                        if enc == min_enc:
+                            probed.add(enc)  # already verified above
+                        elif _probe_encoder(enc, backend=be):
+                            probed.add(enc)
+                        else:
+                            logger.info(
+                                "GPU encoder %s probe failed - will use CPU fallback",
+                                enc,
+                            )
+                    _available_encoders = probed
+                    logger.info(
+                        "Hardware acceleration: %s (encoders: %s)",
+                        be,
+                        ", ".join(sorted(probed)),
+                    )
+                    return
+                else:
+                    logger.debug(
+                        "GPU encoder %s reported available but probe failed, skipping %s",
+                        min_enc,
+                        be,
+                    )
+
         _backend = "off"
-        logger.info("Hardware acceleration disabled via HWACCEL=off")
-        return
-
-    if config.HWACCEL and config.HWACCEL != "off":
-        logger.warning(
-            "Unrecognized HWACCEL value '%s' — ignoring, proceeding with auto-detection",
-            config.HWACCEL,
+        logger.info(
+            "Hardware acceleration: GPU encoders found but none passed probe, using CPU"
         )
-
-    _available_encoders = _query_encoders()
-    if not _available_encoders:
-        _backend = "off"
-        logger.info("Hardware acceleration: no GPU encoders found, using CPU")
-        return
-
-    # Try backends in priority order
-    for be in _DETECTION_ORDER:
-        min_enc = _MIN_ENCODER[be]
-        if min_enc in _available_encoders:
-            # Verify with a test encode
-            if _probe_encoder(min_enc, backend=be):
-                _backend = be
-                # Probe each encoder individually — some (e.g. vp9_qsv)
-                # are reported as available but fail on actual hardware.
-                be_encoders = _BACKEND_ENCODERS.get(be, set())
-                candidates = _available_encoders & be_encoders
-                probed: set[str] = set()
-                for enc in candidates:
-                    if enc == min_enc:
-                        probed.add(enc)  # already verified above
-                    elif _probe_encoder(enc, backend=be):
-                        probed.add(enc)
-                    else:
-                        logger.info(
-                            "GPU encoder %s probe failed — will use CPU fallback",
-                            enc,
-                        )
-                _available_encoders = probed
-                logger.info(
-                    "Hardware acceleration: %s (encoders: %s)",
-                    be,
-                    ", ".join(sorted(probed)),
-                )
-                return
-            else:
-                logger.debug(
-                    "GPU encoder %s reported available but probe failed, skipping %s",
-                    min_enc,
-                    be,
-                )
-
-    _backend = "off"
-    logger.info(
-        "Hardware acceleration: GPU encoders found but none passed probe, using CPU"
-    )
+    finally:
+        _detected = True
 
 
 # ---------------------------------------------------------------------------
@@ -244,11 +267,13 @@ def detect_gpu() -> None:
 # ---------------------------------------------------------------------------
 def get_backend() -> str:
     """Return the detected backend name (e.g. ``"nvidia"``, ``"off"``)."""
+    _ensure_detected()
     return _backend
 
 
 def resolve_video_encoder(cpu_encoder: str) -> str:
     """Return the GPU encoder for *cpu_encoder*, or the original if unavailable."""
+    _ensure_detected()
     if _backend == "off":
         return cpu_encoder
     mapping = _GPU_ENCODER_MAP.get(cpu_encoder)
@@ -277,6 +302,7 @@ def blacklist_encoder(gpu_encoder: str) -> None:
 
 def get_hwaccel_input_args() -> list[str]:
     """Return FFmpeg input-side args for HW decoding (insert before ``-i``)."""
+    _ensure_detected()
     return list(_HWACCEL_INPUT_ARGS.get(_backend, []))
 
 

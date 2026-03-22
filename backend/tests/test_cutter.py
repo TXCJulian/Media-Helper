@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app import cutter
+from app import hwaccel
 
 
 def test_audio_relative_index_raises_for_unknown_stream():
@@ -354,6 +355,7 @@ def test_cut_file_multi_track_mapping(tmp_path, monkeypatch):
 def test_cut_file_keep_quality_adds_bitrate_flags(tmp_path, monkeypatch):
     monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
     monkeypatch.setattr(cutter, "collision_safe_path", lambda p: p)
+    monkeypatch.setattr(hwaccel, "_detected", True)
 
     captured_cmd = {}
 
@@ -406,6 +408,7 @@ def test_cut_file_keep_quality_adds_bitrate_flags(tmp_path, monkeypatch):
 def test_cut_file_keep_quality_skips_zero_bitrate(tmp_path, monkeypatch):
     monkeypatch.setattr(cutter, "CUTTER_JOBS_DIR", str(tmp_path))
     monkeypatch.setattr(cutter, "collision_safe_path", lambda p: p)
+    monkeypatch.setattr(hwaccel, "_detected", True)
 
     captured_cmd = {}
 

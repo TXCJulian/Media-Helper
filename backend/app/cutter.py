@@ -39,7 +39,7 @@ _PASSTHROUGH_CODECS = {
     "pcm_f32le",
 }
 # Subset of _PASSTHROUGH_CODECS that can be muxed into MP4 (used for previews)
-_MP4_AUDIO_PASSTHROUGH = {"aac", "mp3", "opus", "ac3", "eac3"}
+_MP4_AUDIO_PASSTHROUGH = {"aac", "mp3"}
 _BROWSER_VIDEO_CODECS = {"h264", "hevc", "h265", "vp8", "vp9", "av1"}
 _PREVIEW_X264_PRESET = "superfast"
 _PREVIEW_MAX_THREADS = "2"
@@ -2122,6 +2122,26 @@ def start_background_audio_transcode(
     audio_path = _audio_transcode_file_path(filepath, job_id, audio_stream_index)
 
     if os.path.isfile(audio_path):
+        # Ensure metadata reflects the cached track (may be missing after
+        # a restart or migration that left the file but not the metadata).
+        try:
+            with get_job_meta_lock(job_id):
+                meta = load_job_metadata(job_id)
+                if meta is not None:
+                    tracks = meta.get("audio_transcoded_tracks", [])
+                    if audio_stream_index not in tracks:
+                        tracks.append(audio_stream_index)
+                        meta["audio_transcoded_tracks"] = tracks
+                    meta["audio_transcode_active"] = False
+                    meta.pop("transcode_error", None)
+                    meta["status"] = _derive_job_status(meta)
+                    save_job_metadata(job_id, meta)
+        except Exception:
+            logger.debug(
+                "Could not update metadata for cached audio track in job %s",
+                job_id,
+                exc_info=True,
+            )
         return
 
     with _transcode_lock_guard:
