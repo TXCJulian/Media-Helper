@@ -1266,6 +1266,7 @@ def cutter_cut(
         "pcm_s24le",
         "dts",
         "truehd",
+        "eac3",
     }
     valid_containers = {
         "",
@@ -1327,20 +1328,7 @@ def cutter_cut(
         "mp3": {"mp3"},
         "flac": {"flac"},
     }
-    if container and container in _container_audio_compat:
-        allowed_audio = _container_audio_compat[container]
-        for track in audio_tracks_parsed:
-            if track["mode"] == "reencode":
-                track_codec = track.get("codec", "")
-                if track_codec and track_codec not in allowed_audio:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=f"Audio codec '{track_codec}' is not compatible "
-                        f"with container '{container}'. "
-                        f"Allowed: {sorted(allowed_audio)}",
-                    )
-
-    # Validate against file duration
+    # Validate against file duration and probe source
     try:
         file_info = probe_file(resolved)
         file_duration = file_info.get("duration", 0)
@@ -1352,6 +1340,33 @@ def cutter_cut(
     except RuntimeError as exc:
         logger.warning("Could not probe source for cutter validation: %s", exc)
         file_info = {}
+
+    # Validate container/codec compatibility for audio tracks
+    if container and container in _container_audio_compat:
+        allowed_audio = _container_audio_compat[container]
+        probed_streams = {
+            s["index"]: s.get("codec", "unknown").lower()
+            for s in file_info.get("audio_streams", [])
+        }
+        for track in audio_tracks_parsed:
+            if track["mode"] == "reencode":
+                track_codec = track.get("codec", "")
+                if track_codec and track_codec not in allowed_audio:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Audio codec '{track_codec}' is not compatible "
+                        f"with container '{container}'. "
+                        f"Allowed: {sorted(allowed_audio)}",
+                    )
+            elif track["mode"] == "passthru" and probed_streams:
+                src_codec = probed_streams.get(track.get("index", -1), "")
+                if src_codec and src_codec not in allowed_audio:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Cannot passthru '{src_codec}' audio into "
+                        f"'{container}' container. Either re-encode the "
+                        f"track or use a compatible container (e.g. mkv).",
+                    )
 
     source_video_bitrate = file_info.get("video_bitrate") if keep_quality else None
     source_audio_bitrates = {}

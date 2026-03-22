@@ -28,6 +28,7 @@ const containerOptions = [
 const audioCodecOpts = [
   { label: 'AAC', value: 'aac' },
   { label: 'AC3', value: 'ac3' },
+  { label: 'EAC3', value: 'eac3' },
   { label: 'DTS', value: 'dts' },
   { label: 'TrueHD', value: 'truehd' },
   { label: 'FLAC', value: 'flac' },

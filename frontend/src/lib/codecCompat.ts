@@ -18,12 +18,12 @@ const containerVideoCodecs: Record<string, Set<string>> = {
 
 // ── Audio codecs allowed per container (for re-encoding targets) ────────────
 const containerAudioCodecs: Record<string, Set<string>> = {
-  mp4: new Set(['aac', 'ac3', 'mp3', 'opus']),
-  mkv: new Set(['aac', 'ac3', 'dts', 'truehd', 'flac', 'opus', 'vorbis', 'mp3']),
+  mp4: new Set(['aac', 'ac3', 'eac3', 'mp3', 'opus']),
+  mkv: new Set(['aac', 'ac3', 'eac3', 'dts', 'truehd', 'flac', 'opus', 'vorbis', 'mp3']),
   webm: new Set(['opus', 'vorbis']),
-  mov: new Set(['aac', 'ac3', 'flac', 'mp3']),
+  mov: new Set(['aac', 'ac3', 'eac3', 'flac', 'mp3']),
   // Audio-only containers
-  mka: new Set(['aac', 'ac3', 'dts', 'truehd', 'flac', 'opus', 'vorbis', 'mp3']),
+  mka: new Set(['aac', 'ac3', 'eac3', 'dts', 'truehd', 'flac', 'opus', 'vorbis', 'mp3']),
   ogg: new Set(['opus', 'vorbis', 'flac']),
   mp3: new Set(['mp3']),
   flac: new Set(['flac']),

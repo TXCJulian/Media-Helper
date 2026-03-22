@@ -109,6 +109,7 @@ _CODEC_TO_ENCODER = {
     "flac": "flac",
     "opus": "libopus",
     "ac3": "ac3",
+    "eac3": "eac3",
     "mp3": "libmp3lame",
     "vorbis": "libvorbis",
     "pcm_s16le": "pcm_s16le",
