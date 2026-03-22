@@ -1,0 +1,55 @@
+import logging
+
+import bcrypt
+from fastapi import HTTPException, Request, Response
+from itsdangerous import TimestampSigner, BadSignature, SignatureExpired
+
+from app.config import AUTH_ENABLED, AUTH_USERNAME, SECRET_KEY, _PASSWORD_HASH
+
+logger = logging.getLogger(__name__)
+
+SESSION_COOKIE = "session"
+SESSION_MAX_AGE = 30 * 24 * 3600  # 30 days in seconds
+
+_signer = TimestampSigner(SECRET_KEY)
+
+
+def verify_login(username: str, password: str) -> bool:
+    if not AUTH_ENABLED or _PASSWORD_HASH is None:
+        return False
+    if username != AUTH_USERNAME:
+        return False
+    return bcrypt.checkpw(password.encode("utf-8"), _PASSWORD_HASH)
+
+
+def create_session_cookie(response: Response) -> None:
+    signed = _signer.sign(AUTH_USERNAME).decode("utf-8")
+    response.set_cookie(
+        SESSION_COOKIE,
+        signed,
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE)
+
+
+def check_session(request: Request) -> bool:
+    cookie = request.cookies.get(SESSION_COOKIE)
+    if not cookie:
+        return False
+    try:
+        _signer.unsign(cookie, max_age=SESSION_MAX_AGE)
+        return True
+    except (BadSignature, SignatureExpired):
+        return False
+
+
+def require_auth(request: Request) -> None:
+    if not AUTH_ENABLED:
+        return
+    if not check_session(request):
+        raise HTTPException(status_code=401, detail="Authentication required")

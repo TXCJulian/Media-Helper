@@ -1,6 +1,8 @@
 from fastapi import FastAPI, Query, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 from contextlib import asynccontextmanager
 import asyncio
 import json
@@ -29,7 +31,9 @@ from app.config import (
     ALLOWED_ORIGINS,
     ENABLED_FEATURES,
     ENABLED_FEATURES_SET,
+    AUTH_ENABLED,
 )
+from app.auth import require_auth, verify_login, create_session_cookie, clear_session_cookie, check_session
 from app.rename_episodes import rename_episodes
 from app.rename_music import rename_music, load_audio_file, get_first_tag_value
 from app.get_dirs import (
@@ -178,10 +182,29 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+_AUTH_EXEMPT_PREFIXES = ("/auth/", "/health", "/config", "/docs", "/openapi.json")
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        from fastapi.responses import JSONResponse
+
+        if not AUTH_ENABLED:
+            return await call_next(request)
+        path = request.url.path
+        if any(path.startswith(p) or path == p.rstrip("/") for p in _AUTH_EXEMPT_PREFIXES):
+            return await call_next(request)
+        if not check_session(request):
+            return JSONResponse({"detail": "Authentication required"}, status_code=401)
+        return await call_next(request)
+
+
+# Auth added FIRST (inner), CORS added SECOND (outer) — LIFO means CORS runs first
+app.add_middleware(AuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type"],
 )
@@ -202,6 +225,39 @@ def get_config():
     return {
         "features": ENABLED_FEATURES,
         "base_paths": list(BASE_PATH_LABELS.keys()),
+    }
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/auth/login")
+def auth_login(body: LoginRequest):
+    if not AUTH_ENABLED:
+        raise HTTPException(status_code=404, detail="Authentication is not enabled")
+    if not verify_login(body.username, body.password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    from fastapi.responses import JSONResponse
+    response = JSONResponse({"ok": True})
+    create_session_cookie(response)
+    return response
+
+
+@app.post("/auth/logout")
+def auth_logout():
+    from fastapi.responses import JSONResponse
+    response = JSONResponse({"ok": True})
+    clear_session_cookie(response)
+    return response
+
+
+@app.get("/auth/status")
+def auth_status(request: Request):
+    return {
+        "auth_enabled": AUTH_ENABLED,
+        "authenticated": not AUTH_ENABLED or check_session(request),
     }
 
 
@@ -608,11 +664,13 @@ def list_cutter_files(
                 continue
             ext = os.path.splitext(entry.name)[1].lower()
             if ext in VALID_CUTTER_EXT:
+                rel_path = os.path.relpath(entry.path, base_path)
                 files.append(
                     {
                         "name": entry.name,
                         "size": entry.stat().st_size,
                         "extension": ext,
+                        "file_id": encode_file_id("server", rel_path, job_id="", base=base),
                     }
                 )
         except OSError:
@@ -714,7 +772,8 @@ def cutter_stream(
     try:
         source, job_id, base, path = decode_file_id(file_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        status = 403 if "signature" in str(e) else 400
+        raise HTTPException(status_code=status, detail=str(e))
 
     resolved = resolve_cutter_path(path, source, job_id, base_label=base)
     if not os.path.isfile(resolved):
@@ -1122,6 +1181,10 @@ def cutter_get_job(job_id: str):
     meta = load_job_metadata(job_id)
     if not meta:
         raise HTTPException(status_code=404, detail="Job not found")
+    if meta.get("source") == "server" and meta.get("base") and meta.get("original_path"):
+        meta["source_file_id"] = encode_file_id(
+            "server", meta["original_path"], job_id="", base=meta["base"]
+        )
     return meta
 
 
