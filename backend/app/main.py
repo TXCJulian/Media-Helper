@@ -947,6 +947,17 @@ def cutter_preview_status(
                 status_code=400,
                 detail="job_id required for audio transcode status",
             )
+        try:
+            info = probe_file(resolved)
+            stream_indices = {s["index"] for s in info.get("audio_streams", [])}
+            if audio_transcode_stream not in stream_indices:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Audio stream index {audio_transcode_stream} not found. "
+                    f"Available: {sorted(stream_indices)}",
+                )
+        except RuntimeError:
+            pass  # Probe failed — let the transcode attempt handle it
         start_background_audio_transcode(resolved, audio_transcode_stream, job_id)
         return get_audio_transcode_status(resolved, job_id, audio_transcode_stream)
 
@@ -1324,11 +1335,16 @@ def cutter_cut(
     # Validate container/codec compatibility for audio tracks
     _container_audio_compat = {
         "mp4": {"aac", "ac3", "eac3", "mp3", "opus"},
+        "m4a": {"aac", "ac3", "eac3", "mp3", "opus"},
         "mov": {"aac", "ac3", "eac3", "flac", "mp3"},
         "webm": {"opus", "vorbis"},
         "ogg": {"opus", "vorbis", "flac"},
         "mp3": {"mp3"},
         "flac": {"flac"},
+        "aac": {"aac"},
+        "ac3": {"ac3"},
+        "opus": {"opus"},
+        "wav": {"pcm_s16le", "pcm_s24le"},
     }
     # Validate against file duration and probe source
     try:

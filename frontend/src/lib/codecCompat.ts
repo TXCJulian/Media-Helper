@@ -34,10 +34,13 @@ const containerAudioCodecs: Record<string, Set<string>> = {
 // accept virtually any codec via stream copy. Only list containers with real
 // muxing restrictions here — if a container isn't listed, passthru is allowed.
 const containerPassthruBlacklist: Record<string, Set<string>> = {
-  webm: new Set(['aac', 'ac3', 'mp3', 'flac', 'truehd', 'dts', 'pcm_s16le', 'pcm_s24le']),
-  ogg: new Set(['aac', 'ac3', 'mp3', 'truehd', 'dts']),
-  mp3: new Set(['aac', 'ac3', 'flac', 'opus', 'vorbis', 'truehd', 'dts']),
-  flac: new Set(['aac', 'ac3', 'mp3', 'opus', 'vorbis', 'truehd', 'dts']),
+  mp4: new Set(['dts', 'truehd', 'flac', 'vorbis', 'pcm_s16le', 'pcm_s24le']),
+  m4a: new Set(['dts', 'truehd', 'flac', 'vorbis', 'pcm_s16le', 'pcm_s24le']),
+  mov: new Set(['dts', 'truehd', 'vorbis', 'opus', 'pcm_s16le', 'pcm_s24le']),
+  webm: new Set(['aac', 'ac3', 'eac3', 'mp3', 'flac', 'truehd', 'dts', 'pcm_s16le', 'pcm_s24le']),
+  ogg: new Set(['aac', 'ac3', 'eac3', 'mp3', 'truehd', 'dts']),
+  mp3: new Set(['aac', 'ac3', 'eac3', 'flac', 'opus', 'vorbis', 'truehd', 'dts']),
+  flac: new Set(['aac', 'ac3', 'eac3', 'mp3', 'opus', 'vorbis', 'truehd', 'dts']),
 }
 
 // ── Containers allowed per video codec (inverse of containerVideoCodecs) ────
