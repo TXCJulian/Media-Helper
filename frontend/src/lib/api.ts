@@ -14,8 +14,7 @@ async function extractErrorMessage(res: Response): Promise<string> {
 }
 
 export function assertAuthenticated(res: Response | XMLHttpRequest): void {
-  const status = res instanceof Response ? res.status : res.status
-  if (status === 401) {
+  if (res.status === 401) {
     window.dispatchEvent(new Event('auth:expired'))
     throw new Error('Session expired')
   }
