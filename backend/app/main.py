@@ -183,7 +183,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 _AUTH_EXEMPT_EXACT = {"/health", "/openapi.json"}
-_AUTH_EXEMPT_PREFIXES = ("/auth/", "/docs")
+_AUTH_EXEMPT_PREFIXES = ("/auth/", "/docs", "/redoc")
 
 
 class AuthMiddleware:
