@@ -210,7 +210,7 @@ class AuthMiddleware:
 
 # Auth added FIRST (inner), CORS added SECOND (outer) — LIFO means CORS runs first
 app.add_middleware(AuthMiddleware)
-_cors_credentials = "*" not in ALLOWED_ORIGINS
+_cors_credentials = AUTH_ENABLED and "*" not in ALLOWED_ORIGINS
 if not _cors_credentials and AUTH_ENABLED:
     logger.warning(
         "ALLOWED_ORIGINS contains '*' but AUTH is enabled — credentials cannot be sent. "
@@ -256,7 +256,10 @@ async def auth_login(body: LoginRequest, request: Request):
         await asyncio.sleep(1)  # rate-limit brute-force attempts
         raise HTTPException(status_code=401, detail="Invalid credentials")
     response = JSONResponse({"ok": True})
-    is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    x_forwarded_proto = request.headers.get("x-forwarded-proto")
+    if x_forwarded_proto:
+        x_forwarded_proto = x_forwarded_proto.split(",")[0].strip().lower()
+    is_https = request.url.scheme == "https" or x_forwarded_proto == "https"
     create_session_cookie(response, secure=is_https)
     return response
 
@@ -1196,10 +1199,20 @@ def cutter_get_job(job_id: str):
     meta = load_job_metadata(job_id)
     if not meta:
         raise HTTPException(status_code=404, detail="Job not found")
-    if meta.get("source") == "server" and meta.get("base") and meta.get("original_path"):
-        meta["source_file_id"] = encode_file_id(
-            "server", meta["original_path"], job_id=job_id, base=meta["base"]
-        )
+    if meta.get("source") == "server" and meta.get("original_path"):
+        base_label = meta.get("base") or ""
+        if not base_label:
+            # Infer base label from original_path for jobs missing it
+            original_abs = os.path.abspath(meta["original_path"])
+            for label, root in BASE_PATH_LABELS.items():
+                root_abs = os.path.abspath(root)
+                if original_abs == root_abs or original_abs.startswith(root_abs + os.sep):
+                    base_label = label
+                    break
+        if base_label:
+            meta["source_file_id"] = encode_file_id(
+                "server", meta["original_path"], job_id=job_id, base=base_label
+            )
     elif meta.get("source") == "upload" and meta.get("original_name"):
         meta["source_file_id"] = encode_file_id(
             "upload", meta["original_name"], job_id=job_id, base=""

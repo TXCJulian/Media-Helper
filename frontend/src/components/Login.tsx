@@ -23,6 +23,7 @@ export default function Login({ onSuccess }: LoginProps) {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({ username, password }),
+        signal: AbortSignal.timeout(30_000),
       })
 
       if (!res.ok) {
