@@ -172,8 +172,12 @@ export function fetchCutterFiles(
   })
 }
 
-export function createJob(path: string, source = 'server', base = ''): Promise<{ job_id: string }> {
-  return postForm<{ job_id: string }>('/cutter/jobs', { path, source, base })
+export function createJob(
+  path: string,
+  source = 'server',
+  base = '',
+): Promise<{ job_id: string; file_id: string }> {
+  return postForm<{ job_id: string; file_id: string }>('/cutter/jobs', { path, source, base })
 }
 
 export function getStreamUrl(

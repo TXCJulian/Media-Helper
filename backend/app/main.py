@@ -682,7 +682,7 @@ def list_cutter_files(
                 continue
             ext = os.path.splitext(entry.name)[1].lower()
             if ext in VALID_CUTTER_EXT:
-                rel_path = os.path.relpath(entry.path, base_path)
+                rel_path = os.path.join(directory, entry.name)
                 files.append(
                     {
                         "name": entry.name,
@@ -1182,7 +1182,10 @@ def cutter_create_job(
     except RuntimeError:
         logger.warning("Could not evaluate browser compatibility for job %s", job_id)
 
-    return {"job_id": job_id}
+    return {
+        "job_id": job_id,
+        "file_id": encode_file_id(source, path, job_id, base=base),
+    }
 
 
 @app.get("/cutter/jobs")
@@ -1202,11 +1205,16 @@ def cutter_get_job(job_id: str):
     if meta.get("source") == "server" and meta.get("original_path"):
         base_label = meta.get("base") or ""
         if not base_label:
-            # Infer base label from original_path for jobs missing it
-            original_abs = os.path.abspath(meta["original_path"])
+            # Infer base label from original_path for jobs missing it.
+            # Handle both absolute and relative paths by resolving against each root.
+            original_path = meta["original_path"]
             for label, root in BASE_PATH_LABELS.items():
-                root_abs = os.path.abspath(root)
-                if original_abs == root_abs or original_abs.startswith(root_abs + os.sep):
+                root_abs = os.path.realpath(root)
+                if os.path.isabs(original_path):
+                    candidate = os.path.realpath(original_path)
+                else:
+                    candidate = os.path.realpath(os.path.join(root_abs, original_path))
+                if candidate == root_abs or candidate.startswith(root_abs + os.sep):
                     base_label = label
                     break
         if base_label:

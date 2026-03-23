@@ -2443,6 +2443,9 @@ def cut_file(
                     )
                 enc = _CODEC_TO_ENCODER[raw_codec]
                 cmd += [f"-c:a:{out_idx}", enc]
+                # libopus/libvorbis reject 5.1(side); remap to standard 5.1
+                if enc in ("libopus", "libvorbis"):
+                    cmd += [f"-filter:a:{out_idx}", "aformat=channel_layouts=7.1|5.1|stereo|mono"]
                 if keep_quality:
                     br = int(bitrates.get(int(track["index"]), 0) or 0)
                     if br > 0:
@@ -2459,10 +2462,14 @@ def cut_file(
                     if audio_codec:
                         a_enc = _CODEC_TO_ENCODER.get(audio_codec, audio_codec)
                         cmd += ["-c:a", a_enc]
+                        if a_enc in ("libopus", "libvorbis"):
+                            cmd += ["-af", "aformat=channel_layouts=7.1|5.1|stereo|mono"]
                     else:
                         cmd += ["-c:a", "copy"]
                 else:
                     cmd += ["-c:a", encoder]
+                    if encoder in ("libopus", "libvorbis"):
+                        cmd += ["-af", "aformat=channel_layouts=7.1|5.1|stereo|mono"]
 
     # Reset timestamps to zero so the output container reports the correct
     # trimmed duration.  Without this, MOV (and sometimes MP4) retain the
