@@ -1,5 +1,6 @@
 import logging
 import os
+import secrets
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "dependencies", ".env"))
@@ -47,7 +48,7 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY") or "YOUR_TMDB_API_KEY"
 VALID_VIDEO_EXT = set(os.getenv("VALID_VIDEO_EXT", ".mp4,.mkv,.mov,.avi").split(","))
 VALID_MUSIC_EXT = set(os.getenv("VALID_MUSIC_EXT", ".mp3,.flac,.m4a,.wav").split(","))
 TRANSCRIBER_URL = os.getenv("TRANSCRIBER_URL", "")
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3333").split(",")
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3333").split(",")]
 
 VALID_CUTTER_EXT = set(
     os.getenv(
@@ -80,3 +81,53 @@ if not _parsed_features:
     )
 ENABLED_FEATURES: list[str] = _parsed_features or sorted(_VALID_FEATURES)
 ENABLED_FEATURES_SET: set[str] = set(ENABLED_FEATURES)
+
+# --- Authentication (optional) ---
+AUTH_USERNAME = os.getenv("AUTH_USERNAME", "").strip()
+AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "").strip()
+AUTH_ENABLED = bool(AUTH_USERNAME and AUTH_PASSWORD)
+
+# --- Secret key (for session cookies and file ID signing) ---
+_SECRET_KEY_PATH = "/var/lib/media-renamer/.secret_key"
+
+def _load_or_generate_secret_key() -> str:
+    env_key = os.getenv("SECRET_KEY", "").strip()
+    if env_key:
+        return env_key
+    # Try loading from persistent storage
+    try:
+        with open(_SECRET_KEY_PATH) as f:
+            stored = f.read().strip()
+            if stored:
+                return stored
+    except FileNotFoundError:
+        pass  # Expected on first run
+    except OSError as e:
+        logger.warning("Could not read SECRET_KEY from %s: %s", _SECRET_KEY_PATH, e)
+    # Generate and persist
+    key = secrets.token_hex(32)
+    try:
+        os.makedirs(os.path.dirname(_SECRET_KEY_PATH), exist_ok=True)
+        fd = os.open(_SECRET_KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(key)
+        logger.warning(
+            "Generated SECRET_KEY and saved to %s. Set SECRET_KEY env var for explicit control.",
+            _SECRET_KEY_PATH,
+        )
+    except OSError as e:
+        logger.warning("Could not persist SECRET_KEY to %s: %s", _SECRET_KEY_PATH, e)
+    return key
+
+SECRET_KEY = _load_or_generate_secret_key()
+
+# Hash password at startup if auth is enabled, then scrub plaintext
+_PASSWORD_HASH: bytes | None = None
+if AUTH_ENABLED:
+    import bcrypt as _bcrypt
+    _PASSWORD_HASH = _bcrypt.hashpw(AUTH_PASSWORD.encode("utf-8"), _bcrypt.gensalt())
+    os.environ.pop("AUTH_PASSWORD", None)
+    AUTH_PASSWORD = ""
+    logger.info("Authentication enabled for user '%s'", AUTH_USERNAME)
+else:
+    logger.info("Authentication disabled (AUTH_USERNAME/AUTH_PASSWORD not set)")

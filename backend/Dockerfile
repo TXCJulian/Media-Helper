@@ -4,7 +4,7 @@ WORKDIR /backend
 
 RUN set -e; \
     apt-get update; \
-    apt-get install -y --no-install-recommends build-essential ca-certificates curl gnupg; \
+    apt-get install -y --no-install-recommends build-essential ca-certificates curl gnupg gosu; \
     if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
       curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
         | gpg --dearmor -o /usr/share/keyrings/jellyfin.gpg; \
@@ -24,7 +24,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ app/
 COPY dependencies/.env.example dependencies/.env.example
+COPY entrypoint.sh /entrypoint.sh
+
+# Create non-root user and required directories
+RUN groupadd -g 1000 appgroup && \
+    useradd -u 1000 -g appgroup -M -s /bin/false appuser && \
+    mkdir -p /data/cutter-jobs /var/lib/media-renamer && \
+    chown appuser:appgroup /data/cutter-jobs /var/lib/media-renamer && \
+    chmod +x /entrypoint.sh
 
 EXPOSE 3332
 
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3332"]

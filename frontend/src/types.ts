@@ -123,6 +123,7 @@ export interface CutterFileInfo {
   name: string
   size: number
   extension: string
+  file_id: string
 }
 
 export interface CutterSourceState {
@@ -170,6 +171,7 @@ export interface CutterJob {
   browser_ready?: boolean
   transcode_error?: string | null
   base?: string
+  source_file_id?: string
 }
 
 export interface CutterPersistedState {

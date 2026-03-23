@@ -4,15 +4,19 @@ services:
     container_name: media-renamer_backend
     command: []
     environment:
+      - ENABLED_FEATURES=episodes,music,lyrics,cutter #comma-separated list of enabled features: episodes, music, lyrics, cutter. Defaults to episodes,music,cutter
+      - TMDB_API_KEY=YOUR_TMDB_API_KEY_HERE #API key for The Movie Database (TMDb) - required for episode renaming
+      - TRANSCRIBER_URL=http://lyric-transcriber:3334 #URL for the lyric transcriber service, required for lyrics feature
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      #- AUTH_USERNAME=admin #set to enable authentication
+      #- AUTH_PASSWORD=changeme #set to enable authentication
       #- BASE_PATHS=/media1,/media2  # comma-separated media roots, defaults to /media
       #- TVSHOW_FOLDER_NAME=TV Shows #name of the folder in BASE_PATH where TV shows are stored, defaults to "TV Shows"
       #- MUSIC_FOLDER_NAME=Music #name of the folder in BASE_PATH where music is stored, defaults to "Music"
-      - TMDB_API_KEY=YOUR_TMDB_API_KEY_HERE #API key for The Movie Database (TMDb) - required for episode renaming
       #- VALID_VIDEO_EXT=VALID_VIDEO_EXT_HERE #comma-separated list of valid video file extensions for episode renaming, defaults to .mp4,.mkv,.mov,.avi
       #- VALID_MUSIC_EXT=VALID_MUSIC_EXT_HERE #comma-separated list of valid audio file extensions for music renaming, defaults to .mp3,.flac,.m4a,.wav
       #- VALID_CUTTER_EXT=VALID_CUTTER_EXT_HERE #comma-separated list of valid file extensions for cutter module, defaults to .mp4,.mkv,.mov,.avi,.webm,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.opus,.ogg,.aiff
-      - TRANSCRIBER_URL=http://lyric-transcriber:3334 #URL for the lyric transcriber service, required for lyrics feature
-      - ENABLED_FEATURES=episodes,music,lyrics,cutter #comma-separated list of enabled features: episodes, music, lyrics, cutter. Defaults to episodes,music,cutter
       #- CUTTER_JOBS_DIR=/ #directory where cutter job data is stored, defaults to /data/cutter-jobs (should be a volume mount for persistence and file access)
       #- CUTTER_JOB_TTL=VALID_JOB_TTL_HERE #time in seconds after which cutter jobs are automatically deleted, defaults to 86400 (24 hours)
       #- CUTTER_MAX_DIRECT_REMUX_BYTES=VALID_MAX_DIRECT_REMUX_BYTES_HERE #maximum file size in bytes for direct remuxing in cutter module, defaults to 1073741824 (1 GB)
@@ -30,10 +34,6 @@ services:
     # Intel/AMD iGPU:
     #devices:
     #  - /dev/dri:/dev/dri
-    ports:
-      - target: 3332
-        published: 3332
-        protocol: tcp
     restart: unless-stopped
     volumes:
       - /path/to/your/media:/media:rw

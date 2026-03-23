@@ -1,6 +1,8 @@
 from fastapi import FastAPI, Query, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
+from starlette.types import ASGIApp, Receive, Scope, Send
 from contextlib import asynccontextmanager
 import asyncio
 import json
@@ -29,7 +31,9 @@ from app.config import (
     ALLOWED_ORIGINS,
     ENABLED_FEATURES,
     ENABLED_FEATURES_SET,
+    AUTH_ENABLED,
 )
+from app.auth import verify_login, create_session_cookie, clear_session_cookie, check_session
 from app.rename_episodes import rename_episodes
 from app.rename_music import rename_music, load_audio_file, get_first_tag_value
 from app.get_dirs import (
@@ -178,12 +182,46 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+_AUTH_EXEMPT_EXACT = {"/health", "/openapi.json"}
+_AUTH_EXEMPT_PREFIXES = ("/auth/", "/docs", "/redoc")
+
+
+class AuthMiddleware:
+    """Pure ASGI middleware — avoids BaseHTTPMiddleware's streaming/SSE buffering issues."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not AUTH_ENABLED:
+            await self.app(scope, receive, send)
+            return
+        path: str = scope.get("path", "")
+        if path in _AUTH_EXEMPT_EXACT or any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES):
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope)
+        if not check_session(request):
+            response = JSONResponse({"detail": "Authentication required"}, status_code=401)
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+# Auth added FIRST (inner), CORS added SECOND (outer) — LIFO means CORS runs first
+app.add_middleware(AuthMiddleware)
+_cors_credentials = AUTH_ENABLED and "*" not in ALLOWED_ORIGINS
+if not _cors_credentials and AUTH_ENABLED:
+    logger.warning(
+        "ALLOWED_ORIGINS contains '*' but AUTH is enabled — credentials cannot be sent. "
+        "Set explicit origins in ALLOWED_ORIGINS for auth to work correctly."
+    )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,
+    allow_credentials=_cors_credentials,
     allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-File-Name"],
 )
 
 
@@ -202,6 +240,42 @@ def get_config():
     return {
         "features": ENABLED_FEATURES,
         "base_paths": list(BASE_PATH_LABELS.keys()),
+    }
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/auth/login")
+async def auth_login(body: LoginRequest, request: Request):
+    if not AUTH_ENABLED:
+        raise HTTPException(status_code=404, detail="Authentication is not enabled")
+    if not verify_login(body.username, body.password):
+        await asyncio.sleep(1)  # rate-limit brute-force attempts
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    response = JSONResponse({"ok": True})
+    x_forwarded_proto = request.headers.get("x-forwarded-proto")
+    if x_forwarded_proto:
+        x_forwarded_proto = x_forwarded_proto.split(",")[0].strip().lower()
+    is_https = request.url.scheme == "https" or x_forwarded_proto == "https"
+    create_session_cookie(response, secure=is_https)
+    return response
+
+
+@app.post("/auth/logout")
+def auth_logout():
+    response = JSONResponse({"ok": True})
+    clear_session_cookie(response)
+    return response
+
+
+@app.get("/auth/status")
+def auth_status(request: Request):
+    return {
+        "auth_enabled": AUTH_ENABLED,
+        "authenticated": not AUTH_ENABLED or check_session(request),
     }
 
 
@@ -608,11 +682,13 @@ def list_cutter_files(
                 continue
             ext = os.path.splitext(entry.name)[1].lower()
             if ext in VALID_CUTTER_EXT:
+                rel_path = os.path.join(directory, entry.name)
                 files.append(
                     {
                         "name": entry.name,
                         "size": entry.stat().st_size,
                         "extension": ext,
+                        "file_id": encode_file_id("server", rel_path, job_id="", base=base),
                     }
                 )
         except OSError:
@@ -1105,7 +1181,10 @@ def cutter_create_job(
     except RuntimeError:
         logger.warning("Could not evaluate browser compatibility for job %s", job_id)
 
-    return {"job_id": job_id}
+    return {
+        "job_id": job_id,
+        "file_id": encode_file_id(source, path, job_id, base=base),
+    }
 
 
 @app.get("/cutter/jobs")
@@ -1122,6 +1201,34 @@ def cutter_get_job(job_id: str):
     meta = load_job_metadata(job_id)
     if not meta:
         raise HTTPException(status_code=404, detail="Job not found")
+    if meta.get("source") == "server" and meta.get("original_path"):
+        base_label = meta.get("base") or ""
+        if not base_label:
+            # Infer base label from original_path for jobs missing it.
+            original_path = meta["original_path"]
+            if os.path.isabs(original_path):
+                candidate = os.path.realpath(original_path)
+                for label, root in BASE_PATH_LABELS.items():
+                    root_abs = os.path.realpath(root)
+                    if candidate == root_abs or candidate.startswith(root_abs + os.sep):
+                        base_label = label
+                        break
+            else:
+                # Relative path: pick the first root where the file exists
+                for label, root in BASE_PATH_LABELS.items():
+                    root_abs = os.path.realpath(root)
+                    candidate = os.path.realpath(os.path.join(root_abs, original_path))
+                    if os.path.exists(candidate):
+                        base_label = label
+                        break
+        if base_label:
+            meta["source_file_id"] = encode_file_id(
+                "server", meta["original_path"], job_id=job_id, base=base_label
+            )
+    elif meta.get("source") == "upload" and meta.get("original_name"):
+        meta["source_file_id"] = encode_file_id(
+            "upload", meta["original_name"], job_id=job_id, base=""
+        )
     return meta
 
 

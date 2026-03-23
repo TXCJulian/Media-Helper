@@ -21,6 +21,8 @@ services:
       - CUTTER_JOB_TTL=${CUTTER_JOB_TTL:-86400}
       #- HWACCEL=off  # Uncomment to disable GPU-accelerated video encoding
       #- VAAPI_DEVICE=/dev/dri/renderD128  # Uncomment to override VAAPI device path
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
     # --- GPU passthrough (uncomment ONE section matching your hardware) ---
     # NVIDIA GPU:
     #deploy:
@@ -33,8 +35,9 @@ services:
     # Intel/AMD iGPU:
     #devices:
     #  - /dev/dri:/dev/dri
-    ports:
-      - "3332:3332"
+    # Backend accessed via internal renamer-network only (through nginx on port 3333)
+    # ports:
+    #   - "3332:3332"
     volumes:
       - ./dependencies/.env:/backend/dependencies/.env:ro
       - /path/to/your/media:/media:rw
