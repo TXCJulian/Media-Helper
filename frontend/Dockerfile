@@ -12,7 +12,7 @@ COPY . .
 RUN npm run build
 
 # 2. Runtime Stage
-FROM nginx:stable-alpine
+FROM nginx:1.29-alpine-slim
 
 # Statische Dateien aus dem Builder-Image übernehmen
 COPY --from=builder /app/dist /usr/share/nginx/html
