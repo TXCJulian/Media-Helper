@@ -143,6 +143,7 @@ describe('downloader APIs', () => {
       auto_start: true,
       sub_folder: 'Clips',
       custom_prefix: 'YT-',
+      custom_filename: '',
       item_limit: 2,
       split_chapters: true,
     }
