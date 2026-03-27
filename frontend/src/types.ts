@@ -181,3 +181,38 @@ export interface CutterPersistedState {
   serverState: CutterSourceState
   uploadState: CutterSourceState
 }
+
+export interface DownloadJob {
+  job_id: string
+  url: string
+  status: 'queued' | 'downloading' | 'processing' | 'done' | 'error'
+  progress: number
+  speed: string | null
+  eta: string | null
+  filename: string | null
+  error: string | null
+  created_at: string
+  size: string | null
+}
+
+export interface DownloaderStatus {
+  yt_dlp_version: string
+  cookies_present: boolean
+  downloads_dir: string
+}
+
+export interface DownloadForm {
+  url: string
+  type: 'video' | 'audio' | 'thumbnail'
+  codec: string
+  format: string
+  quality: string
+  output_dir: string
+  base: string
+  auto_start: boolean
+  sub_folder: string
+  custom_prefix: string
+  custom_filename: string
+  item_limit: number
+  split_chapters: boolean
+}
