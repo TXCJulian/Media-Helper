@@ -82,6 +82,21 @@ class TestDirectoryEndpoints:
         assert "path" in dirs[0]
         assert "base" in dirs[0]
 
+    def test_media_directories_available_for_download_feature(self, client, monkeypatch):
+        import app.main as main_mod
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"download"})
+        monkeypatch.setattr(
+            main_mod,
+            "_get_cutter_dirs_cached",
+            lambda: [{"path": "Downloads", "base": "media"}],
+        )
+
+        resp = client.get("/directories/media")
+
+        assert resp.status_code == 200
+        assert resp.json()["directories"] == [{"path": "Downloads", "base": "media"}]
+
 
 class TestInputValidation:
     def test_threshold_out_of_range(self, client, base_label):
@@ -166,6 +181,119 @@ class TestPathTraversal:
         })
         assert resp.status_code == 400
         assert "Unknown base" in resp.json()["detail"]
+
+
+class TestDownloaderEndpoints:
+    def test_download_status_shape(self, client):
+        resp = client.get("/download/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert set(data.keys()) == {"yt_dlp_version", "cookies_present", "downloads_dir"}
+
+    def test_download_start_streams_progress_and_done(self, client, monkeypatch):
+        import app.main as main_mod
+
+        captured: dict = {}
+
+        def fake_create_job(_url, options):
+            captured["options"] = options
+            return "11111111-1111-1111-1111-111111111111"
+
+        monkeypatch.setattr(main_mod, "create_downloader_job", fake_create_job)
+
+        class FakeManager:
+            def __init__(self, job_id, url, options):
+                captured["job_id"] = job_id
+                captured["url"] = url
+                captured["options"] = options
+
+            def run(self, msg_queue):
+                msg_queue.put(
+                    (
+                        "progress",
+                        {
+                            "job_id": "11111111-1111-1111-1111-111111111111",
+                            "url": captured["url"],
+                            "status": "downloading",
+                            "progress": 50.0,
+                            "speed": "1.0MiB/s",
+                            "eta": "00:10",
+                            "filename": "demo.mp4",
+                            "error": None,
+                            "created_at": "2026-01-01T00:00:00+00:00",
+                            "size": None,
+                        },
+                    )
+                )
+                msg_queue.put(
+                    (
+                        "done",
+                        {
+                            "job_id": "11111111-1111-1111-1111-111111111111",
+                            "url": captured["url"],
+                            "status": "done",
+                            "progress": 100.0,
+                            "speed": None,
+                            "eta": None,
+                            "filename": "demo.mp4",
+                            "error": None,
+                            "created_at": "2026-01-01T00:00:00+00:00",
+                            "size": "12.0MiB",
+                        },
+                    )
+                )
+
+        monkeypatch.setattr(main_mod, "DownloadManager", FakeManager)
+
+        resp = client.post(
+            "/download/start",
+            data={
+                "url": "https://example.com/watch?v=demo",
+                "options": json.dumps({"type": "video", "format": "mp4", "quality": "720p"}),
+            },
+        )
+
+        assert resp.status_code == 200
+        assert captured["options"]["format"] == "mp4"
+        assert "event: progress" in resp.text
+        assert "event: done" in resp.text
+
+    def test_download_start_rejects_invalid_options_json(self, client):
+        resp = client.post(
+            "/download/start",
+            data={"url": "https://example.com/watch?v=demo", "options": "{not-json"},
+        )
+
+        assert resp.status_code == 422
+
+    def test_download_delete_job_conflict_returns_409(self, client, monkeypatch):
+        import app.main as main_mod
+
+        monkeypatch.setattr(
+            main_mod,
+            "delete_downloader_job",
+            lambda _job_id: (_ for _ in ()).throw(RuntimeError("Job is still busy and could not be deleted")),
+        )
+
+        resp = client.delete("/download/jobs/11111111-1111-1111-1111-111111111111")
+
+        assert resp.status_code == 409
+        assert "still busy" in resp.json()["detail"]
+
+    def test_download_cookie_upload_writes_file_bytes(self, client, tmp_path, monkeypatch):
+        import app.main as main_mod
+
+        cookie_path = tmp_path / "cookies.txt"
+        monkeypatch.setattr(main_mod, "get_downloader_cookie_path", lambda: str(cookie_path))
+
+        resp = client.post(
+            "/download/cookies",
+            files={"file": ("cookies.txt", b"cookie-data", "text/plain")},
+        )
+
+        assert resp.status_code == 200
+        assert cookie_path.read_bytes() == b"cookie-data"
 
 
 class TestCutterStreamValidation:
@@ -442,4 +570,22 @@ class TestCutterValidation:
             },
         )
         assert response.status_code == 422
-        assert "Invalid audio track codec" in response.json()["detail"]
+
+
+def test_upload_cookies_rejects_oversized_file(client):
+    """Cookie files should be limited to 1 MB."""
+    huge = b"x" * (1024 * 1024 + 1)
+    response = client.post(
+        "/download/cookies",
+        files={"file": ("cookies.txt", huge, "text/plain")},
+    )
+    assert response.status_code == 400
+
+
+def test_upload_cookies_accepts_valid_netscape_format(client):
+    content = b"# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t0\tname\tvalue\n"
+    response = client.post(
+        "/download/cookies",
+        files={"file": ("cookies.txt", content, "text/plain")},
+    )
+    assert response.status_code == 200

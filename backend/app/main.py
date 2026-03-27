@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, Form, Request, HTTPException
+from fastapi import FastAPI, Query, Form, Request, HTTPException, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -32,6 +32,8 @@ from app.config import (
     ENABLED_FEATURES,
     ENABLED_FEATURES_SET,
     AUTH_ENABLED,
+    DOWNLOADER_JOBS_DIR,
+    DOWNLOADER_JOB_TTL,
 )
 from app.auth import verify_login, create_session_cookie, clear_session_cookie, check_session
 from app.rename_episodes import rename_episodes
@@ -47,6 +49,16 @@ from app.transcribe_lyrics import (
     get_file_lyrics_status,
     check_existing_lyrics,
     transcribe_file,
+)
+from app.download import (
+    create_job as create_downloader_job,
+    load_job_metadata as load_downloader_job_metadata,
+    list_jobs as list_downloader_jobs,
+    delete_job as delete_downloader_job,
+    cleanup_old_jobs as cleanup_old_downloader_jobs,
+    get_cookie_path as get_downloader_cookie_path,
+    get_status_payload as get_downloader_status_payload,
+    DownloadManager,
 )
 from app.cutter import (
     probe_file,
@@ -87,6 +99,13 @@ def require_feature(name: str):
     """Raise 404 if feature is not enabled."""
     if name not in ENABLED_FEATURES_SET:
         raise HTTPException(status_code=404, detail=f"Feature '{name}' is not enabled")
+
+
+def require_any_feature(*names: str):
+    """Raise 404 if none of the named features are enabled."""
+    if not any(name in ENABLED_FEATURES_SET for name in names):
+        joined = ", ".join(names)
+        raise HTTPException(status_code=404, detail=f"Requires one of: {joined}")
 
 
 def validate_path(base: str, user_input: str) -> str:
@@ -132,6 +151,16 @@ async def _cleanup_cutter_jobs():
             logger.exception("Error during cutter job cleanup")
 
 
+async def _cleanup_downloader_jobs():
+    """Periodically delete expired download jobs."""
+    while True:
+        await asyncio.sleep(600)  # every 10 minutes
+        try:
+            cleanup_old_downloader_jobs()
+        except Exception:
+            logger.exception("Error during download job cleanup")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan with startup and shutdown events."""
@@ -167,11 +196,19 @@ async def lifespan(app: FastAPI):
             threading.Thread(target=_ensure_detected, daemon=True).start()
         cleanup_task = asyncio.create_task(_cleanup_cutter_jobs())
 
+    # Start download cleanup task only if download feature is enabled
+    downloader_cleanup_task = None
+    if "download" in ENABLED_FEATURES_SET:
+        os.makedirs(DOWNLOADER_JOBS_DIR, exist_ok=True)
+        downloader_cleanup_task = asyncio.create_task(_cleanup_downloader_jobs())
+
     yield
 
     # Shutdown
     if cleanup_task is not None:
         cleanup_task.cancel()
+    if downloader_cleanup_task is not None:
+        downloader_cleanup_task.cancel()
     for obs in _observers:
         obs.stop()
     for obs in _observers:
@@ -343,7 +380,7 @@ def refresh_directories():
 def list_media_directories(
     search: str | None = Query(None, description="Text filter", max_length=200),
 ):
-    require_feature("cutter")
+    require_any_feature("cutter", "download")
     all_dirs = _get_cutter_dirs_cached()
 
     filtered = all_dirs
@@ -1621,3 +1658,133 @@ def cutter_cut(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ── Downloader Endpoints ───────────────────────────────────────────────
+
+
+@app.get("/download/status")
+def download_status():
+    require_feature("download")
+    return get_downloader_status_payload()
+
+
+@app.get("/download/jobs")
+def download_list_jobs_route():
+    require_feature("download")
+    return {"jobs": list_downloader_jobs()}
+
+
+@app.get("/download/jobs/{job_id}")
+def download_get_job_route(job_id: str):
+    require_feature("download")
+    meta = load_downloader_job_metadata(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return meta
+
+
+@app.delete("/download/jobs/{job_id}")
+def download_delete_job_route(job_id: str):
+    require_feature("download")
+    try:
+        delete_downloader_job(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"status": "deleted"}
+
+
+@app.post("/download/start")
+def download_start(
+    url: str = Form(..., max_length=1000),
+    options_json: str = Form("{}", alias="options", max_length=5000),
+):
+    require_feature("download")
+    try:
+        options = json.loads(options_json)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=422, detail="Invalid options JSON")
+
+    job_id = create_downloader_job(url, options)
+    msg_queue = queue.Queue()
+
+    def run_download():
+        try:
+            manager = DownloadManager(job_id, url, options)
+            manager.run(msg_queue)
+        except Exception as e:
+            logger.exception("Download thread failed")
+            msg_queue.put(
+                (
+                    "done",
+                    {
+                        "job_id": job_id,
+                        "url": url,
+                        "status": "error",
+                        "progress": 0.0,
+                        "speed": None,
+                        "eta": None,
+                        "filename": None,
+                        "error": str(e),
+                        "created_at": None,
+                        "size": None,
+                    },
+                )
+            )
+
+    thread = threading.Thread(target=run_download, daemon=True)
+    thread.start()
+
+    def event_generator():
+        try:
+            while True:
+                try:
+                    event_type, payload = msg_queue.get(timeout=30)
+                    yield f"event: {event_type}\ndata: {json.dumps(payload)}\n\n"
+                    if event_type == "done":
+                        break
+                except queue.Empty:
+                    yield "event: progress\ndata: {\"status\": \"heartbeat\"}\n\n"
+        finally:
+            pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/download/cookies")
+async def download_upload_cookies(file: UploadFile = File(...)):
+    require_feature("download")
+    cookie_path = get_downloader_cookie_path()
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="No cookie data received")
+    if len(content) > 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Cookie file too large (max 1 MB)")
+
+    os.makedirs(os.path.dirname(cookie_path), exist_ok=True)
+    with open(cookie_path, "wb") as f:
+        f.write(content)
+    return {"status": "ok", "path": cookie_path}
+
+
+@app.delete("/download/cookies")
+def download_delete_cookies():
+    require_feature("download")
+    cookie_path = get_downloader_cookie_path()
+    if os.path.isfile(cookie_path):
+        try:
+            os.remove(cookie_path)
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Failed to delete cookies: {e}")
+    return {"status": "ok"}
