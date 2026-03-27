@@ -246,6 +246,44 @@ def test_delete_job_waits_for_active_runtime_to_finish(downloader_env):
     assert not os.path.isdir(downloader_env["jobs_dir"] / job_id)
 
 
+def test_get_ydl_opts_audio_kbps_sets_preferred_quality(downloader_env):
+    download = downloader_env["download"]
+
+    options = {
+        "type": "audio",
+        "format": "mp3",
+        "quality": "192kbps",
+    }
+
+    opts = download.get_ydl_opts(options)
+
+    pp_list = opts.get("postprocessors", [])
+    extract = next((pp for pp in pp_list if pp["key"] == "FFmpegExtractAudio"), None)
+    assert extract is not None
+    assert extract["preferredcodec"] == "mp3"
+    assert extract["preferredquality"] == "192"
+
+
+def test_get_ydl_opts_custom_filename_sanitised(downloader_env):
+    download = downloader_env["download"]
+
+    options = {
+        "type": "video",
+        "codec": "auto",
+        "format": "mp4",
+        "quality": "best",
+        "custom_filename": "../../etc/passwd",
+    }
+
+    opts = download.get_ydl_opts(options)
+
+    # Path separators in the filename portion should be replaced with underscores
+    filename_part = os.path.basename(opts["outtmpl"]).replace(".%(ext)s", "")
+    assert "/" not in filename_part
+    assert "\\" not in filename_part
+    assert filename_part == ".._.._etc_passwd"
+
+
 def test_download_manager_run_success_updates_metadata_and_events(downloader_env):
     download = downloader_env["download"]
     job_id = download.create_job(
