@@ -1,11 +1,22 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Mock fetch globally
 const mockFetch = vi.fn()
-vi.stubGlobal('fetch', mockFetch)
+const mockConnectSSE = vi.fn(() => vi.fn())
 
-// Must import after mocking
-const { fetchJson, postForm, postRefresh, fetchPreviewStatus } = await import('@/lib/api')
+vi.stubGlobal('fetch', mockFetch)
+vi.mock('@/lib/sse', () => ({
+  connectSSE: mockConnectSSE,
+}))
+
+const {
+  fetchJson,
+  fetchMediaDirectories,
+  fetchPreviewStatus,
+  postCookies,
+  postDownload,
+  postForm,
+  postRefresh,
+} = await import('@/lib/api')
 
 function jsonResponse(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -17,6 +28,7 @@ function jsonResponse(data: unknown, status = 200) {
 
 beforeEach(() => {
   mockFetch.mockReset()
+  mockConnectSSE.mockClear()
 })
 
 describe('fetchJson', () => {
@@ -43,11 +55,16 @@ describe('fetchJson', () => {
     await expect(fetchJson('/test')).rejects.toThrow('Invalid path')
   })
 
-  it('throws on non-ok response without JSON body', async () => {
+  it('throws a proxy hint when HTML is returned for a JSON request', async () => {
     mockFetch.mockResolvedValueOnce(
-      new Response('not json', { status: 500, statusText: 'Internal Server Error' }),
+      new Response('<!DOCTYPE html><html><body>app</body></html>', {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'Content-Type': 'text/html' },
+      }),
     )
-    await expect(fetchJson('/test')).rejects.toThrow('HTTP 500')
+
+    await expect(fetchJson('/download/status')).rejects.toThrow('Expected JSON from /download/status')
   })
 })
 
@@ -62,18 +79,28 @@ describe('postForm', () => {
   })
 })
 
-describe('postRefresh', () => {
+describe('directory APIs', () => {
   it('posts to refresh endpoint', async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ status: 'ok' }))
     await postRefresh()
     expect(mockFetch).toHaveBeenCalledTimes(1)
   })
 
-  it('throws on error', async () => {
+  it('throws on postRefresh error', async () => {
     mockFetch.mockResolvedValueOnce(
       new Response('', { status: 500, statusText: 'Internal Server Error' }),
     )
     await expect(postRefresh()).rejects.toThrow()
+  })
+
+  it('fetches media directories from the shared media endpoint', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ directories: [{ path: 'Movies', base: 'media' }] }))
+
+    const result = await fetchMediaDirectories()
+
+    expect(result.directories).toEqual([{ path: 'Movies', base: 'media' }])
+    const calledUrl = mockFetch.mock.calls[0]![0] as URL
+    expect(calledUrl.toString()).toContain('/directories/media')
   })
 })
 
@@ -95,5 +122,53 @@ describe('fetchPreviewStatus', () => {
 
     const calledUrl = mockFetch.mock.calls[0]![0] as URL
     expect(calledUrl.toString()).toContain('/cutter/preview-status/abc123')
+  })
+})
+
+describe('downloader APIs', () => {
+  it('serializes options as JSON for download start', () => {
+    const callbacks = {
+      onProgress: vi.fn(),
+      onError: vi.fn(),
+      onDone: vi.fn(),
+    }
+    const form = {
+      url: 'https://example.com/watch?v=demo',
+      type: 'video' as const,
+      codec: 'h264',
+      format: 'mp4',
+      quality: '720p',
+      output_dir: 'Movies',
+      base: 'media',
+      auto_start: true,
+      sub_folder: 'Clips',
+      custom_prefix: 'YT-',
+      item_limit: 2,
+      split_chapters: true,
+    }
+
+    const abort = postDownload(form, callbacks)
+
+    expect(mockConnectSSE).toHaveBeenCalledWith(
+      '/download/start',
+      {
+        url: form.url,
+        options: JSON.stringify(form),
+      },
+      callbacks,
+    )
+    expect(typeof abort).toBe('function')
+  })
+
+  it('uploads cookies as multipart form data', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ status: 'ok' }))
+    const file = new File(['cookie-data'], 'cookies.txt', { type: 'text/plain' })
+
+    await postCookies(file)
+
+    const [calledUrl, options] = mockFetch.mock.calls[0]!
+    expect((calledUrl as URL).toString()).toContain('/download/cookies')
+    expect(options.method).toBe('POST')
+    expect(options.body).toBeInstanceOf(FormData)
   })
 })
