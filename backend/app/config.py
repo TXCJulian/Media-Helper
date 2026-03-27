@@ -64,8 +64,14 @@ CUTTER_MAX_DIRECT_REMUX_BYTES = int(
 HWACCEL = os.getenv("HWACCEL", "").lower().strip()
 VAAPI_DEVICE = os.getenv("VAAPI_DEVICE", "/dev/dri/renderD128")
 
-_VALID_FEATURES = {"episodes", "music", "lyrics", "cutter"}
-_features_raw = os.getenv("ENABLED_FEATURES", "episodes,music,cutter")
+# --- Downloader ---
+DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "/downloads")
+YT_DLP_COOKIES = os.getenv("YT_DLP_COOKIES", "")
+DOWNLOADER_JOBS_DIR = os.getenv("DOWNLOADER_JOBS_DIR", "/tmp/download-jobs")
+DOWNLOADER_JOB_TTL = int(os.getenv("DOWNLOADER_JOB_TTL", "604800"))
+
+_VALID_FEATURES = {"episodes", "music", "lyrics", "cutter", "download"}
+_features_raw = os.getenv("ENABLED_FEATURES", "episodes,music,cutter,download")
 _parsed_features: list[str] = list(
     dict.fromkeys(
         f.strip().lower()
