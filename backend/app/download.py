@@ -407,7 +407,7 @@ def get_ydl_opts(options: dict[str, Any]) -> dict[str, Any]:
     quality = str(options.get("quality") or "best")
     output_root = _resolve_output_root(options)
     prefix = _safe_prefix(options.get("custom_prefix"))
-    custom_filename = str(options.get("custom_filename") or "").strip()
+    custom_filename = _safe_prefix(options.get("custom_filename"))
 
     if custom_filename:
         outtmpl = os.path.join(output_root, f"{prefix}{custom_filename}.%(ext)s")
@@ -437,10 +437,14 @@ def get_ydl_opts(options: dict[str, Any]) -> dict[str, Any]:
     if media_type == "audio":
         ydl_opts["format"] = _audio_format_selector(quality)
         if requested_format in _AUDIO_FORMATS and requested_format != "auto":
-            ydl_opts["postprocessors"].append({
+            pp: dict[str, Any] = {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": requested_format,
-            })
+            }
+            kbps = _AUDIO_QUALITY_KBPS.get(quality.lower())
+            if kbps:
+                pp["preferredquality"] = str(kbps)
+            ydl_opts["postprocessors"].append(pp)
     elif media_type == "thumbnail":
         ydl_opts["format"] = "best"
         ydl_opts["skip_download"] = True
