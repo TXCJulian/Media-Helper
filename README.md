@@ -37,12 +37,13 @@ A media management tool for renaming TV shows, music files, transcribing lyrics,
 
 ## Overview
 
-Media-Helper is a dockerized tool with four modules:
+Media-Helper is a dockerized tool with five modules:
 
-1. **Episode Renamer** — Renames TV show episodes using TMDB metadata
-2. **Music Renamer** — Renames music files based on ID3/audio tags
-3. **Lyrics Transcriber** — Transcribes lyrics from audio files using AI (HDemucs + Whisper + Genius)
-4. **Media Cutter** — Trim and cut audio/video files with waveform preview and per-track codec control
+1. **Episode Renamer** - Renames TV show episodes using TMDB metadata
+2. **Music Renamer** - Renames music files based on ID3/audio tags
+3. **Lyrics Transcriber** - Transcribes lyrics from audio files using AI (HDemucs + Whisper + Genius)
+4. **Media Cutter** - Trim and cut audio/video files with waveform preview and per-track codec control
+5. **Downloader** - Download media via yt-dlp with codec/format/quality selection, playlist support, and cookie authentication
 
 The application consists of a FastAPI backend (Python 3.12), a React frontend (Vite + Tailwind CSS), and an optional GPU-powered lyrics transcription service. All services communicate over a Docker bridge network behind an Nginx reverse proxy.
 
@@ -97,7 +98,7 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 ### General
 
 - Modern dark-themed web interface with glassmorphism design
-- Feature toggle system — enable/disable modules via environment variable
+- Feature toggle system - enable/disable modules via environment variable
 - Landing page with module navigation
 - Real-time output logs per module
 - Fully dockerized with Docker Compose
@@ -162,7 +163,7 @@ Browser                    Frontend Container               Backend Container
 
 - **No CORS issues**: all requests are same-origin from the browser's perspective
 - **Single entry point**: only port 3333 needs to be exposed
-- **Backend stays private**: port 3332 is not published — the backend is only reachable via Nginx
+- **Backend stays private**: port 3332 is not published - the backend is only reachable via Nginx
 - **SSE support**: Nginx configured with disabled buffering for real-time streaming
 - **Feature isolation**: each module can be independently enabled/disabled
 - **Session-based auth**: when `AUTH_USERNAME`/`AUTH_PASSWORD` are set, all endpoints require a valid signed session
@@ -200,7 +201,7 @@ Edit the `docker-compose.yml` and adjust the following values:
 ```yaml
 environment:
   - TMDB_API_KEY=YOUR_TMDB_API_KEY_HERE
-  - ENABLED_FEATURES=episodes,music,lyrics,cutter  # Enable modules
+  - ENABLED_FEATURES=episodes,music,lyrics,cutter,download  # Enable modules
 volumes:
   - /path/to/your/media:/media:rw
 ```
@@ -235,17 +236,21 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `VALID_VIDEO_EXT` | Video file extensions (CSV) | `.mp4,.mkv,.mov,.avi` |
 | `VALID_MUSIC_EXT` | Music file extensions (CSV) | `.flac,.wav,.mp3` |
 | `TRANSCRIBER_URL` | Lyrics transcriber service URL | `http://lyric-transcriber:3334` |
-| `ENABLED_FEATURES` | Active modules (CSV) | `episodes,music,cutter` |
+| `ENABLED_FEATURES` | Active modules (CSV) | `episodes,music,cutter,download` (+ `lyrics` when `TRANSCRIBER_URL` is set) |
 | `ALLOWED_ORIGINS` | CORS allowed origins | `http://localhost:3333` |
 | `VALID_CUTTER_EXT` | Cutter file extensions (CSV) | `.mp4,.mkv,.mov,.avi,.webm,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.opus,.ogg,.aiff` |
-| `CUTTER_JOBS_DIR` | Directory for cutter job data | `/tmp/cutter-jobs` |
+| `CUTTER_JOBS_DIR` | Directory for cutter job data | `/data/cutter-jobs` |
 | `CUTTER_JOB_TTL` | Job expiry in seconds | `86400` |
 | `CUTTER_MAX_DIRECT_REMUX_BYTES` | Max file size for direct remux preview | `1073741824` (1 GB) |
+| `DOWNLOADS_DIR` | Root directory for downloaded files | `/downloads` |
+| `DOWNLOADER_JOBS_DIR` | Directory for download job metadata | `/data/download-jobs` |
+| `DOWNLOADER_JOB_TTL` | Download job expiry in seconds | `604800` (7 days) |
+| `YT_DLP_COOKIES` | Path to cookies.txt for yt-dlp (optional) | `$DOWNLOADER_JOBS_DIR/cookies.txt` |
 | `HWACCEL` | Cutter hardware acceleration mode (`off` disables; otherwise auto-detect) | auto-detect |
 | `VAAPI_DEVICE` | VAAPI render node path (used for VAAPI backend) | `/dev/dri/renderD128` |
-| `AUTH_USERNAME` | Login username (optional — auth disabled if unset) | - |
-| `AUTH_PASSWORD` | Login password (optional — auth disabled if unset) | - |
-| `SECRET_KEY` | Session signing key (optional — auto-generated and persisted if unset) | auto-generated |
+| `AUTH_USERNAME` | Login username (optional - auth disabled if unset) | - |
+| `AUTH_PASSWORD` | Login password (optional - auth disabled if unset) | - |
+| `SECRET_KEY` | Session signing key (optional - auto-generated and persisted if unset) | auto-generated |
 | `PUID` | User ID the container process runs as | `1000` |
 | `PGID` | Group ID the container process runs as | `1000` |
 
@@ -261,7 +266,7 @@ When both are set, all endpoints are protected by a session-based login. The ses
 environment:
   - AUTH_USERNAME=admin
   - AUTH_PASSWORD=changeme
-  # SECRET_KEY is optional — omit to auto-generate, or set for reproducibility:
+  # SECRET_KEY is optional - omit to auto-generate, or set for reproducibility:
   # - SECRET_KEY=your-random-secret-here
 ```
 
@@ -552,7 +557,7 @@ mount -t nfs server:/export /mnt -o actimeo=1,vers=4
 
 ### Session expired / Can't log in
 
-- Click "Log in" again — sessions expire after 30 days or when the secret key changes (e.g. container recreated without a persisted key).
+- Click "Log in" again - sessions expire after 30 days or when the secret key changes (e.g. container recreated without a persisted key).
 - Set a fixed `SECRET_KEY` environment variable so sessions remain valid across container recreations.
 - If you changed `AUTH_USERNAME`, existing sessions are invalidated immediately. If you changed `AUTH_PASSWORD`, existing sessions remain valid until they expire (the password is only checked at login time).
 

@@ -1,4 +1,7 @@
-export const API_BASE = window.location.origin
+import { connectSSE } from '@/lib/sse'
+import { API_BASE, assertAuthenticated } from '@/lib/http'
+
+export { API_BASE, assertAuthenticated }
 
 const DEFAULT_TIMEOUT_MS = 30_000
 
@@ -11,13 +14,6 @@ async function extractErrorMessage(res: Response): Promise<string> {
     // Response body is not JSON
   }
   return `HTTP ${res.status}: ${res.statusText}`
-}
-
-export function assertAuthenticated(res: Response | XMLHttpRequest): void {
-  if (res.status === 401) {
-    window.dispatchEvent(new Event('auth:expired'))
-    throw new Error('Session expired')
-  }
 }
 
 export async function fetchJson<T>(
@@ -35,6 +31,19 @@ export async function fetchJson<T>(
   assertAuthenticated(res)
   if (!res.ok) {
     throw new Error(await extractErrorMessage(res))
+  }
+  const contentType = res.headers.get('content-type') ?? ''
+  if (!contentType.includes('application/json')) {
+    const body = await res.text()
+    const preview = body.trim().slice(0, 80)
+    if (preview.startsWith('<!DOCTYPE') || preview.startsWith('<html')) {
+      throw new Error(
+        `Expected JSON from ${path}, but received HTML. Check the frontend API proxy.`,
+      )
+    }
+    throw new Error(
+      `Expected JSON from ${path}, but received ${contentType || 'unknown content type'}.`,
+    )
   }
   return res.json() as Promise<T>
 }
@@ -79,6 +88,12 @@ export async function fetchMusicFiles(
 
 export async function fetchConfig(): Promise<{ features: string[]; base_paths: string[] }> {
   return fetchJson('/config')
+}
+
+export async function fetchMediaDirectories(
+  search?: string,
+): Promise<import('@/types').DirectoriesResponse> {
+  return fetchJson('/directories/media', search ? { search } : undefined)
 }
 
 export function uploadFile(
@@ -289,6 +304,91 @@ export async function fetchAuthStatus(): Promise<{
   authenticated: boolean
 }> {
   return fetchJson('/auth/status')
+}
+
+export async function fetchDownloaderStatus(): Promise<import('@/types').DownloaderStatus> {
+  return fetchJson('/download/status')
+}
+
+export async function fetchDownloadJobs(): Promise<{ jobs: import('@/types').DownloadJob[] }> {
+  return fetchJson('/download/jobs')
+}
+
+export function postDownload(
+  form: import('@/types').DownloadForm,
+  callbacks: {
+    onProgress: (data: string) => void
+    onError: (data: string) => void
+    onDone: (data: string) => void
+  },
+): () => void {
+  const { url, ...options } = form
+  const params: Record<string, string> = {
+    url,
+    options: JSON.stringify(options),
+  }
+  return connectSSE('/download/start', params, callbacks)
+}
+
+export async function createDownloadJob(
+  form: import('@/types').DownloadForm,
+): Promise<import('@/types').DownloadJob> {
+  const { url, ...options } = form
+  return postForm('/download/start', {
+    url,
+    options: JSON.stringify({ ...options, auto_start: false }),
+  })
+}
+
+export function startDownloadJob(
+  jobId: string,
+  callbacks: {
+    onProgress: (data: string) => void
+    onError: (data: string) => void
+    onDone: (data: string) => void
+  },
+): () => void {
+  return connectSSE(`/download/jobs/${encodeURIComponent(jobId)}/start`, {}, callbacks)
+}
+
+export function getDownloaderFileUrl(jobId: string): string {
+  return `/download/jobs/${encodeURIComponent(jobId)}/file`
+}
+
+export async function deleteDownloadJob(jobId: string): Promise<void> {
+  const url = new URL(`/download/jobs/${encodeURIComponent(jobId)}`, API_BASE)
+  const res = await fetch(url, {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    credentials: 'include',
+  })
+  assertAuthenticated(res)
+  if (!res.ok) throw new Error(await extractErrorMessage(res))
+}
+
+export async function postCookies(file: File): Promise<void> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const url = new URL('/download/cookies', API_BASE)
+  const res = await fetch(url, {
+    method: 'POST',
+    body: formData,
+    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    credentials: 'include',
+  })
+  assertAuthenticated(res)
+  if (!res.ok) throw new Error(await extractErrorMessage(res))
+}
+
+export async function deleteCookies(): Promise<void> {
+  const url = new URL('/download/cookies', API_BASE)
+  const res = await fetch(url, {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    credentials: 'include',
+  })
+  assertAuthenticated(res)
+  if (!res.ok) throw new Error(await extractErrorMessage(res))
 }
 
 export async function postLogout(): Promise<void> {

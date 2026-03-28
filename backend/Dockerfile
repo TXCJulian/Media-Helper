@@ -4,7 +4,7 @@ WORKDIR /backend
 
 RUN set -e; \
     apt-get update; \
-    apt-get install -y --no-install-recommends build-essential ca-certificates curl gnupg gosu; \
+    apt-get install -y --no-install-recommends build-essential ca-certificates curl gnupg gosu nodejs; \
     if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
       curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
         | gpg --dearmor -o /usr/share/keyrings/jellyfin.gpg; \
@@ -29,8 +29,8 @@ COPY entrypoint.sh /entrypoint.sh
 # Create non-root user and required directories
 RUN groupadd -g 1000 appgroup && \
     useradd -u 1000 -g appgroup -M -s /bin/false appuser && \
-    mkdir -p /data/cutter-jobs /var/lib/media-renamer && \
-    chown appuser:appgroup /data/cutter-jobs /var/lib/media-renamer && \
+    mkdir -p /data/cutter-jobs /data/download-jobs /downloads /var/lib/media-renamer && \
+    chown appuser:appgroup /data/cutter-jobs /data/download-jobs /downloads /var/lib/media-renamer && \
     chmod +x /entrypoint.sh
 
 EXPOSE 3332

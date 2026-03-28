@@ -219,7 +219,7 @@ def transcribe_file(
             )
             continue
 
-        # Successful poll — reset error counters
+        # Successful poll - reset error counters
         consecutive_errors = 0
         not_found_count = 0
         last_status_data = status_data

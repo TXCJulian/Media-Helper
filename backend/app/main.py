@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, Form, Request, HTTPException
+from fastapi import FastAPI, Query, Form, Request, HTTPException, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -32,8 +32,15 @@ from app.config import (
     ENABLED_FEATURES,
     ENABLED_FEATURES_SET,
     AUTH_ENABLED,
+    DOWNLOADER_JOBS_DIR,
+    DOWNLOADS_DIR,
 )
-from app.auth import verify_login, create_session_cookie, clear_session_cookie, check_session
+from app.auth import (
+    verify_login,
+    create_session_cookie,
+    clear_session_cookie,
+    check_session,
+)
 from app.rename_episodes import rename_episodes
 from app.rename_music import rename_music, load_audio_file, get_first_tag_value
 from app.get_dirs import (
@@ -47,6 +54,16 @@ from app.transcribe_lyrics import (
     get_file_lyrics_status,
     check_existing_lyrics,
     transcribe_file,
+)
+from app.download import (
+    create_job as create_downloader_job,
+    load_job_metadata as load_downloader_job_metadata,
+    list_jobs as list_downloader_jobs,
+    delete_job as delete_downloader_job,
+    cleanup_old_jobs as cleanup_old_downloader_jobs,
+    get_cookie_path as get_downloader_cookie_path,
+    get_status_payload as get_downloader_status_payload,
+    DownloadManager,
 )
 from app.cutter import (
     probe_file,
@@ -87,6 +104,13 @@ def require_feature(name: str):
     """Raise 404 if feature is not enabled."""
     if name not in ENABLED_FEATURES_SET:
         raise HTTPException(status_code=404, detail=f"Feature '{name}' is not enabled")
+
+
+def require_any_feature(*names: str):
+    """Raise 404 if none of the named features are enabled."""
+    if not any(name in ENABLED_FEATURES_SET for name in names):
+        joined = ", ".join(names)
+        raise HTTPException(status_code=404, detail=f"Requires one of: {joined}")
 
 
 def validate_path(base: str, user_input: str) -> str:
@@ -132,6 +156,16 @@ async def _cleanup_cutter_jobs():
             logger.exception("Error during cutter job cleanup")
 
 
+async def _cleanup_downloader_jobs():
+    """Periodically delete expired download jobs."""
+    while True:
+        await asyncio.sleep(600)  # every 10 minutes
+        try:
+            cleanup_old_downloader_jobs()
+        except Exception:
+            logger.exception("Error during download job cleanup")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan with startup and shutdown events."""
@@ -153,7 +187,14 @@ async def lifespan(app: FastAPI):
     # Start cutter upload cleanup task only if cutter feature is enabled
     cleanup_task = None
     if "cutter" in ENABLED_FEATURES_SET:
-        os.makedirs(CUTTER_JOBS_DIR, exist_ok=True)
+        try:
+            os.makedirs(CUTTER_JOBS_DIR, exist_ok=True)
+        except OSError as e:
+            logger.error(
+                "Cannot create cutter jobs directory %s: %s — cutter feature may fail",
+                CUTTER_JOBS_DIR,
+                e,
+            )
         from app.cutter import migrate_jobs
 
         migrate_jobs()
@@ -167,11 +208,29 @@ async def lifespan(app: FastAPI):
             threading.Thread(target=_ensure_detected, daemon=True).start()
         cleanup_task = asyncio.create_task(_cleanup_cutter_jobs())
 
+    # Start download cleanup task only if download feature is enabled
+    downloader_cleanup_task = None
+    if "download" in ENABLED_FEATURES_SET:
+        for d in (DOWNLOADER_JOBS_DIR, DOWNLOADS_DIR):
+            try:
+                os.makedirs(d, exist_ok=True)
+            except OSError as e:
+                logger.error(
+                    "Cannot create directory %s: %s — download feature may fail", d, e
+                )
+        if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+            logger.error(
+                "Downloader feature requires ffmpeg and ffprobe on PATH; download jobs may fail."
+            )
+        downloader_cleanup_task = asyncio.create_task(_cleanup_downloader_jobs())
+
     yield
 
     # Shutdown
     if cleanup_task is not None:
         cleanup_task.cancel()
+    if downloader_cleanup_task is not None:
+        downloader_cleanup_task.cancel()
     for obs in _observers:
         obs.stop()
     for obs in _observers:
@@ -187,7 +246,7 @@ _AUTH_EXEMPT_PREFIXES = ("/auth/", "/docs", "/redoc")
 
 
 class AuthMiddleware:
-    """Pure ASGI middleware — avoids BaseHTTPMiddleware's streaming/SSE buffering issues."""
+    """Pure ASGI middleware - avoids BaseHTTPMiddleware's streaming/SSE buffering issues."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -197,23 +256,27 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
         path: str = scope.get("path", "")
-        if path in _AUTH_EXEMPT_EXACT or any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES):
+        if path in _AUTH_EXEMPT_EXACT or any(
+            path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES
+        ):
             await self.app(scope, receive, send)
             return
         request = Request(scope)
         if not check_session(request):
-            response = JSONResponse({"detail": "Authentication required"}, status_code=401)
+            response = JSONResponse(
+                {"detail": "Authentication required"}, status_code=401
+            )
             await response(scope, receive, send)
             return
         await self.app(scope, receive, send)
 
 
-# Auth added FIRST (inner), CORS added SECOND (outer) — LIFO means CORS runs first
+# Auth added FIRST (inner), CORS added SECOND (outer) - LIFO means CORS runs first
 app.add_middleware(AuthMiddleware)
 _cors_credentials = AUTH_ENABLED and "*" not in ALLOWED_ORIGINS
 if not _cors_credentials and AUTH_ENABLED:
     logger.warning(
-        "ALLOWED_ORIGINS contains '*' but AUTH is enabled — credentials cannot be sent. "
+        "ALLOWED_ORIGINS contains '*' but AUTH is enabled - credentials cannot be sent. "
         "Set explicit origins in ALLOWED_ORIGINS for auth to work correctly."
     )
 app.add_middleware(
@@ -343,7 +406,7 @@ def refresh_directories():
 def list_media_directories(
     search: str | None = Query(None, description="Text filter", max_length=200),
 ):
-    require_feature("cutter")
+    require_any_feature("cutter", "download")
     all_dirs = _get_cutter_dirs_cached()
 
     filtered = all_dirs
@@ -543,7 +606,7 @@ def start_transcription(
                 effective_format = check_existing_lyrics(filepath, output_format)
                 if effective_format is None:
                     msg_queue.put(
-                        ("progress", f"[SKIP]\t\t\t{filename} — lyrics already exist")
+                        ("progress", f"[SKIP]\t\t\t{filename} - lyrics already exist")
                     )
                     continue
             else:
@@ -688,7 +751,9 @@ def list_cutter_files(
                         "name": entry.name,
                         "size": entry.stat().st_size,
                         "extension": ext,
-                        "file_id": encode_file_id("server", rel_path, job_id="", base=base),
+                        "file_id": encode_file_id(
+                            "server", rel_path, job_id="", base=base
+                        ),
                     }
                 )
         except OSError:
@@ -859,7 +924,7 @@ def cutter_stream(
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Audio preview not ready yet — poll "
+                    "Audio preview not ready yet - poll "
                     f"/cutter/preview-status/{file_id}"
                     f"?audio_transcode_stream={audio_stream} and retry"
                 ),
@@ -888,7 +953,7 @@ def cutter_stream(
         if not master_path:
             raise HTTPException(
                 status_code=409,
-                detail="Preview not ready yet — poll /cutter/preview-status and retry",
+                detail="Preview not ready yet - poll /cutter/preview-status and retry",
             )
         # If a specific audio track is requested, extract it from the master
         if audio_stream is not None:
@@ -1014,7 +1079,7 @@ def cutter_preview_status(
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Audio-only transcode status — uses separate key, bypasses master preview check.
+    # Audio-only transcode status - uses separate key, bypasses master preview check.
     # Also kicks off the transcode if not already started, so polling alone is
     # sufficient to start the work (matches master preview behavior).
     if audio_transcode_stream is not None:
@@ -1033,7 +1098,7 @@ def cutter_preview_status(
                     f"Available: {sorted(stream_indices)}",
                 )
         except RuntimeError:
-            pass  # Probe failed — let the transcode attempt handle it
+            pass  # Probe failed - let the transcode attempt handle it
         start_background_audio_transcode(resolved, audio_transcode_stream, job_id)
         return get_audio_transcode_status(resolved, job_id, audio_transcode_stream)
 
@@ -1112,7 +1177,7 @@ async def cutter_upload(request: Request):
             detail=f"Invalid file extension '{ext}'. Allowed: {', '.join(sorted(VALID_CUTTER_EXT))}",
         )
 
-    # Create a job for this upload — mark as uploading until the stream completes
+    # Create a job for this upload - mark as uploading until the stream completes
     job_id = create_job("upload", "", filename, initial_status="uploading")
     job_dir = get_job_dir(job_id)
     input_dir = os.path.join(job_dir, "input")
@@ -1500,7 +1565,7 @@ def cutter_cut(
         for stream in probe_audio_streams:
             source_audio_bitrates[stream["index"]] = stream.get("bit_rate", 0)
 
-    # Determine output filename — use original name if no output_name given
+    # Determine output filename - use original name if no output_name given
     original_name = os.path.basename(resolved)
     original_ext = os.path.splitext(original_name)[1]  # e.g. ".mkv"
 
@@ -1621,3 +1686,248 @@ def cutter_cut(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ── Downloader Endpoints ───────────────────────────────────────────────
+
+
+@app.get("/download/status")
+def download_status():
+    require_feature("download")
+    return get_downloader_status_payload()
+
+
+_DOWNLOAD_JOB_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+_DOWNLOAD_INTERNAL_FIELDS = {"output_path", "options", "schema_version"}
+
+
+def _validate_download_job_id(job_id: str) -> None:
+    if not _DOWNLOAD_JOB_ID_RE.match(job_id):
+        raise HTTPException(status_code=422, detail=f"Invalid job_id format: {job_id}")
+
+
+def _sanitize_job_meta(meta: dict) -> dict:
+    return {k: v for k, v in meta.items() if k not in _DOWNLOAD_INTERNAL_FIELDS}
+
+
+@app.get("/download/jobs")
+def download_list_jobs_route():
+    require_feature("download")
+    return {"jobs": [_sanitize_job_meta(j) for j in list_downloader_jobs()]}
+
+
+@app.get("/download/jobs/{job_id}")
+def download_get_job_route(job_id: str):
+    require_feature("download")
+    _validate_download_job_id(job_id)
+    meta = load_downloader_job_metadata(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _sanitize_job_meta(meta)
+
+
+@app.get("/download/jobs/{job_id}/file")
+def download_file_route(job_id: str):
+    """Download the output file for a completed download job."""
+    require_feature("download")
+    _validate_download_job_id(job_id)
+    from fastapi.responses import FileResponse
+
+    meta = load_downloader_job_metadata(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if meta.get("status") != "done":
+        raise HTTPException(status_code=400, detail="Download not complete")
+    output_path = meta.get("output_path")
+    if not output_path:
+        raise HTTPException(status_code=404, detail="Output file not found")
+
+    resolved = os.path.realpath(output_path)
+    allowed_roots = [os.path.realpath(DOWNLOADS_DIR)] + [
+        os.path.realpath(p) for p in BASE_PATHS
+    ]
+    if not any(
+        resolved.startswith(root + os.sep) or resolved == root for root in allowed_roots
+    ):
+        raise HTTPException(status_code=403, detail="Output file path not allowed")
+
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="Output file not found")
+    return FileResponse(
+        resolved,
+        filename=os.path.basename(resolved),
+        media_type="application/octet-stream",
+    )
+
+
+@app.delete("/download/jobs/{job_id}")
+def download_delete_job_route(job_id: str):
+    require_feature("download")
+    _validate_download_job_id(job_id)
+    try:
+        delete_downloader_job(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"status": "deleted"}
+
+
+_download_semaphore = threading.Semaphore(5)
+
+
+def _download_sse_response(job_id: str, url: str, options: dict) -> StreamingResponse:
+    """Start a download job in a background thread and return an SSE stream."""
+    if not _download_semaphore.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429, detail="Too many concurrent downloads, try again later"
+        )
+    msg_queue: queue.Queue = queue.Queue(maxsize=100)
+
+    def run_download():
+        try:
+            manager = DownloadManager(job_id, url, options)
+            manager.run(msg_queue)
+        except Exception as e:
+            logger.exception("Download thread failed")
+            meta = load_downloader_job_metadata(job_id) or {}
+            error_payload = {
+                "job_id": job_id,
+                "url": url,
+                "status": "error",
+                "progress": 0.0,
+                "speed": None,
+                "eta": None,
+                "filename": meta.get("filename"),
+                "error": str(e),
+                "created_at": meta.get("created_at"),
+                "size": None,
+            }
+            try:
+                msg_queue.put_nowait(("error_msg", error_payload))
+                msg_queue.put_nowait(("done", error_payload))
+            except Exception:
+                pass  # Queue full / client gone — state is persisted in metadata
+        finally:
+            _download_semaphore.release()
+
+    thread = threading.Thread(target=run_download, daemon=True)
+    thread.start()
+
+    def event_generator():
+        try:
+            while True:
+                try:
+                    event_type, payload = msg_queue.get(timeout=30)
+                    yield f"event: {event_type}\ndata: {json.dumps(payload)}\n\n"
+                    if event_type == "done":
+                        break
+                except queue.Empty:
+                    yield 'event: progress\ndata: {"status": "heartbeat"}\n\n'
+        finally:
+            pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/download/start")
+def download_start(
+    url: str = Form(..., max_length=1000),
+    options_json: str = Form("{}", alias="options", max_length=5000),
+):
+    require_feature("download")
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code=422, detail="Only http and https URLs are allowed"
+        )
+
+    try:
+        options = json.loads(options_json)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=422, detail="Invalid options JSON")
+    if not isinstance(options, dict):
+        raise HTTPException(status_code=422, detail="Options must be a JSON object")
+
+    job_id = create_downloader_job(url, options)
+
+    auto_start = str(options.get("auto_start", True)).lower() not in (
+        "false",
+        "0",
+        "no",
+    )
+    if not auto_start:
+        meta = load_downloader_job_metadata(job_id)
+        return _sanitize_job_meta({"job_id": job_id, **(meta or {})})
+
+    return _download_sse_response(job_id, url, options)
+
+
+@app.post("/download/jobs/{job_id}/start")
+def download_start_job(job_id: str):
+    """Start a previously queued download job."""
+    require_feature("download")
+    _validate_download_job_id(job_id)
+    meta = load_downloader_job_metadata(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if meta.get("status") != "queued":
+        raise HTTPException(status_code=409, detail="Job is not in queued state")
+
+    url = meta.get("url", "")
+    options = meta.get("options", {})
+    return _download_sse_response(job_id, url, options)
+
+
+@app.post("/download/cookies")
+async def download_upload_cookies(file: UploadFile = File(...)):
+    require_feature("download")
+    cookie_path = get_downloader_cookie_path()
+
+    max_size = 1024 * 1024  # 1 MB
+    content = await file.read(max_size + 1)
+    if not content:
+        raise HTTPException(status_code=400, detail="No cookie data received")
+    if len(content) > max_size:
+        raise HTTPException(status_code=400, detail="Cookie file too large (max 1 MB)")
+
+    dir_name = os.path.dirname(cookie_path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(cookie_path, flags, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(content)
+    try:
+        os.chmod(cookie_path, 0o600)
+    except OSError:
+        pass
+    return {"status": "ok"}
+
+
+@app.delete("/download/cookies")
+def download_delete_cookies():
+    require_feature("download")
+    cookie_path = get_downloader_cookie_path()
+    if os.path.isfile(cookie_path):
+        try:
+            os.remove(cookie_path)
+        except OSError as e:
+            raise HTTPException(
+                status_code=500, detail=f"Failed to delete cookies: {e}"
+            )
+    return {"status": "ok"}

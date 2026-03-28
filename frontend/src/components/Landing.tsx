@@ -1,4 +1,6 @@
-export type PanelName = 'episodes' | 'music' | 'lyrics' | 'cutter'
+import type { ReactElement } from 'react'
+
+export type PanelName = 'episodes' | 'music' | 'lyrics' | 'cutter' | 'download'
 
 interface LandingProps {
   onNavigate: (panel: PanelName) => void
@@ -32,10 +34,18 @@ const cards: {
     iconClass: 'bg-[var(--accent-2-glow)] text-[var(--accent-2)]',
   },
   {
+    id: 'download',
+    icon: '⬇',
+    title: 'Downloader',
+    desc: 'Download video and audio with yt-dlp.',
+    colorClass: 'card-download',
+    iconClass: 'bg-[var(--accent-5-glow)] text-[var(--accent-5)]',
+  },
+  {
     id: 'lyrics',
     icon: '¶',
     title: 'Lyrics Transcriber',
-    desc: 'Transcribe lyrics from audio files using whisper.',
+    desc: 'Transcribe lyrics from audio files with whisper.',
     colorClass: 'card-lyrics',
     iconClass: 'bg-[var(--accent-3-glow)] text-[var(--accent-3)]',
   },
@@ -54,7 +64,7 @@ export default function Landing({
   enabledFeatures,
   backendStatus,
   onLogout,
-}: LandingProps) {
+}: LandingProps): ReactElement {
   const visibleCards = cards
     .filter((card) => enabledFeatures.includes(card.id))
     .sort((a, b) => enabledFeatures.indexOf(a.id) - enabledFeatures.indexOf(b.id))
@@ -117,11 +127,13 @@ export default function Landing({
                   background:
                     card.id === 'episodes'
                       ? 'radial-gradient(ellipse at 30% 80%, var(--accent-glow) 0%, transparent 65%)'
-                      : card.id === 'music'
-                        ? 'radial-gradient(ellipse at 30% 80%, var(--accent-2-glow) 0%, transparent 65%)'
-                        : card.id === 'cutter'
-                          ? 'radial-gradient(ellipse at 30% 80%, var(--accent-4-glow) 0%, transparent 65%)'
-                          : 'radial-gradient(ellipse at 30% 80%, var(--accent-3-glow) 0%, transparent 65%)',
+                      : card.id === 'download'
+                        ? 'radial-gradient(ellipse at 30% 80%, var(--accent-5-glow) 0%, transparent 65%)'
+                        : card.id === 'music'
+                          ? 'radial-gradient(ellipse at 30% 80%, var(--accent-2-glow) 0%, transparent 65%)'
+                          : card.id === 'cutter'
+                            ? 'radial-gradient(ellipse at 30% 80%, var(--accent-4-glow) 0%, transparent 65%)'
+                            : 'radial-gradient(ellipse at 30% 80%, var(--accent-3-glow) 0%, transparent 65%)',
                 }}
               />
 
