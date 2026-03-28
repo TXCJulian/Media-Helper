@@ -54,7 +54,7 @@ _AUDIO_QUALITY_KBPS = {
     "96kbps": 96,
 }
 _THUMBNAIL_FORMATS = {"jpg", "png", "webp"}
-_AUDIO_FORMATS = {"mp3", "m4a", "flac", "opus", "wav"}
+_AUDIO_FORMATS = {"mp3", "m4a", "flac", "opus", "wav", "aac"}
 _VIDEO_FORMATS = {"mp4", "mkv", "webm", "mov"}
 _CANCEL_WAIT_SECONDS = 15.0
 _metadata_lock = threading.Lock()
