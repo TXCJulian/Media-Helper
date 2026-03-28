@@ -19,12 +19,13 @@ from app.config import (
     YT_DLP_COOKIES,
     resolve_base,
 )
-from app.hwaccel import resolve_video_encoder
+from app.hwaccel import build_video_encode_args, get_hwaccel_input_args
 
 logger = logging.getLogger(__name__)
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_FORMAT_ID_RE = re.compile(r"\.f\d+(?=\.[^.]+$)")
 _ACTIVE_STATUSES = {"queued", "downloading", "processing"}
 _STATUS_MAP = {
     "pending": "queued",
@@ -193,7 +194,9 @@ def _compute_progress(data: dict[str, Any]) -> float:
             return min(float(downloaded) / float(total) * 100.0, 100.0)
         except (TypeError, ValueError, ZeroDivisionError):
             pass
-    percent_raw = str(data.get("_percent_str", "0")).replace("%", "").replace(",", ".").strip()
+    percent_raw = (
+        str(data.get("_percent_str", "0")).replace("%", "").replace(",", ".").strip()
+    )
     try:
         return float(percent_raw)
     except ValueError:
@@ -364,9 +367,13 @@ def delete_job(job_id: str) -> None:
                     save_job_metadata(job_id, meta)
                 deadline = time.monotonic() + _CANCEL_WAIT_SECONDS
                 while runtime.active and time.monotonic() < deadline:
-                    runtime.condition.wait(timeout=max(0.1, deadline - time.monotonic()))
+                    runtime.condition.wait(
+                        timeout=max(0.1, deadline - time.monotonic())
+                    )
                 if runtime.active:
-                    raise RuntimeError(f"Job {job_id} is still busy and could not be deleted")
+                    raise RuntimeError(
+                        f"Job {job_id} is still busy and could not be deleted"
+                    )
 
     shutil.rmtree(job_dir, ignore_errors=True)
     _clear_runtime(job_id)
@@ -383,7 +390,9 @@ def cleanup_old_jobs() -> None:
         job_dir = _get_job_dir(name)
         try:
             if meta is None:
-                mtime = datetime.fromtimestamp(os.path.getmtime(job_dir), tz=timezone.utc)
+                mtime = datetime.fromtimestamp(
+                    os.path.getmtime(job_dir), tz=timezone.utc
+                )
                 if (now - mtime).total_seconds() > DOWNLOADER_JOB_TTL:
                     delete_job(name)
                 continue
@@ -396,7 +405,9 @@ def cleanup_old_jobs() -> None:
             if (now - created_at).total_seconds() > DOWNLOADER_JOB_TTL:
                 delete_job(name)
         except Exception:
-            logger.warning("Error checking download job %s for cleanup", name, exc_info=True)
+            logger.warning(
+                "Error checking download job %s for cleanup", name, exc_info=True
+            )
 
 
 def _build_postprocessor_args(options: dict[str, Any]) -> dict[str, list[str]]:
@@ -407,9 +418,14 @@ def _build_postprocessor_args(options: dict[str, Any]) -> dict[str, list[str]]:
     cpu_encoder = _VIDEO_CODEC_TO_ENCODER.get(codec)
     if not cpu_encoder:
         return {}
-    return {
-        "FFmpegVideoConvertor+ffmpeg": ["-c:v", resolve_video_encoder(cpu_encoder)],
+    encode_args = build_video_encode_args(cpu_encoder, crf="23")
+    result: dict[str, list[str]] = {
+        "VideoConvertor+ffmpeg_o": [*encode_args, "-c:a", "copy"],
     }
+    hwaccel_args = get_hwaccel_input_args()
+    if hwaccel_args:
+        result["VideoConvertor+ffmpeg_i"] = hwaccel_args
+    return result
 
 
 def get_ydl_opts(options: dict[str, Any]) -> dict[str, Any]:
@@ -434,6 +450,7 @@ def get_ydl_opts(options: dict[str, Any]) -> dict[str, Any]:
         "postprocessor_hooks": [],
         "outtmpl": outtmpl,
         "postprocessors": [],
+        "js_runtimes": {"node": {}, "deno": {}, "bun": {}},
     }
 
     cookie_path = get_cookie_path()
@@ -471,20 +488,26 @@ def get_ydl_opts(options: dict[str, Any]) -> dict[str, Any]:
         ydl_opts["skip_download"] = True
         ydl_opts["writethumbnail"] = True
         if requested_format in _THUMBNAIL_FORMATS:
-            ydl_opts["postprocessors"].append({
-                "key": "FFmpegThumbnailsConvertor",
-                "format": requested_format,
-            })
+            ydl_opts["postprocessors"].append(
+                {
+                    "key": "FFmpegThumbnailsConvertor",
+                    "format": requested_format,
+                }
+            )
     else:
         # Video
         ydl_opts["format"] = _video_format_selector(quality)
         if codec != "auto":
             # Explicit codec requested — need a video convertor
-            container = requested_format if requested_format in _VIDEO_FORMATS else "mp4"
-            ydl_opts["postprocessors"].append({
-                "key": "FFmpegVideoConvertor",
-                "prefformat": container,
-            })
+            container = (
+                requested_format if requested_format in _VIDEO_FORMATS else "mp4"
+            )
+            ydl_opts["postprocessors"].append(
+                {
+                    "key": "FFmpegVideoConvertor",
+                    "preferedformat": container,
+                }
+            )
             pp_args = _build_postprocessor_args(options)
             if pp_args:
                 ydl_opts["postprocessor_args"] = pp_args
@@ -502,7 +525,9 @@ def get_ydl_opts(options: dict[str, Any]) -> dict[str, Any]:
 def _display_name(filename: Any) -> str | None:
     if not filename:
         return None
-    return os.path.basename(str(filename))
+    name = os.path.basename(str(filename))
+    # Strip yt-dlp format IDs (e.g. ".f401") from temp filenames during merge
+    return _FORMAT_ID_RE.sub("", name)
 
 
 def _job_payload(meta: dict[str, Any]) -> dict[str, Any]:
@@ -552,7 +577,9 @@ def _extract_thumbnail_path(info: Mapping[str, Any], outtmpl: str) -> str | None
         return None
     for ext in ("jpg", "jpeg", "png", "webp"):
         candidate = os.path.join(base_dir, f"{stem}.{ext}")
-        if not os.path.realpath(candidate).startswith(os.path.realpath(base_dir) + os.sep):
+        if not os.path.realpath(candidate).startswith(
+            os.path.realpath(base_dir) + os.sep
+        ):
             continue
         if os.path.isfile(candidate):
             return candidate
@@ -645,7 +672,8 @@ class DownloadManager:
             meta = self._save_meta(
                 status="processing",
                 progress=100.0,
-                filename=_display_name(_extract_final_path(info_dict)) or self._load_meta().get("filename"),
+                filename=_display_name(_extract_final_path(info_dict))
+                or self._load_meta().get("filename"),
                 speed=None,
                 eta=None,
             )
@@ -669,7 +697,9 @@ class DownloadManager:
             info_dict = info if isinstance(info, dict) else {}
             media_type = str(self.options.get("type") or "video").lower()
             if media_type == "thumbnail":
-                final_path = _extract_thumbnail_path(info_dict, ydl_opts.get("outtmpl", ""))
+                final_path = _extract_thumbnail_path(
+                    info_dict, ydl_opts.get("outtmpl", "")
+                )
             else:
                 final_path = _extract_final_path(info_dict)
 
@@ -689,7 +719,8 @@ class DownloadManager:
                     progress=100.0,
                     speed=None,
                     eta=None,
-                    filename=_display_name(final_path) or self._load_meta().get("filename"),
+                    filename=_display_name(final_path)
+                    or self._load_meta().get("filename"),
                     size=_extract_final_size(info_dict, final_path),
                     error=None,
                     output_path=final_path,
@@ -706,7 +737,9 @@ class DownloadManager:
             self._emit("error_msg", payload)
             self._emit("done", payload)
         except Exception as exc:
-            logger.error("Download failed for job %s: %s", self.job_id, exc, exc_info=True)
+            logger.error(
+                "Download failed for job %s: %s", self.job_id, exc, exc_info=True
+            )
             meta = self._save_meta(
                 status="error",
                 error=_ANSI_RE.sub("", str(exc)),

@@ -197,7 +197,11 @@ async def lifespan(app: FastAPI):
         try:
             os.makedirs(CUTTER_JOBS_DIR, exist_ok=True)
         except OSError as e:
-            logger.error("Cannot create cutter jobs directory %s: %s — cutter feature may fail", CUTTER_JOBS_DIR, e)
+            logger.error(
+                "Cannot create cutter jobs directory %s: %s — cutter feature may fail",
+                CUTTER_JOBS_DIR,
+                e,
+            )
         from app.cutter import migrate_jobs
 
         migrate_jobs()
@@ -218,9 +222,13 @@ async def lifespan(app: FastAPI):
             try:
                 os.makedirs(d, exist_ok=True)
             except OSError as e:
-                logger.error("Cannot create directory %s: %s — download feature may fail", d, e)
+                logger.error(
+                    "Cannot create directory %s: %s — download feature may fail", d, e
+                )
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
-            logger.error("Downloader feature requires ffmpeg and ffprobe on PATH; download jobs may fail.")
+            logger.error(
+                "Downloader feature requires ffmpeg and ffprobe on PATH; download jobs may fail."
+            )
         downloader_cleanup_task = asyncio.create_task(_cleanup_downloader_jobs())
 
     yield
@@ -1769,7 +1777,9 @@ def download_status():
     return get_downloader_status_payload()
 
 
-_DOWNLOAD_JOB_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_DOWNLOAD_JOB_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 _DOWNLOAD_INTERNAL_FIELDS = {"output_path", "options", "schema_version"}
 
 
@@ -1815,8 +1825,12 @@ def download_file_route(job_id: str):
         raise HTTPException(status_code=404, detail="Output file not found")
 
     resolved = os.path.realpath(output_path)
-    allowed_roots = [os.path.realpath(DOWNLOADS_DIR)] + [os.path.realpath(p) for p in BASE_PATHS]
-    if not any(resolved.startswith(root + os.sep) or resolved == root for root in allowed_roots):
+    allowed_roots = [os.path.realpath(DOWNLOADS_DIR)] + [
+        os.path.realpath(p) for p in BASE_PATHS
+    ]
+    if not any(
+        resolved.startswith(root + os.sep) or resolved == root for root in allowed_roots
+    ):
         raise HTTPException(status_code=403, detail="Output file path not allowed")
 
     if not os.path.isfile(resolved):
@@ -1847,7 +1861,9 @@ _download_semaphore = threading.Semaphore(5)
 def _download_sse_response(job_id: str, url: str, options: dict) -> StreamingResponse:
     """Start a download job in a background thread and return an SSE stream."""
     if not _download_semaphore.acquire(blocking=False):
-        raise HTTPException(status_code=429, detail="Too many concurrent downloads, try again later")
+        raise HTTPException(
+            status_code=429, detail="Too many concurrent downloads, try again later"
+        )
     msg_queue: queue.Queue = queue.Queue(maxsize=100)
 
     def run_download():
@@ -1889,7 +1905,7 @@ def _download_sse_response(job_id: str, url: str, options: dict) -> StreamingRes
                     if event_type == "done":
                         break
                 except queue.Empty:
-                    yield "event: progress\ndata: {\"status\": \"heartbeat\"}\n\n"
+                    yield 'event: progress\ndata: {"status": "heartbeat"}\n\n'
         finally:
             pass
 
@@ -1914,7 +1930,9 @@ def download_start(
 
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        raise HTTPException(status_code=422, detail="Only http and https URLs are allowed")
+        raise HTTPException(
+            status_code=422, detail="Only http and https URLs are allowed"
+        )
 
     try:
         options = json.loads(options_json)
@@ -1925,7 +1943,11 @@ def download_start(
 
     job_id = create_downloader_job(url, options)
 
-    auto_start = str(options.get("auto_start", True)).lower() not in ("false", "0", "no")
+    auto_start = str(options.get("auto_start", True)).lower() not in (
+        "false",
+        "0",
+        "no",
+    )
     if not auto_start:
         meta = load_downloader_job_metadata(job_id)
         return _sanitize_job_meta({"job_id": job_id, **(meta or {})})
@@ -1985,5 +2007,7 @@ def download_delete_cookies():
         try:
             os.remove(cookie_path)
         except OSError as e:
-            raise HTTPException(status_code=500, detail=f"Failed to delete cookies: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to delete cookies: {e}"
+            )
     return {"status": "ok"}

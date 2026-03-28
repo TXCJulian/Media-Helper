@@ -71,6 +71,38 @@ const FORMAT_OPTIONS: Record<string, { label: string; value: string }[]> = {
   ],
 }
 
+// Which containers support which video codecs
+const VIDEO_CODEC_FORMATS: Record<string, string[]> = {
+  h264: ['mp4', 'mkv', 'mov'],
+  h265: ['mp4', 'mkv', 'mov'],
+  vp9: ['webm', 'mkv'],
+  av1: ['mp4', 'mkv', 'webm'],
+}
+
+function getFilteredFormats(
+  type: string,
+  codec: string,
+): { label: string; value: string }[] {
+  const all = FORMAT_OPTIONS[type] ?? []
+  if (type !== 'video' || codec === 'auto') return all
+  const allowed = VIDEO_CODEC_FORMATS[codec]
+  if (!allowed) return all
+  return all.filter((o) => o.value === 'auto' || allowed.includes(o.value))
+}
+
+function getFilteredCodecs(
+  type: string,
+  format: string,
+): { label: string; value: string }[] {
+  const all = CODEC_OPTIONS[type] ?? []
+  if (type !== 'video' || format === 'auto') return all
+  return all.filter((o) => {
+    if (o.value === 'auto') return true
+    const allowed = VIDEO_CODEC_FORMATS[o.value]
+    return allowed ? allowed.includes(format) : true
+  })
+}
+
 const VIDEO_QUALITY = [
   { label: 'Best', value: 'best' },
   { label: '2160p', value: '2160p' },
@@ -524,17 +556,41 @@ export default function DownloaderPanel({
           {form.type !== 'thumbnail' && (
             <StyledSelect
               label="Codec"
-              options={CODEC_OPTIONS[form.type] ?? []}
+              options={getFilteredCodecs(form.type, form.format)}
               value={form.codec}
-              onChange={(v) => setForm((prev) => ({ ...prev, codec: v }))}
+              onChange={(v) =>
+                setForm((prev) => {
+                  const next = { ...prev, codec: v }
+                  // Reset format if incompatible with new codec
+                  if (v !== 'auto' && prev.format !== 'auto') {
+                    const allowed = VIDEO_CODEC_FORMATS[v]
+                    if (allowed && !allowed.includes(prev.format)) {
+                      next.format = 'auto'
+                    }
+                  }
+                  return next
+                })
+              }
             />
           )}
 
           <StyledSelect
             label="Format"
-            options={FORMAT_OPTIONS[form.type] ?? []}
+            options={getFilteredFormats(form.type, form.codec)}
             value={form.format}
-            onChange={(v) => setForm((prev) => ({ ...prev, format: v }))}
+            onChange={(v) =>
+              setForm((prev) => {
+                const next = { ...prev, format: v }
+                // Reset codec if incompatible with new format
+                if (v !== 'auto' && prev.codec !== 'auto') {
+                  const allowed = VIDEO_CODEC_FORMATS[prev.codec]
+                  if (allowed && !allowed.includes(v)) {
+                    next.codec = 'auto'
+                  }
+                }
+                return next
+              })
+            }
           />
 
           {form.type !== 'thumbnail' && (
@@ -755,7 +811,7 @@ export default function DownloaderPanel({
                 <button
                   type="button"
                   onClick={() => void handleClearCompleted()}
-                  className="text-[0.72rem] text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-secondary)]"
+                  className="rounded-lg border border-[var(--glass-border)] px-3 py-1 text-[0.72rem] text-[var(--text-tertiary)] transition-all hover:border-[var(--glass-border-hover)] hover:text-[var(--text-secondary)]"
                 >
                   Clear completed
                 </button>
@@ -765,14 +821,14 @@ export default function DownloaderPanel({
                   <button
                     type="button"
                     onClick={() => void handleClearFailed()}
-                    className="text-[0.72rem] text-red-400/70 transition-colors hover:text-red-400"
+                    className="rounded-lg border border-red-500/20 px-3 py-1 text-[0.72rem] text-red-400/70 transition-all hover:border-red-500/30 hover:text-red-400"
                   >
                     Clear failed
                   </button>
                   <button
                     type="button"
                     onClick={handleRetryFailed}
-                    className="text-[0.72rem] text-[var(--accent-5)] transition-colors hover:text-[var(--accent-5)]/80"
+                    className="rounded-lg border border-[var(--accent-5)]/30 px-3 py-1 text-[0.72rem] text-[var(--accent-5)] transition-all hover:bg-[var(--accent-5)]/10"
                   >
                     Retry failed
                   </button>
@@ -830,7 +886,7 @@ export default function DownloaderPanel({
                       <button
                         type="button"
                         onClick={() => void handleStartDownload(job.url)}
-                        className="text-[0.72rem] text-[var(--accent-5)] transition-colors hover:text-[var(--accent-5)]/80"
+                        className="rounded-lg border border-[var(--accent-5)]/30 px-3 py-1 text-[0.72rem] text-[var(--accent-5)] transition-all hover:bg-[var(--accent-5)]/10"
                       >
                         Retry
                       </button>
