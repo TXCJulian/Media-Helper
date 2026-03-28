@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from yt_dlp import YoutubeDL
 from yt_dlp import version as yt_dlp_version
@@ -24,6 +24,7 @@ from app.hwaccel import resolve_video_encoder
 logger = logging.getLogger(__name__)
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _ACTIVE_STATUSES = {"queued", "downloading", "processing"}
 _STATUS_MAP = {
     "pending": "queued",
@@ -155,8 +156,6 @@ def _safe_prefix(prefix: Any) -> str:
 def _format_speed(value: Any) -> str | None:
     if value is None:
         return None
-    if isinstance(value, str):
-        return value.strip() or None
     try:
         speed = float(value)
     except (TypeError, ValueError):
@@ -174,9 +173,6 @@ def _format_speed(value: Any) -> str | None:
 def _format_eta(value: Any) -> str | None:
     if value is None:
         return None
-    if isinstance(value, str):
-        stripped = value.strip()
-        return stripped or None
     try:
         seconds = int(value)
     except (TypeError, ValueError):
@@ -186,6 +182,22 @@ def _format_eta(value: Any) -> str | None:
     if hours:
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
+
+
+def _compute_progress(data: dict[str, Any]) -> float:
+    """Extract progress percentage from yt-dlp hook data, preferring byte counts."""
+    downloaded = data.get("downloaded_bytes")
+    total = data.get("total_bytes") or data.get("total_bytes_estimate")
+    if downloaded is not None and total:
+        try:
+            return min(float(downloaded) / float(total) * 100.0, 100.0)
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+    percent_raw = str(data.get("_percent_str", "0")).replace("%", "").replace(",", ".").strip()
+    try:
+        return float(percent_raw)
+    except ValueError:
+        return 0.0
 
 
 def _format_size_bytes(value: Any) -> str | None:
@@ -417,6 +429,7 @@ def get_ydl_opts(options: dict[str, Any]) -> dict[str, Any]:
     ydl_opts: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
+        "overwrites": True,
         "progress_hooks": [],
         "postprocessor_hooks": [],
         "outtmpl": outtmpl,
@@ -436,15 +449,17 @@ def get_ydl_opts(options: dict[str, Any]) -> dict[str, Any]:
 
     if media_type == "audio":
         ydl_opts["format"] = _audio_format_selector(quality)
-        if requested_format in _AUDIO_FORMATS and requested_format != "auto":
-            pp: dict[str, Any] = {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": requested_format,
-            }
-            kbps = _AUDIO_QUALITY_KBPS.get(quality.lower())
-            if kbps:
-                pp["preferredquality"] = str(kbps)
-            ydl_opts["postprocessors"].append(pp)
+        pp: dict[str, Any] = {"key": "FFmpegExtractAudio"}
+        if requested_format in _AUDIO_FORMATS:
+            pp["preferredcodec"] = requested_format
+        else:
+            # Auto format: let ffmpeg pick best audio codec, ensures proper
+            # audio extension instead of keeping video containers like .mp4/.webm
+            pp["preferredcodec"] = "best"
+        kbps = _AUDIO_QUALITY_KBPS.get(quality.lower())
+        if kbps:
+            pp["preferredquality"] = str(kbps)
+        ydl_opts["postprocessors"].append(pp)
     elif media_type == "thumbnail":
         ydl_opts["format"] = "best"
         ydl_opts["skip_download"] = True
@@ -497,20 +512,43 @@ def _job_payload(meta: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _extract_final_path(info: dict[str, Any]) -> str | None:
+def _extract_final_path(info: Mapping[str, Any]) -> str | None:
     filepath = info.get("filepath") or info.get("_filename")
-    if filepath:
+    if filepath and os.path.isfile(str(filepath)):
         return str(filepath)
     requested = info.get("requested_downloads") or []
     if requested and isinstance(requested, list):
         first = requested[0] or {}
         candidate = first.get("filepath") or first.get("_filename")
-        if candidate:
+        if candidate and os.path.isfile(str(candidate)):
             return str(candidate)
     return None
 
 
-def _extract_final_size(info: dict[str, Any], filepath: str | None) -> str | None:
+def _extract_thumbnail_path(info: Mapping[str, Any], outtmpl: str) -> str | None:
+    """Find the written thumbnail file from yt-dlp info dict."""
+    thumbnails = info.get("thumbnails") or []
+    for thumb in reversed(thumbnails):
+        fp = thumb.get("filepath")
+        if fp and os.path.isfile(str(fp)):
+            return str(fp)
+    # Fallback: scan the output directory for an image matching the title
+    title = info.get("title")
+    if not title:
+        return None
+    base_dir = os.path.dirname(outtmpl)
+    if not os.path.isdir(base_dir):
+        return None
+    safe_title = _safe_prefix(title)
+    for ext in ("jpg", "jpeg", "png", "webp"):
+        for candidate_name in (f"{title}.{ext}", f"{safe_title}.{ext}"):
+            candidate = os.path.join(base_dir, candidate_name)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+
+def _extract_final_size(info: Mapping[str, Any], filepath: str | None) -> str | None:
     if filepath and os.path.isfile(filepath):
         try:
             return _format_size_bytes(os.path.getsize(filepath))
@@ -562,17 +600,13 @@ class DownloadManager:
         self._raise_if_cancelled()
         status = _normalize_status(data.get("status"))
         if status == "downloading":
-            percent_raw = str(data.get("_percent_str", "0")).replace("%", "").replace(",", ".").strip()
-            try:
-                progress = float(percent_raw)
-            except ValueError:
-                progress = 0.0
+            progress = _compute_progress(data)
             filename = _display_name(data.get("filename"))
             meta = self._save_meta(
                 status="downloading",
                 progress=progress,
-                speed=_format_speed(data.get("_speed_str") or data.get("speed")),
-                eta=_format_eta(data.get("_eta_str") or data.get("eta")),
+                speed=_format_speed(data.get("speed")),
+                eta=_format_eta(data.get("eta")),
                 filename=filename,
                 error=None,
             )
@@ -615,15 +649,21 @@ class DownloadManager:
             with YoutubeDL(ydl_opts) as ydl:  # type: ignore[reportArgumentType]
                 info = ydl.extract_info(self.url, download=True)
 
-            final_path = _extract_final_path(info if isinstance(info, dict) else {})
+            info_dict = info if isinstance(info, dict) else {}
+            media_type = str(self.options.get("type") or "video").lower()
+            if media_type == "thumbnail":
+                final_path = _extract_thumbnail_path(info_dict, ydl_opts.get("outtmpl", ""))
+            else:
+                final_path = _extract_final_path(info_dict)
             meta = self._save_meta(
                 status="done",
                 progress=100.0,
                 speed=None,
                 eta=None,
                 filename=_display_name(final_path) or self._load_meta().get("filename"),
-                size=_extract_final_size(info if isinstance(info, dict) else {}, final_path),
+                size=_extract_final_size(info_dict, final_path),
                 error=None,
+                output_path=final_path,
             )
             self._emit("done", _job_payload(meta))
         except DownloadCancelled as exc:
@@ -640,7 +680,7 @@ class DownloadManager:
             logger.error("Download failed for job %s: %s", self.job_id, exc, exc_info=True)
             meta = self._save_meta(
                 status="error",
-                error=str(exc),
+                error=_ANSI_RE.sub("", str(exc)),
                 speed=None,
                 eta=None,
             )

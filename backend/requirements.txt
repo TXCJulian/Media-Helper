@@ -6,3 +6,4 @@ watchdog>=6.0.0,<7.0.0
 mutagen>=1.48.1,<2.0.0
 bcrypt>=5.0.0,<6.0.0
 itsdangerous>=2.2.0,<3.0.0
+yt-dlp>=2024.0.0

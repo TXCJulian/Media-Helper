@@ -203,7 +203,10 @@ def test_get_ydl_opts_audio_auto_format_uses_best(downloader_env):
 
     assert opts["format"] == "bestaudio/best"
     pp_list = opts.get("postprocessors", [])
-    assert not any(pp["key"] == "FFmpegExtractAudio" for pp in pp_list)
+    # Auto audio should still extract audio to get a proper audio extension
+    extract = [pp for pp in pp_list if pp["key"] == "FFmpegExtractAudio"]
+    assert len(extract) == 1
+    assert extract[0]["preferredcodec"] == "best"
 
 
 def test_get_ydl_opts_thumbnail_mapping(downloader_env):
