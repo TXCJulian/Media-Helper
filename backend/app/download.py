@@ -454,11 +454,13 @@ def get_ydl_opts(options: dict[str, Any]) -> dict[str, Any]:
     if media_type == "audio":
         ydl_opts["format"] = _audio_format_selector(quality)
         pp: dict[str, Any] = {"key": "FFmpegExtractAudio"}
-        if requested_format in _AUDIO_FORMATS:
+        # Codec takes priority; fall back to format for backward compat
+        audio_codec = codec if codec != "auto" and codec in _AUDIO_FORMATS else None
+        if audio_codec:
+            pp["preferredcodec"] = audio_codec
+        elif requested_format in _AUDIO_FORMATS:
             pp["preferredcodec"] = requested_format
         else:
-            # Auto format: let ffmpeg pick best audio codec, ensures proper
-            # audio extension instead of keeping video containers like .mp4/.webm
             pp["preferredcodec"] = "best"
         kbps = _AUDIO_QUALITY_KBPS.get(quality.lower())
         if kbps:
@@ -476,10 +478,12 @@ def get_ydl_opts(options: dict[str, Any]) -> dict[str, Any]:
     else:
         # Video
         ydl_opts["format"] = _video_format_selector(quality)
-        if codec != "auto" and requested_format in _VIDEO_FORMATS:
+        if codec != "auto":
+            # Explicit codec requested — need a video convertor
+            container = requested_format if requested_format in _VIDEO_FORMATS else "mp4"
             ydl_opts["postprocessors"].append({
                 "key": "FFmpegVideoConvertor",
-                "prefformat": requested_format,
+                "prefformat": container,
             })
             pp_args = _build_postprocessor_args(options)
             if pp_args:
@@ -586,7 +590,7 @@ class DownloadManager:
     def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
         if self.progress_queue is not None:
             try:
-                self.progress_queue.put((event_type, payload), timeout=10)
+                self.progress_queue.put_nowait((event_type, payload))
             except Exception:
                 pass  # Queue full / client gone — state is persisted in metadata
 
