@@ -48,7 +48,7 @@ def tmp_tvshow_pattern_dir(tmp_media_dir):
 
 @pytest.fixture
 def tmp_tvshow_mixed_dir(tmp_media_dir):
-    """Create a TV show directory with mixed filenames — some with titles, some pattern-only."""
+    """Create a TV show directory with mixed filenames - some with titles, some pattern-only."""
     show_dir = tmp_media_dir / "TV Shows" / "MixedShow" / "Season 01"
     show_dir.mkdir(parents=True)
 

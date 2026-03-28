@@ -208,7 +208,7 @@ def detect_gpu() -> None:
 
         if config.HWACCEL and config.HWACCEL != "off":
             logger.warning(
-                "Unrecognized HWACCEL value '%s' — ignoring, proceeding with auto-detection",
+                "Unrecognized HWACCEL value '%s' - ignoring, proceeding with auto-detection",
                 config.HWACCEL,
             )
 
@@ -225,7 +225,7 @@ def detect_gpu() -> None:
                 # Verify with a test encode
                 if _probe_encoder(min_enc, backend=be):
                     _backend = be
-                    # Probe each encoder individually — some (e.g. vp9_qsv)
+                    # Probe each encoder individually - some (e.g. vp9_qsv)
                     # are reported as available but fail on actual hardware.
                     be_encoders = _BACKEND_ENCODERS.get(be, set())
                     candidates = _available_encoders & be_encoders
@@ -339,7 +339,7 @@ def build_video_encode_args(
     encoder = resolve_video_encoder(cpu_encoder)
     args: list[str] = ["-c:v", encoder]
 
-    # CPU path — pass through original args
+    # CPU path - pass through original args
     if _backend == "off" or encoder == cpu_encoder:
         if bitrate:
             args += ["-b:v", bitrate]
@@ -352,7 +352,7 @@ def build_video_encode_args(
             args += ["-pix_fmt", pix_fmt]
         return args
 
-    # GPU path — translate quality params
+    # GPU path - translate quality params
     params = _QUALITY_PARAMS.get(_backend, {})
 
     if bitrate:

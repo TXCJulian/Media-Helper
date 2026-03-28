@@ -1,4 +1,4 @@
-"""Tests for app.hwaccel — GPU hardware acceleration detection and arg building."""
+"""Tests for app.hwaccel - GPU hardware acceleration detection and arg building."""
 
 from unittest.mock import patch
 import subprocess
@@ -234,7 +234,7 @@ class TestResolveVideoEncoder:
         assert hwaccel.resolve_video_encoder("libvpx-vp9") == "vp9_qsv"
 
     def test_nvidia_no_vp9(self):
-        """NVIDIA doesn't have VP9 encoder — should fall back to CPU."""
+        """NVIDIA doesn't have VP9 encoder - should fall back to CPU."""
         hwaccel = _reload_hwaccel("")
         with patch("app.hwaccel.subprocess.run") as mock_run:
             mock_run.side_effect = _make_run_side_effect(_NVENC_ENCODERS_OUTPUT)

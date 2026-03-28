@@ -55,31 +55,31 @@ docker compose -f deploy.yml up -d      # Production (pre-built images)
 
 ### Frontend (React 19, TypeScript, Vite, Tailwind CSS 4)
 
-- **`src/App.tsx`** — Root component managing per-panel state (logs, errors, loading). Simple view navigation: Landing → EpisodePanel/MusicPanel/LyricsPanel/CutterPanel.
-- **`src/lib/api.ts`** — HTTP utilities (`fetchJson`, `postForm`) with timeout and error extraction.
-- **`src/lib/sse.ts`** — Manual SSE parser using fetch + AbortController (not EventSource, because POST bodies are needed). Events: `progress`, `error_msg`, `done`.
-- **`src/components/PanelLayout.tsx`** — Shared layout wrapper for all panels (back button, title, glassmorphism).
-- **`src/components/ui/`** — Reusable form components: `DirectorySelect` (keyboard-navigable dropdown), `ToggleSwitch`, `SegmentedControl`, `FormSection`.
-- **`src/hooks/useDebounce.ts`** — 500ms debounce for search inputs to reduce API calls.
-- **`src/types.ts`** — Shared TypeScript interfaces for all form state and API types.
+- **`src/App.tsx`** - Root component managing per-panel state (logs, errors, loading). Simple view navigation: Landing → EpisodePanel/MusicPanel/LyricsPanel/CutterPanel.
+- **`src/lib/api.ts`** - HTTP utilities (`fetchJson`, `postForm`) with timeout and error extraction.
+- **`src/lib/sse.ts`** - Manual SSE parser using fetch + AbortController (not EventSource, because POST bodies are needed). Events: `progress`, `error_msg`, `done`.
+- **`src/components/PanelLayout.tsx`** - Shared layout wrapper for all panels (back button, title, glassmorphism).
+- **`src/components/ui/`** - Reusable form components: `DirectorySelect` (keyboard-navigable dropdown), `ToggleSwitch`, `SegmentedControl`, `FormSection`.
+- **`src/hooks/useDebounce.ts`** - 500ms debounce for search inputs to reduce API calls.
+- **`src/types.ts`** - Shared TypeScript interfaces for all form state and API types.
 
-State management is simple prop drilling from App.tsx — no external state library.
+State management is simple prop drilling from App.tsx - no external state library.
 
 ### Infrastructure
 
-- **Nginx** (`frontend/nginx-app.conf`) — Reverse proxy routes `/rename/`, `/directories/`, `/config`, `/health`, `/transcribe/`, `/cutter/` to backend. SSE routes have buffering disabled and 1800s timeout. 50 GB upload limit.
-- **Docker Compose** — Bridge network `renamer-network`. Backend uses Jellyfin's pre-built ffmpeg7 (amd64) or standard ffmpeg (ARM). Volumes: media (`/media:rw`), `cutter-jobs` (persistent job state).
-- **`deploy.yml`** — Production variant pulling pre-built images from Docker Hub (`bosscock/media-renamer:backend`/`:frontend`).
+- **Nginx** (`frontend/nginx-app.conf`) - Reverse proxy routes `/rename/`, `/directories/`, `/config`, `/health`, `/transcribe/`, `/cutter/` to backend. SSE routes have buffering disabled and 1800s timeout. 50 GB upload limit.
+- **Docker Compose** - Bridge network `renamer-network`. Backend uses Jellyfin's pre-built ffmpeg7 (amd64) or standard ffmpeg (ARM). Volumes: media (`/media:rw`), `cutter-jobs` (persistent job state).
+- **`deploy.yml`** - Production variant pulling pre-built images from Docker Hub (`bosscock/media-renamer:backend`/`:frontend`).
 
 ## Tests
 
-- **Backend**: `backend/tests/` — pytest with fixtures in `conftest.py`. Uses monkeypatching for env vars with module reloads. Covers routes, directory scanning, path validation, episode/music renaming, cutter operations, hardware acceleration.
-- **Frontend**: `frontend/src/__tests__/` — Vitest with jsdom. Covers API utilities, hooks, codec compatibility, cutter file IDs, media player.
+- **Backend**: `backend/tests/` - pytest with fixtures in `conftest.py`. Uses monkeypatching for env vars with module reloads. Covers routes, directory scanning, path validation, episode/music renaming, cutter operations, hardware acceleration.
+- **Frontend**: `frontend/src/__tests__/` - Vitest with jsdom. Covers API utilities, hooks, codec compatibility, cutter file IDs, media player.
 
 ## Code Style
 
 - **Frontend**: Prettier with no semicolons, single quotes, 100-char width. Tailwind class sorting via `prettier-plugin-tailwindcss`.
-- **Backend**: Ruff for linting (no explicit config file — uses defaults).
+- **Backend**: Ruff for linting (no explicit config file - uses defaults).
 - **Path alias**: `@` maps to `src/` (configured in `vite.config.ts` and `tsconfig.app.json`).
 - **Node version**: `^20.19.0 || >=22.12.0` (enforced in `package.json` engines).
 
@@ -87,17 +87,17 @@ State management is simple prop drilling from App.tsx — no external state libr
 
 Backend reads from `backend/dependencies/.env` (see `.env.example`):
 
-- `TMDB_API_KEY` — Required for episode renaming
-- `BASE_PATH` / `BASE_PATHS` — Media root(s), supports multiple comma-separated paths
-- `TVSHOW_FOLDER_NAME` / `MUSIC_FOLDER_NAME` — Subdirectory names under base path
-- `ENABLED_FEATURES` — Comma-separated: `episodes,music,lyrics,cutter`
-- `TRANSCRIBER_URL` — Optional, enables lyrics feature
-- `ALLOWED_ORIGINS` — CORS origins
-- `HWACCEL` — GPU acceleration: `off` or auto-detect (default)
-- `VAAPI_DEVICE` — Override VAAPI render device path
-- `CUTTER_JOB_TTL` — Job expiry in seconds (default 86400 / 24h)
-- `CUTTER_MAX_DIRECT_REMUX_BYTES` — Max file size for direct remux
-- `VALID_CUTTER_EXT` — Allowed file extensions for cutter
+- `TMDB_API_KEY` - Required for episode renaming
+- `BASE_PATH` / `BASE_PATHS` - Media root(s), supports multiple comma-separated paths
+- `TVSHOW_FOLDER_NAME` / `MUSIC_FOLDER_NAME` - Subdirectory names under base path
+- `ENABLED_FEATURES` - Comma-separated: `episodes,music,lyrics,cutter`
+- `TRANSCRIBER_URL` - Optional, enables lyrics feature
+- `ALLOWED_ORIGINS` - CORS origins
+- `HWACCEL` - GPU acceleration: `off` or auto-detect (default)
+- `VAAPI_DEVICE` - Override VAAPI render device path
+- `CUTTER_JOB_TTL` - Job expiry in seconds (default 86400 / 24h)
+- `CUTTER_MAX_DIRECT_REMUX_BYTES` - Max file size for direct remux
+- `VALID_CUTTER_EXT` - Allowed file extensions for cutter
 
 ## Key Patterns
 
