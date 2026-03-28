@@ -92,7 +92,7 @@ export default function CutterPanel({
   // Shared state
   const { form, directories, search } = persisted
 
-  // Active source state — derives from whichever source is selected
+  // Active source state - derives from whichever source is selected
   const sourceKey = form.source === 'server' ? 'serverState' : 'uploadState'
   const { probe, peaks, filePath, fileId, thumbnailUrl, files, jobId, outputFiles, isLoadingFile } =
     persisted[sourceKey]
@@ -143,7 +143,7 @@ export default function CutterPanel({
     [setPersisted],
   )
 
-  // Transient state — resets on navigation (that's fine)
+  // Transient state - resets on navigation (that's fine)
   const [isLoadingDirs, setIsLoadingDirs] = useState(false)
   const [isLoadingFiles, setIsLoadingFiles] = useState(false)
   const [isCutting, setIsCutting] = useState(false)
@@ -284,7 +284,7 @@ export default function CutterPanel({
       try {
         const probeData = await fetchProbe(path, source, jid, base)
         const isVideo = probeData.video_codec != null
-        // Skip waveform for videos — they use the thumbnail strip instead.
+        // Skip waveform for videos - they use the thumbnail strip instead.
         const peaks = isVideo ? [] : (await fetchWaveform(path, source, 800, jid, base)).peaks
         setSource({
           probe: probeData,
@@ -422,7 +422,7 @@ export default function CutterPanel({
         setPreviewAudioStreamIndex(reopenAudioStreamIndex)
       }
       setTranscodeMode(reopenTranscodeMode)
-      // Restore saved in/out points — loadFileData resets them to 0/duration
+      // Restore saved in/out points - loadFileData resets them to 0/duration
       if (settings) {
         setPersisted((prev) => ({
           form: { ...prev.form, inPoint: settings.in_point, outPoint: settings.out_point },
@@ -610,7 +610,7 @@ export default function CutterPanel({
     }
   }, [])
 
-  // Source tab switch — just update the form, state is preserved per-source
+  // Source tab switch - just update the form, state is preserved per-source
   const handleSourceChange = (source: string) => {
     setPersisted({ form: { ...form, source: source as CutterForm['source'] } })
     setUploadProgress(-1)

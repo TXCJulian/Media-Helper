@@ -59,7 +59,7 @@ def extract_episode_number(filename: str) -> int | None:
     if m:
         return int(m.group(1))
 
-    # Pattern 3: Plain number — only if it IS the entire base name
+    # Pattern 3: Plain number - only if it IS the entire base name
     m = re.fullmatch(r"(\d{1,3})", base.strip())
     if m:
         return int(m.group(1))

@@ -181,7 +181,10 @@ async def lifespan(app: FastAPI):
     # Start cutter upload cleanup task only if cutter feature is enabled
     cleanup_task = None
     if "cutter" in ENABLED_FEATURES_SET:
-        os.makedirs(CUTTER_JOBS_DIR, exist_ok=True)
+        try:
+            os.makedirs(CUTTER_JOBS_DIR, exist_ok=True)
+        except OSError as e:
+            logger.error("Cannot create cutter jobs directory %s: %s — cutter feature may fail", CUTTER_JOBS_DIR, e)
         from app.cutter import migrate_jobs
 
         migrate_jobs()
@@ -198,7 +201,10 @@ async def lifespan(app: FastAPI):
     # Start download cleanup task only if download feature is enabled
     downloader_cleanup_task = None
     if "download" in ENABLED_FEATURES_SET:
-        os.makedirs(DOWNLOADER_JOBS_DIR, exist_ok=True)
+        try:
+            os.makedirs(DOWNLOADER_JOBS_DIR, exist_ok=True)
+        except OSError as e:
+            logger.error("Cannot create downloader jobs directory %s: %s — download feature may fail", DOWNLOADER_JOBS_DIR, e)
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
             logger.error("Downloader feature requires ffmpeg and ffprobe on PATH; download jobs may fail.")
         downloader_cleanup_task = asyncio.create_task(_cleanup_downloader_jobs())
@@ -225,7 +231,7 @@ _AUTH_EXEMPT_PREFIXES = ("/auth/", "/docs", "/redoc")
 
 
 class AuthMiddleware:
-    """Pure ASGI middleware — avoids BaseHTTPMiddleware's streaming/SSE buffering issues."""
+    """Pure ASGI middleware - avoids BaseHTTPMiddleware's streaming/SSE buffering issues."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -246,12 +252,12 @@ class AuthMiddleware:
         await self.app(scope, receive, send)
 
 
-# Auth added FIRST (inner), CORS added SECOND (outer) — LIFO means CORS runs first
+# Auth added FIRST (inner), CORS added SECOND (outer) - LIFO means CORS runs first
 app.add_middleware(AuthMiddleware)
 _cors_credentials = AUTH_ENABLED and "*" not in ALLOWED_ORIGINS
 if not _cors_credentials and AUTH_ENABLED:
     logger.warning(
-        "ALLOWED_ORIGINS contains '*' but AUTH is enabled — credentials cannot be sent. "
+        "ALLOWED_ORIGINS contains '*' but AUTH is enabled - credentials cannot be sent. "
         "Set explicit origins in ALLOWED_ORIGINS for auth to work correctly."
     )
 app.add_middleware(
@@ -581,7 +587,7 @@ def start_transcription(
                 effective_format = check_existing_lyrics(filepath, output_format)
                 if effective_format is None:
                     msg_queue.put(
-                        ("progress", f"[SKIP]\t\t\t{filename} — lyrics already exist")
+                        ("progress", f"[SKIP]\t\t\t{filename} - lyrics already exist")
                     )
                     continue
             else:
@@ -897,7 +903,7 @@ def cutter_stream(
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Audio preview not ready yet — poll "
+                    "Audio preview not ready yet - poll "
                     f"/cutter/preview-status/{file_id}"
                     f"?audio_transcode_stream={audio_stream} and retry"
                 ),
@@ -926,7 +932,7 @@ def cutter_stream(
         if not master_path:
             raise HTTPException(
                 status_code=409,
-                detail="Preview not ready yet — poll /cutter/preview-status and retry",
+                detail="Preview not ready yet - poll /cutter/preview-status and retry",
             )
         # If a specific audio track is requested, extract it from the master
         if audio_stream is not None:
@@ -1052,7 +1058,7 @@ def cutter_preview_status(
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Audio-only transcode status — uses separate key, bypasses master preview check.
+    # Audio-only transcode status - uses separate key, bypasses master preview check.
     # Also kicks off the transcode if not already started, so polling alone is
     # sufficient to start the work (matches master preview behavior).
     if audio_transcode_stream is not None:
@@ -1071,7 +1077,7 @@ def cutter_preview_status(
                     f"Available: {sorted(stream_indices)}",
                 )
         except RuntimeError:
-            pass  # Probe failed — let the transcode attempt handle it
+            pass  # Probe failed - let the transcode attempt handle it
         start_background_audio_transcode(resolved, audio_transcode_stream, job_id)
         return get_audio_transcode_status(resolved, job_id, audio_transcode_stream)
 
@@ -1150,7 +1156,7 @@ async def cutter_upload(request: Request):
             detail=f"Invalid file extension '{ext}'. Allowed: {', '.join(sorted(VALID_CUTTER_EXT))}",
         )
 
-    # Create a job for this upload — mark as uploading until the stream completes
+    # Create a job for this upload - mark as uploading until the stream completes
     job_id = create_job("upload", "", filename, initial_status="uploading")
     job_dir = get_job_dir(job_id)
     input_dir = os.path.join(job_dir, "input")
@@ -1538,7 +1544,7 @@ def cutter_cut(
         for stream in probe_audio_streams:
             source_audio_bitrates[stream["index"]] = stream.get("bit_rate", 0)
 
-    # Determine output filename — use original name if no output_name given
+    # Determine output filename - use original name if no output_name given
     original_name = os.path.basename(resolved)
     original_ext = os.path.splitext(original_name)[1]  # e.g. ".mkv"
 
