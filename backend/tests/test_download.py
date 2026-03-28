@@ -47,6 +47,24 @@ def downloader_env(tmp_path, monkeypatch):
     importlib.reload(download_mod)
 
 
+def test_display_name_strips_format_ids(downloader_env):
+    download = downloader_env["download"]
+    dn = download._display_name
+
+    # Strips yt-dlp format IDs like .f401, .f137
+    assert dn("/downloads/SSIO12345.f401.mp4") == "SSIO12345.mp4"
+    assert dn("/downloads/My Video.f137.mp4") == "My Video.mp4"
+    assert dn("/downloads/Song.f251.webm") == "Song.webm"
+
+    # Leaves clean filenames untouched
+    assert dn("/downloads/SSIO12345.mp4") == "SSIO12345.mp4"
+    assert dn("/downloads/My Video.mp4") == "My Video.mp4"
+
+    # Handles None/empty
+    assert dn(None) is None
+    assert dn("") is None
+
+
 def test_create_job_initial_metadata(downloader_env):
     download = downloader_env["download"]
 
@@ -126,7 +144,8 @@ def test_get_ydl_opts_video_mapping_uses_download_root_and_encoder(downloader_en
         "split_chapters": True,
     }
 
-    with patch("app.download.resolve_video_encoder", return_value="h264_nvenc"):
+    with patch("app.download.build_video_encode_args", return_value=["-c:v", "h264_nvenc", "-cq", "23"]), \
+         patch("app.download.get_hwaccel_input_args", return_value=["-hwaccel", "cuda"]):
         opts = download.get_ydl_opts(options)
 
     assert opts["format"] == "bv*[height<=720]+ba/b[height<=720]"
@@ -138,9 +157,11 @@ def test_get_ydl_opts_video_mapping_uses_download_root_and_encoder(downloader_en
     pp_list = opts.get("postprocessors", [])
     convertor = next((pp for pp in pp_list if pp["key"] == "FFmpegVideoConvertor"), None)
     assert convertor is not None
-    assert convertor["prefformat"] == "mp4"
+    assert convertor["preferedformat"] == "mp4"
 
-    assert opts["postprocessor_args"]["FFmpegVideoConvertor+ffmpeg"] == ["-c:v", "h264_nvenc"]
+    pp_args = opts["postprocessor_args"]
+    assert pp_args["VideoConvertor+ffmpeg_o"] == ["-c:v", "h264_nvenc", "-cq", "23", "-c:a", "copy"]
+    assert pp_args["VideoConvertor+ffmpeg_i"] == ["-hwaccel", "cuda"]
 
 
 def test_get_ydl_opts_video_auto_codec_skips_postprocessors(downloader_env):
@@ -330,9 +351,9 @@ def test_download_manager_run_success_updates_metadata_and_events(downloader_env
             Path(filepath).write_bytes(b"demo")
             return {"filepath": filepath, "filesize": 4}
 
-    with patch("app.download.resolve_video_encoder", return_value="libx264"), patch(
-        "app.download.YoutubeDL", FakeYDL
-    ):
+    with patch("app.download.build_video_encode_args", return_value=["-c:v", "libx264", "-crf", "23"]), \
+         patch("app.download.get_hwaccel_input_args", return_value=[]), \
+         patch("app.download.YoutubeDL", FakeYDL):
         manager = download.DownloadManager(
             job_id,
             "https://example.com/watch?v=demo",

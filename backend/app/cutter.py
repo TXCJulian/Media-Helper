@@ -2445,7 +2445,10 @@ def cut_file(
                 cmd += [f"-c:a:{out_idx}", enc]
                 # libopus/libvorbis reject 5.1(side); remap to standard 5.1
                 if enc in ("libopus", "libvorbis"):
-                    cmd += [f"-filter:a:{out_idx}", "aformat=channel_layouts=7.1|5.1|stereo|mono"]
+                    cmd += [
+                        f"-filter:a:{out_idx}",
+                        "aformat=channel_layouts=7.1|5.1|stereo|mono",
+                    ]
                 if keep_quality:
                     br = int(bitrates.get(int(track["index"]), 0) or 0)
                     if br > 0:
@@ -2463,7 +2466,10 @@ def cut_file(
                         a_enc = _CODEC_TO_ENCODER.get(audio_codec, audio_codec)
                         cmd += ["-c:a", a_enc]
                         if a_enc in ("libopus", "libvorbis"):
-                            cmd += ["-af", "aformat=channel_layouts=7.1|5.1|stereo|mono"]
+                            cmd += [
+                                "-af",
+                                "aformat=channel_layouts=7.1|5.1|stereo|mono",
+                            ]
                     else:
                         cmd += ["-c:a", "copy"]
                 else:
@@ -3004,8 +3010,11 @@ def cleanup_old_jobs() -> None:
 def encode_file_id(source: str, path: str, job_id: str = "", base: str = "") -> str:
     """URL-safe base64 encode of 'source|job_id|base|path|hmac_signature'."""
     from app.config import SECRET_KEY
+
     payload = f"{source}|{job_id}|{base}|{path}"
-    sig = hmac.new(SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    sig = hmac.new(
+        SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
     raw = f"{payload}|{sig}"
     return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
 
@@ -3019,6 +3028,7 @@ def decode_file_id(file_id: str) -> tuple[str, str, str, str]:
     (e.g., via ``validate_path()``) to prevent directory traversal attacks.
     """
     from app.config import SECRET_KEY
+
     try:
         padding = 4 - len(file_id) % 4
         if padding != 4:
@@ -3033,7 +3043,7 @@ def decode_file_id(file_id: str) -> tuple[str, str, str, str]:
         raise ValueError("Invalid file_id format: no signature")
 
     payload = decoded[:last_pipe]
-    provided_sig = decoded[last_pipe + 1:]
+    provided_sig = decoded[last_pipe + 1 :]
 
     # Verify HMAC
     expected_sig = hmac.new(
