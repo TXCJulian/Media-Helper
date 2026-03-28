@@ -200,7 +200,7 @@ Edit the `docker-compose.yml` and adjust the following values:
 ```yaml
 environment:
   - TMDB_API_KEY=YOUR_TMDB_API_KEY_HERE
-  - ENABLED_FEATURES=episodes,music,lyrics,cutter  # Enable modules
+  - ENABLED_FEATURES=episodes,music,lyrics,cutter,download  # Enable modules
 volumes:
   - /path/to/your/media:/media:rw
 ```
@@ -235,12 +235,16 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `VALID_VIDEO_EXT` | Video file extensions (CSV) | `.mp4,.mkv,.mov,.avi` |
 | `VALID_MUSIC_EXT` | Music file extensions (CSV) | `.flac,.wav,.mp3` |
 | `TRANSCRIBER_URL` | Lyrics transcriber service URL | `http://lyric-transcriber:3334` |
-| `ENABLED_FEATURES` | Active modules (CSV) | `episodes,music,cutter` |
+| `ENABLED_FEATURES` | Active modules (CSV) | `episodes,music,cutter,download` (+ `lyrics` when `TRANSCRIBER_URL` is set) |
 | `ALLOWED_ORIGINS` | CORS allowed origins | `http://localhost:3333` |
 | `VALID_CUTTER_EXT` | Cutter file extensions (CSV) | `.mp4,.mkv,.mov,.avi,.webm,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.opus,.ogg,.aiff` |
-| `CUTTER_JOBS_DIR` | Directory for cutter job data | `/tmp/cutter-jobs` |
+| `CUTTER_JOBS_DIR` | Directory for cutter job data | `/data/cutter-jobs` |
 | `CUTTER_JOB_TTL` | Job expiry in seconds | `86400` |
 | `CUTTER_MAX_DIRECT_REMUX_BYTES` | Max file size for direct remux preview | `1073741824` (1 GB) |
+| `DOWNLOADS_DIR` | Root directory for downloaded files | `/downloads` |
+| `DOWNLOADER_JOBS_DIR` | Directory for download job metadata | `/data/download-jobs` |
+| `DOWNLOADER_JOB_TTL` | Download job expiry in seconds | `604800` (7 days) |
+| `YT_DLP_COOKIES` | Path to cookies.txt for yt-dlp (optional) | `$DOWNLOADER_JOBS_DIR/cookies.txt` |
 | `HWACCEL` | Cutter hardware acceleration mode (`off` disables; otherwise auto-detect) | auto-detect |
 | `VAAPI_DEVICE` | VAAPI render node path (used for VAAPI backend) | `/dev/dri/renderD128` |
 | `AUTH_USERNAME` | Login username (optional - auth disabled if unset) | - |

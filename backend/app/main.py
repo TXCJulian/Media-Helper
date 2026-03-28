@@ -1712,11 +1712,19 @@ def download_file_route(job_id: str):
     if meta.get("status") != "done":
         raise HTTPException(status_code=400, detail="Download not complete")
     output_path = meta.get("output_path")
-    if not output_path or not os.path.isfile(output_path):
+    if not output_path:
+        raise HTTPException(status_code=404, detail="Output file not found")
+
+    resolved = os.path.realpath(output_path)
+    allowed_roots = [os.path.realpath(DOWNLOADS_DIR)] + [os.path.realpath(p) for p in BASE_PATHS]
+    if not any(resolved.startswith(root + os.sep) or resolved == root for root in allowed_roots):
+        raise HTTPException(status_code=403, detail="Output file path not allowed")
+
+    if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="Output file not found")
     return FileResponse(
-        output_path,
-        filename=os.path.basename(output_path),
+        resolved,
+        filename=os.path.basename(resolved),
         media_type="application/octet-stream",
     )
 
@@ -1797,6 +1805,8 @@ def download_start(
         options = json.loads(options_json)
     except json.JSONDecodeError:
         raise HTTPException(status_code=422, detail="Invalid options JSON")
+    if not isinstance(options, dict):
+        raise HTTPException(status_code=422, detail="Options must be a JSON object")
 
     job_id = create_downloader_job(url, options)
 
