@@ -151,19 +151,20 @@ function mergeJob(prevJobs: DownloadJob[], patch: Partial<DownloadJob> | null): 
   const idx = prevJobs.findIndex((job) => job.job_id === patch.job_id)
   if (idx === -1) return [nextJob, ...prevJobs]
 
+  const prev = prevJobs[idx]!
   const merged: DownloadJob = {
-    ...prevJobs[idx],
+    ...prev,
     ...patch,
-    progress: typeof patch.progress === 'number' ? patch.progress : (prevJobs[idx]!.progress ?? 0),
-    speed: patch.speed ?? prevJobs[idx]!.speed,
-    eta: patch.eta ?? prevJobs[idx]!.eta,
-    filename: patch.filename ?? prevJobs[idx]!.filename,
-    error: patch.error ?? prevJobs[idx]!.error,
-    size: patch.size ?? prevJobs[idx]!.size,
+    progress: typeof patch.progress === 'number' ? patch.progress : (prev.progress ?? 0),
+    speed: 'speed' in patch ? (patch.speed ?? null) : prev.speed,
+    eta: 'eta' in patch ? (patch.eta ?? null) : prev.eta,
+    filename: 'filename' in patch ? (patch.filename ?? null) : prev.filename,
+    error: 'error' in patch ? (patch.error ?? null) : prev.error,
+    size: 'size' in patch ? (patch.size ?? null) : prev.size,
     job_id: patch.job_id,
-    url: patch.url ?? prevJobs[idx]!.url,
-    status: patch.status ?? prevJobs[idx]!.status,
-    created_at: patch.created_at ?? prevJobs[idx]!.created_at,
+    url: patch.url ?? prev.url,
+    status: patch.status ?? prev.status,
+    created_at: patch.created_at ?? prev.created_at,
   }
 
   return prevJobs.map((job, jobIdx) => (jobIdx === idx ? merged : job))
@@ -285,10 +286,37 @@ export default function DownloaderPanel({
     [onLog],
   )
 
-  const trackSSE = useCallback(
-    (abort: () => void) => {
+  const startTrackedSSE = useCallback(
+    (
+      start: (
+        callbacks: {
+          onProgress: (data: string) => void
+          onError: (data: string) => void
+          onDone: (data: string) => void
+        },
+      ) => () => void,
+      callbacks: {
+        onProgress: (data: string) => void
+        onError: (data: string) => void
+        onDone: (data: string) => void
+      },
+    ) => {
+      let abort: (() => void) | null = null
+      const cleanup = () => {
+        if (abort) sseAbortRef.current.delete(abort)
+      }
+      abort = start({
+        onProgress: callbacks.onProgress,
+        onError: (data) => {
+          cleanup()
+          callbacks.onError(data)
+        },
+        onDone: (data) => {
+          cleanup()
+          callbacks.onDone(data)
+        },
+      })
       sseAbortRef.current.add(abort)
-      return abort
     },
     [],
   )
@@ -341,14 +369,14 @@ export default function DownloaderPanel({
         onError(err instanceof Error ? err.message : 'Failed to create download job')
       }
     } else {
-      trackSSE(postDownload({ ...form, url }, sseCallbacks))
+      startTrackedSSE((cb) => postDownload({ ...form, url }, cb), sseCallbacks)
     }
 
     if (!urlOverride) setForm((prev) => ({ ...prev, url: '' }))
   }
 
   const handleStartQueuedJob = (jobId: string) => {
-    trackSSE(startDownloadJob(jobId, sseCallbacks))
+    startTrackedSSE((cb) => startDownloadJob(jobId, cb), sseCallbacks)
   }
 
   const handleBulkSubmit = () => {

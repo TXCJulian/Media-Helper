@@ -152,13 +152,14 @@ describe('downloader APIs', () => {
       split_chapters: true,
     }
 
+    const { url, ...options } = form
     const abort = postDownload(form, callbacks)
 
     expect(mockConnectSSE).toHaveBeenCalledWith(
       '/download/start',
       {
-        url: form.url,
-        options: JSON.stringify(form),
+        url,
+        options: JSON.stringify(options),
       },
       callbacks,
     )
