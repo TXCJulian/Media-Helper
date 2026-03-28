@@ -541,10 +541,10 @@ def _extract_thumbnail_path(info: Mapping[str, Any], outtmpl: str) -> str | None
         return None
     safe_title = _safe_prefix(title)
     for ext in ("jpg", "jpeg", "png", "webp"):
-        for candidate_name in (f"{title}.{ext}", f"{safe_title}.{ext}"):
-            candidate = os.path.join(base_dir, candidate_name)
-            if os.path.isfile(candidate):
-                return candidate
+        candidate_name = f"{safe_title}.{ext}"
+        candidate = os.path.join(base_dir, candidate_name)
+        if os.path.isfile(candidate):
+            return candidate
     return None
 
 

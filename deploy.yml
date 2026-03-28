@@ -23,7 +23,7 @@ services:
       #- DOWNLOADER_JOBS_DIR=/ #directory where download job data is stored, defaults to /data/download-jobs (should be a volume mount for persistence)
       #- DOWNLOADER_JOB_TTL=604800 #time in seconds after which download jobs are automatically deleted, defaults to 604800 (7 days)
       #- DOWNLOADS_DIR=/ #root directory where downloaded files are saved, defaults to /downloads
-      #- YT_DLP_COOKIES=/ #path to the global cookies.txt file, defaults to /data/cookies.txt
+      #- YT_DLP_COOKIES=/ #path to the global cookies.txt file, defaults to /data/download-jobs/cookies.txt
       #- HWACCEL=off  # Uncomment to disable GPU-accelerated video encoding
       #- VAAPI_DEVICE=/dev/dri/renderD128  # Uncomment to override VAAPI device path defaults to /dev/dri/renderD128
     # --- GPU passthrough (uncomment ONE section matching your hardware) ---

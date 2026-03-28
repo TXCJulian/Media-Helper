@@ -33,7 +33,6 @@ from app.config import (
     ENABLED_FEATURES_SET,
     AUTH_ENABLED,
     DOWNLOADER_JOBS_DIR,
-    DOWNLOADER_JOB_TTL,
 )
 from app.auth import verify_login, create_session_cookie, clear_session_cookie, check_session
 from app.rename_episodes import rename_episodes
@@ -200,6 +199,8 @@ async def lifespan(app: FastAPI):
     downloader_cleanup_task = None
     if "download" in ENABLED_FEATURES_SET:
         os.makedirs(DOWNLOADER_JOBS_DIR, exist_ok=True)
+        if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+            logger.error("Downloader feature requires ffmpeg and ffprobe on PATH; download jobs may fail.")
         downloader_cleanup_task = asyncio.create_task(_cleanup_downloader_jobs())
 
     yield
@@ -1717,18 +1718,8 @@ def download_delete_job_route(job_id: str):
     return {"status": "deleted"}
 
 
-@app.post("/download/start")
-def download_start(
-    url: str = Form(..., max_length=1000),
-    options_json: str = Form("{}", alias="options", max_length=5000),
-):
-    require_feature("download")
-    try:
-        options = json.loads(options_json)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=422, detail="Invalid options JSON")
-
-    job_id = create_downloader_job(url, options)
+def _download_sse_response(job_id: str, url: str, options: dict) -> StreamingResponse:
+    """Start a download job in a background thread and return an SSE stream."""
     msg_queue = queue.Queue()
 
     def run_download():
@@ -1782,6 +1773,42 @@ def download_start(
     )
 
 
+@app.post("/download/start")
+def download_start(
+    url: str = Form(..., max_length=1000),
+    options_json: str = Form("{}", alias="options", max_length=5000),
+):
+    require_feature("download")
+    try:
+        options = json.loads(options_json)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=422, detail="Invalid options JSON")
+
+    job_id = create_downloader_job(url, options)
+
+    auto_start = str(options.get("auto_start", True)).lower() not in ("false", "0", "no")
+    if not auto_start:
+        meta = load_downloader_job_metadata(job_id)
+        return {"job_id": job_id, **(meta or {})}
+
+    return _download_sse_response(job_id, url, options)
+
+
+@app.post("/download/jobs/{job_id}/start")
+def download_start_job(job_id: str):
+    """Start a previously queued download job."""
+    require_feature("download")
+    meta = load_downloader_job_metadata(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if meta.get("status") != "queued":
+        raise HTTPException(status_code=409, detail="Job is not in queued state")
+
+    url = meta.get("url", "")
+    options = meta.get("options", {})
+    return _download_sse_response(job_id, url, options)
+
+
 @app.post("/download/cookies")
 async def download_upload_cookies(file: UploadFile = File(...)):
     require_feature("download")
@@ -1793,10 +1820,12 @@ async def download_upload_cookies(file: UploadFile = File(...)):
     if len(content) > 1024 * 1024:
         raise HTTPException(status_code=400, detail="Cookie file too large (max 1 MB)")
 
-    os.makedirs(os.path.dirname(cookie_path), exist_ok=True)
+    dir_name = os.path.dirname(cookie_path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
     with open(cookie_path, "wb") as f:
         f.write(content)
-    return {"status": "ok", "path": cookie_path}
+    return {"status": "ok"}
 
 
 @app.delete("/download/cookies")

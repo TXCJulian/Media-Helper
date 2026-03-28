@@ -56,7 +56,7 @@ VALID_CUTTER_EXT = set(
         ".mp4,.mkv,.mov,.avi,.webm,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.thd,.opus,.ogg,.aiff",
     ).split(",")
 )
-CUTTER_JOBS_DIR = os.getenv("CUTTER_JOBS_DIR", "/tmp/cutter-jobs")
+CUTTER_JOBS_DIR = os.getenv("CUTTER_JOBS_DIR", "/data/cutter-jobs")
 CUTTER_JOB_TTL = int(os.getenv("CUTTER_JOB_TTL", "86400"))
 CUTTER_MAX_DIRECT_REMUX_BYTES = int(
     os.getenv("CUTTER_MAX_DIRECT_REMUX_BYTES", str(1024 * 1024 * 1024))
@@ -67,7 +67,7 @@ VAAPI_DEVICE = os.getenv("VAAPI_DEVICE", "/dev/dri/renderD128")
 # --- Downloader ---
 DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "/downloads")
 YT_DLP_COOKIES = os.getenv("YT_DLP_COOKIES", "")
-DOWNLOADER_JOBS_DIR = os.getenv("DOWNLOADER_JOBS_DIR", "/tmp/download-jobs")
+DOWNLOADER_JOBS_DIR = os.getenv("DOWNLOADER_JOBS_DIR", "/data/download-jobs")
 DOWNLOADER_JOB_TTL = int(os.getenv("DOWNLOADER_JOB_TTL", "604800"))
 
 _VALID_FEATURES = {"episodes", "music", "lyrics", "cutter", "download"}

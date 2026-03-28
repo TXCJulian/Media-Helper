@@ -570,6 +570,7 @@ class TestCutterValidation:
             },
         )
         assert response.status_code == 422
+        assert "detail" in response.json()
 
 
 def test_upload_cookies_rejects_oversized_file(client):

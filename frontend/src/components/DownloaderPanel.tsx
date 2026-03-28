@@ -4,6 +4,7 @@ import DirectorySelect from './ui/DirectorySelect'
 import StyledSelect from './ui/StyledSelect'
 import ToggleSwitch from './ui/ToggleSwitch'
 import {
+  createDownloadJob,
   deleteCookies,
   deleteDownloadJob,
   fetchDownloadJobs,
@@ -12,6 +13,7 @@ import {
   getDownloaderFileUrl,
   postCookies,
   postDownload,
+  startDownloadJob,
 } from '@/lib/api'
 import type { DirectoryEntry, DownloadForm, DownloadJob, DownloaderStatus } from '@/types'
 
@@ -196,9 +198,10 @@ export default function DownloaderPanel({
   const logRef = useRef(log)
   logRef.current = log
 
-  // Persist settings on every form change (except url)
+  // Persist settings on form change (except url), debounced
   useEffect(() => {
-    saveSettings(form)
+    const id = window.setTimeout(() => saveSettings(form), 300)
+    return () => window.clearTimeout(id)
   }, [form])
 
   const refreshStatus = useCallback(async () => {
@@ -274,6 +277,26 @@ export default function DownloaderPanel({
     [onLog],
   )
 
+  const sseCallbacks = useMemo(
+    () => ({
+      onProgress: (data: string) => applyEventPatch(data),
+      onError: (data: string) => {
+        const patch = parseDownloadEvent(data)
+        if (patch) {
+          setJobs((prev) => mergeJob(prev, patch))
+          if (patch.error) onError(patch.error)
+          return
+        }
+        onError(data)
+      },
+      onDone: (data: string) => {
+        applyEventPatch(data)
+        refreshJobs().catch(() => {})
+      },
+    }),
+    [applyEventPatch, onError, refreshJobs],
+  )
+
   const handleStartDownload = async (urlOverride?: string) => {
     const url = (urlOverride ?? form.url).trim()
     if (!url) {
@@ -285,27 +308,22 @@ export default function DownloaderPanel({
     onError('')
     onLog([...logRef.current, `queued: ${url}`])
 
-    postDownload(
-      { ...form, url },
-      {
-        onProgress: (data) => applyEventPatch(data),
-        onError: (data) => {
-          const patch = parseDownloadEvent(data)
-          if (patch) {
-            setJobs((prev) => mergeJob(prev, patch))
-            if (patch.error) onError(patch.error)
-            return
-          }
-          onError(data)
-        },
-        onDone: (data) => {
-          applyEventPatch(data)
-          refreshJobs().catch(() => {})
-        },
-      },
-    )
+    if (!form.auto_start) {
+      try {
+        const job = await createDownloadJob({ ...form, url })
+        setJobs((prev) => mergeJob(prev, job))
+      } catch (err) {
+        onError(err instanceof Error ? err.message : 'Failed to create download job')
+      }
+    } else {
+      postDownload({ ...form, url }, sseCallbacks)
+    }
 
     if (!urlOverride) setForm((prev) => ({ ...prev, url: '' }))
+  }
+
+  const handleStartQueuedJob = (jobId: string) => {
+    startDownloadJob(jobId, sseCallbacks)
   }
 
   const handleBulkSubmit = () => {
@@ -621,13 +639,24 @@ export default function DownloaderPanel({
                       {job.status}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => void handleDeleteJob(job.job_id)}
-                    className="rounded-lg border border-red-500/20 px-3 py-1 text-[0.72rem] font-medium text-red-400 transition-all hover:bg-red-500/10"
-                  >
-                    Cancel
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {job.status === 'queued' && (
+                      <button
+                        type="button"
+                        onClick={() => handleStartQueuedJob(job.job_id)}
+                        className="rounded-lg border border-[var(--accent-5)]/30 px-3 py-1 text-[0.72rem] font-medium text-[var(--accent-5)] transition-all hover:bg-[var(--accent-5)]/10"
+                      >
+                        Start
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void handleDeleteJob(job.job_id)}
+                      className="rounded-lg border border-red-500/20 px-3 py-1 text-[0.72rem] font-medium text-red-400 transition-all hover:bg-red-500/10"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
                 <div className="h-1.5 overflow-hidden rounded-full bg-white/6">
                   <div

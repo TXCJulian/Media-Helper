@@ -335,6 +335,26 @@ export function postDownload(
   return connectSSE('/download/start', params, callbacks)
 }
 
+export async function createDownloadJob(
+  form: import('@/types').DownloadForm,
+): Promise<import('@/types').DownloadJob> {
+  return postForm('/download/start', {
+    url: form.url,
+    options: JSON.stringify(form),
+  })
+}
+
+export function startDownloadJob(
+  jobId: string,
+  callbacks: {
+    onProgress: (data: string) => void
+    onError: (data: string) => void
+    onDone: (data: string) => void
+  },
+): () => void {
+  return connectSSE(`/download/jobs/${encodeURIComponent(jobId)}/start`, {}, callbacks)
+}
+
 export function getDownloaderFileUrl(jobId: string): string {
   return `/download/jobs/${encodeURIComponent(jobId)}/file`
 }
