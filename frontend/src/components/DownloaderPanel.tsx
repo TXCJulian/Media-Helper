@@ -863,8 +863,15 @@ export default function DownloaderPanel({
             className="absolute inset-0 bg-black/60 backdrop-blur-sm"
             onClick={() => setIsBulkModalOpen(false)}
           />
-          <div className="glass-strong relative w-full max-w-[520px] p-6">
-            <h3 className="mb-4 text-[1.1rem] font-semibold">Bulk URL Import</h3>
+          <div
+            className="glass-strong relative w-full max-w-[520px] p-6"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="bulk-url-import-title"
+          >
+            <h3 id="bulk-url-import-title" className="mb-4 text-[1.1rem] font-semibold">
+              Bulk URL Import
+            </h3>
             <textarea
               value={bulkUrls}
               onChange={(e) => setBulkUrls(e.target.value)}

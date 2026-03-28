@@ -585,7 +585,13 @@ class DownloadManager:
 
     def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
         if self.progress_queue is not None:
-            self.progress_queue.put((event_type, payload))
+            if event_type == "progress":
+                try:
+                    self.progress_queue.put_nowait((event_type, payload))
+                except Exception:
+                    pass  # Drop progress events if queue is full
+            else:
+                self.progress_queue.put((event_type, payload))
 
     def _load_meta(self) -> dict[str, Any]:
         meta = load_job_metadata(self.job_id)
