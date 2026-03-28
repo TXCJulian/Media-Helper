@@ -436,3 +436,4 @@ nul
 # Gemini generated files
 .gemini/
 gha-creds-*.json
+GEMINI.md

@@ -9,7 +9,7 @@ interface DirectorySelectProps {
   onRefresh: () => void
   isLoading: boolean
   disabled?: boolean
-  color?: 'blue' | 'indigo' | 'rose' | 'emerald'
+  color?: 'blue' | 'indigo' | 'rose' | 'emerald' | 'amber'
   showBaseLabel?: boolean
 }
 
@@ -20,6 +20,8 @@ const focusClasses = {
   rose: 'border-[var(--accent-3)] shadow-[0_0_0_3px_var(--accent-3-glow),0_0_20px_rgba(244,114,182,0.08)]',
   emerald:
     'border-[var(--accent-4)] shadow-[0_0_0_3px_var(--accent-4-glow),0_0_20px_rgba(52,211,153,0.08)]',
+  amber:
+    'border-[var(--accent-5)] shadow-[0_0_0_3px_var(--accent-5-glow),0_0_20px_rgba(245,158,11,0.08)]',
 }
 
 const selectedTextClasses = {
@@ -27,6 +29,7 @@ const selectedTextClasses = {
   indigo: 'text-[var(--accent-2)]',
   rose: 'text-[var(--accent-3)]',
   emerald: 'text-[var(--accent-4)]',
+  amber: 'text-[var(--accent-5)]',
 }
 
 export default function DirectorySelect({

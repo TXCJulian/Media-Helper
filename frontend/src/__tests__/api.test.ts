@@ -64,7 +64,9 @@ describe('fetchJson', () => {
       }),
     )
 
-    await expect(fetchJson('/download/status')).rejects.toThrow('Expected JSON from /download/status')
+    await expect(fetchJson('/download/status')).rejects.toThrow(
+      'Expected JSON from /download/status',
+    )
   })
 })
 
@@ -94,7 +96,9 @@ describe('directory APIs', () => {
   })
 
   it('fetches media directories from the shared media endpoint', async () => {
-    mockFetch.mockResolvedValueOnce(jsonResponse({ directories: [{ path: 'Movies', base: 'media' }] }))
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ directories: [{ path: 'Movies', base: 'media' }] }),
+    )
 
     const result = await fetchMediaDirectories()
 

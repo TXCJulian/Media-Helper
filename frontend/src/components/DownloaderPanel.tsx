@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import PanelLayout from './PanelLayout'
 import DirectorySelect from './ui/DirectorySelect'
+import StyledSelect from './ui/StyledSelect'
 import ToggleSwitch from './ui/ToggleSwitch'
 import {
   deleteCookies,
@@ -8,6 +9,7 @@ import {
   fetchDownloadJobs,
   fetchDownloaderStatus,
   fetchMediaDirectories,
+  getDownloaderFileUrl,
   postCookies,
   postDownload,
 } from '@/lib/api'
@@ -135,7 +137,7 @@ function mergeJob(prevJobs: DownloadJob[], patch: Partial<DownloadJob> | null): 
     job_id: patch.job_id,
     url: patch.url ?? '',
     status: patch.status ?? 'queued',
-    progress: patch.progress ?? 0,
+    progress: typeof patch.progress === 'number' ? patch.progress : 0,
     speed: patch.speed ?? null,
     eta: patch.eta ?? null,
     filename: patch.filename ?? null,
@@ -150,6 +152,7 @@ function mergeJob(prevJobs: DownloadJob[], patch: Partial<DownloadJob> | null): 
   const merged: DownloadJob = {
     ...prevJobs[idx],
     ...patch,
+    progress: typeof patch.progress === 'number' ? patch.progress : (prevJobs[idx]!.progress ?? 0),
     speed: patch.speed ?? prevJobs[idx]!.speed,
     eta: patch.eta ?? prevJobs[idx]!.eta,
     filename: patch.filename ?? prevJobs[idx]!.filename,
@@ -158,11 +161,15 @@ function mergeJob(prevJobs: DownloadJob[], patch: Partial<DownloadJob> | null): 
     job_id: patch.job_id,
     url: patch.url ?? prevJobs[idx]!.url,
     status: patch.status ?? prevJobs[idx]!.status,
-    progress: patch.progress ?? prevJobs[idx]!.progress,
     created_at: patch.created_at ?? prevJobs[idx]!.created_at,
   }
 
   return prevJobs.map((job, jobIdx) => (jobIdx === idx ? merged : job))
+}
+
+function formatProgress(progress: unknown): string {
+  const n = typeof progress === 'number' ? progress : Number(progress) || 0
+  return n.toFixed(1)
 }
 
 export default function DownloaderPanel({
@@ -275,6 +282,7 @@ export default function DownloaderPanel({
     }
 
     setLocalError('')
+    onError('')
     onLog([...logRef.current, `queued: ${url}`])
 
     postDownload(
@@ -374,104 +382,90 @@ export default function DownloaderPanel({
 
   const qualityOptions = form.type === 'audio' ? AUDIO_QUALITY : VIDEO_QUALITY
 
-  const dropdownClass = 'input-field input-amber h-[38px] min-w-0 text-[0.82rem]'
-
   return (
     <PanelLayout title="Downloader" onBack={onBack} maxWidth="920px">
       <div className="space-y-6">
         {/* ── URL Hero ── */}
-        <div className="flex flex-col gap-3 md:flex-row">
+        <div className="flex flex-col gap-3 sm:flex-row">
           <input
             type="text"
             value={form.url}
+            placeholder="URL"
             onChange={(e) => setForm((prev) => ({ ...prev, url: e.target.value }))}
             onKeyDown={(e) => {
               if (e.key === 'Enter') void handleStartDownload()
             }}
             className="input-field input-amber flex-1"
           />
-          <button
-            type="button"
-            onClick={() => void handleStartDownload()}
-            className="btn-submit btn-amber md:w-[180px]"
-          >
-            Download
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsBulkModalOpen(true)}
-            className="rounded-[12px] border border-[var(--glass-border)] bg-[var(--bg-glass)] px-5 py-2.5 text-[0.88rem] font-medium text-[var(--text-secondary)] transition-all hover:border-[var(--glass-border-hover)] hover:bg-[var(--bg-glass-hover)] hover:text-[var(--text-primary)] md:w-[140px]"
-          >
-            Bulk Add
-          </button>
+          <div className="flex gap-2 sm:shrink-0">
+            <button
+              type="button"
+              onClick={() => void handleStartDownload()}
+              className="btn-submit btn-amber h-[42px] flex-1 !w-auto px-5 text-[0.85rem] sm:flex-none"
+            >
+              Download
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsBulkModalOpen(true)}
+              className="h-[42px] flex-1 rounded-[10px] border border-[var(--glass-border)] bg-[var(--bg-glass)] px-5 text-[0.85rem] font-medium text-[var(--text-secondary)] transition-all hover:border-[var(--glass-border-hover)] hover:bg-[var(--bg-glass-hover)] hover:text-[var(--text-primary)] sm:flex-none"
+            >
+              Bulk Add
+            </button>
+          </div>
         </div>
 
         {(localError || error) && (
-          <p className="text-[0.8rem] text-red-400">{localError || error}</p>
+          <div
+            className="flex cursor-pointer items-center justify-between rounded-lg border border-red-500/15 bg-red-500/[0.06] px-4 py-2.5"
+            onClick={() => {
+              setLocalError('')
+              onError('')
+            }}
+          >
+            <p className="text-[0.8rem] text-red-400">{localError || error}</p>
+            <span className="ml-3 shrink-0 text-[0.7rem] text-red-400/50">dismiss</span>
+          </div>
         )}
 
         {/* ── Quick Settings Row ── */}
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="min-w-[110px]">
-            <label className="field-label">Type</label>
-            <select
-              value={form.type}
-              onChange={(e) => handleTypeChange(e.target.value)}
-              className={dropdownClass}
-            >
-              <option value="video">Video</option>
-              <option value="audio">Audio</option>
-              <option value="thumbnail">Thumbnail</option>
-            </select>
-          </div>
+        <div
+          className={`grid gap-3 ${form.type === 'thumbnail' ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-4'}`}
+        >
+          <StyledSelect
+            label="Type"
+            options={[
+              { label: 'Video', value: 'video' },
+              { label: 'Audio', value: 'audio' },
+              { label: 'Thumbnail', value: 'thumbnail' },
+            ]}
+            value={form.type}
+            onChange={handleTypeChange}
+          />
 
           {form.type !== 'thumbnail' && (
-            <div className="min-w-[110px]">
-              <label className="field-label">Codec</label>
-              <select
-                value={form.codec}
-                onChange={(e) => setForm((prev) => ({ ...prev, codec: e.target.value }))}
-                className={dropdownClass}
-              >
-                {(CODEC_OPTIONS[form.type] ?? []).map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <StyledSelect
+              label="Codec"
+              options={CODEC_OPTIONS[form.type] ?? []}
+              value={form.codec}
+              onChange={(v) => setForm((prev) => ({ ...prev, codec: v }))}
+            />
           )}
 
-          <div className="min-w-[110px]">
-            <label className="field-label">Format</label>
-            <select
-              value={form.format}
-              onChange={(e) => setForm((prev) => ({ ...prev, format: e.target.value }))}
-              className={dropdownClass}
-            >
-              {(FORMAT_OPTIONS[form.type] ?? []).map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
+          <StyledSelect
+            label="Format"
+            options={FORMAT_OPTIONS[form.type] ?? []}
+            value={form.format}
+            onChange={(v) => setForm((prev) => ({ ...prev, format: v }))}
+          />
 
           {form.type !== 'thumbnail' && (
-            <div className="min-w-[110px]">
-              <label className="field-label">Quality</label>
-              <select
-                value={form.quality}
-                onChange={(e) => setForm((prev) => ({ ...prev, quality: e.target.value }))}
-                className={dropdownClass}
-              >
-                {qualityOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <StyledSelect
+              label="Quality"
+              options={qualityOptions}
+              value={form.quality}
+              onChange={(v) => setForm((prev) => ({ ...prev, quality: v }))}
+            />
           )}
         </div>
 
@@ -493,19 +487,15 @@ export default function DownloaderPanel({
           {advancedOpen && (
             <div className="border-t border-white/6 px-5 pb-5 pt-4">
               <div className="grid gap-5 md:grid-cols-2">
-                <div>
-                  <label className="field-label">Auto Start</label>
-                  <select
-                    value={form.auto_start ? 'yes' : 'no'}
-                    onChange={(e) =>
-                      setForm((prev) => ({ ...prev, auto_start: e.target.value === 'yes' }))
-                    }
-                    className={dropdownClass}
-                  >
-                    <option value="yes">Yes</option>
-                    <option value="no">No</option>
-                  </select>
-                </div>
+                <StyledSelect
+                  label="Auto Start"
+                  options={[
+                    { label: 'Yes', value: 'yes' },
+                    { label: 'No', value: 'no' },
+                  ]}
+                  value={form.auto_start ? 'yes' : 'no'}
+                  onChange={(v) => setForm((prev) => ({ ...prev, auto_start: v === 'yes' }))}
+                />
 
                 <DirectorySelect
                   color="amber"
@@ -519,6 +509,17 @@ export default function DownloaderPanel({
                   }
                   showBaseLabel={showBaseLabel}
                 />
+
+                <div>
+                  <label className="field-label">Subfolder</label>
+                  <input
+                    type="text"
+                    value={form.sub_folder}
+                    placeholder="e.g. music/albums"
+                    onChange={(e) => setForm((prev) => ({ ...prev, sub_folder: e.target.value }))}
+                    className="input-field input-amber"
+                  />
+                </div>
 
                 <div>
                   <label className="field-label">Custom Name Prefix</label>
@@ -568,58 +569,48 @@ export default function DownloaderPanel({
                   />
                 </div>
               </div>
+
+              {/* ── Cookies (inside advanced) ── */}
+              <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-white/6 pt-4">
+                <span className="text-[0.72rem] font-medium uppercase tracking-[0.1em] text-[var(--text-tertiary)]">
+                  Cookies
+                </span>
+                <label className="cursor-pointer rounded-lg border border-[var(--glass-border)] bg-[var(--bg-glass)] px-3 py-1.5 text-[0.8rem] text-[var(--text-secondary)] transition-all hover:border-[var(--glass-border-hover)] hover:text-[var(--text-primary)]">
+                  Upload cookies.txt
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept=".txt"
+                    onChange={handleCookieUpload}
+                  />
+                </label>
+                {status?.cookies_present && (
+                  <button
+                    type="button"
+                    onClick={() => void handleCookieDelete()}
+                    className="rounded-lg border border-red-500/20 px-3 py-1.5 text-[0.8rem] text-red-400 transition-all hover:bg-red-500/10"
+                  >
+                    Remove
+                  </button>
+                )}
+                <span className="text-[0.75rem] text-[var(--text-tertiary)]">
+                  {status?.cookies_present ? 'cookies.txt loaded' : 'No cookies configured'}
+                </span>
+              </div>
             </div>
           )}
         </div>
 
-        {/* ── Cookies + Bulk Actions Footer ── */}
-        <div className="flex flex-wrap items-center justify-between gap-4 rounded-[14px] border border-white/6 bg-white/[0.02] px-5 py-3">
-          <div className="flex items-center gap-3">
-            <span className="text-[0.72rem] font-medium uppercase tracking-[0.1em] text-[var(--text-tertiary)]">
-              Cookies
-            </span>
-            <label className="cursor-pointer rounded-lg border border-[var(--glass-border)] bg-[var(--bg-glass)] px-3 py-1.5 text-[0.8rem] text-[var(--text-secondary)] transition-all hover:border-[var(--glass-border-hover)] hover:text-[var(--text-primary)]">
-              Upload cookies.txt
-              <input type="file" className="hidden" accept=".txt" onChange={handleCookieUpload} />
-            </label>
-            {status?.cookies_present && (
-              <button
-                type="button"
-                onClick={() => void handleCookieDelete()}
-                className="rounded-lg border border-red-500/20 px-3 py-1.5 text-[0.8rem] text-red-400 transition-all hover:bg-red-500/10"
-              >
-                Remove
-              </button>
-            )}
-            <span className="text-[0.75rem] text-[var(--text-tertiary)]">
-              {status?.cookies_present ? 'cookies.txt loaded' : 'No cookies configured'}
+        {/* ── Active Downloads (always visible) ── */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-[0.92rem] font-semibold">Active Downloads</h3>
+            <span className="text-[0.78rem] text-[var(--text-tertiary)]">
+              {activeDownloads.length > 0 ? `${activeDownloads.length} active` : 'idle'}
             </span>
           </div>
-
-          <div className="flex items-center gap-2">
-            <span className="text-[0.72rem] font-medium uppercase tracking-[0.1em] text-[var(--text-tertiary)]">
-              Bulk
-            </span>
-            <button
-              type="button"
-              onClick={() => setIsBulkModalOpen(true)}
-              className="rounded-lg border border-[var(--glass-border)] bg-[var(--bg-glass)] px-3 py-1.5 text-[0.8rem] text-[var(--text-secondary)] transition-all hover:border-[var(--glass-border-hover)] hover:text-[var(--text-primary)]"
-            >
-              Import URLs
-            </button>
-          </div>
-        </div>
-
-        {/* ── Active Downloads ── */}
-        {activeDownloads.length > 0 && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-[0.92rem] font-semibold">Active Downloads</h3>
-              <span className="text-[0.78rem] text-[var(--text-tertiary)]">
-                {activeDownloads.length} active
-              </span>
-            </div>
-            {activeDownloads.map((job) => (
+          {activeDownloads.length > 0 ? (
+            activeDownloads.map((job) => (
               <div key={job.job_id} className="glass-light rounded-[14px] p-4">
                 <div className="mb-2 flex items-start justify-between gap-4">
                   <div className="min-w-0">
@@ -641,19 +632,25 @@ export default function DownloaderPanel({
                 <div className="h-1.5 overflow-hidden rounded-full bg-white/6">
                   <div
                     className="h-full rounded-full bg-[var(--accent-5)] transition-all duration-300"
-                    style={{ width: `${Math.max(0, Math.min(job.progress, 100))}%` }}
+                    style={{
+                      width: `${Math.max(0, Math.min(Number(job.progress) || 0, 100))}%`,
+                    }}
                   />
                 </div>
-                <div className="mt-1.5 flex flex-wrap items-center justify-between gap-3 text-[0.72rem] text-[var(--text-secondary)]">
-                  <span>{job.progress.toFixed(1)}%</span>
-                  <span>{job.speed ?? '...'}</span>
-                  <span>{job.eta ? `ETA ${job.eta}` : 'Preparing...'}</span>
+                <div className="mt-1.5 flex items-center gap-4 text-[0.72rem] text-[var(--text-secondary)]">
+                  <span className="tabular-nums">{formatProgress(job.progress)}%</span>
+                  {job.speed && <span>{job.speed}</span>}
+                  <span className="ml-auto">{job.eta ? `ETA ${job.eta}` : 'Preparing...'}</span>
                 </div>
                 {job.error && <p className="mt-2 text-[0.78rem] text-red-400">{job.error}</p>}
               </div>
-            ))}
-          </div>
-        )}
+            ))
+          ) : (
+            <p className="py-3 text-center text-[0.8rem] text-[var(--text-tertiary)]">
+              No active downloads
+            </p>
+          )}
+        </div>
 
         {/* ── History ── */}
         <div className="space-y-3">
@@ -731,6 +728,15 @@ export default function DownloaderPanel({
                     )}
                   </div>
                   <div className="flex items-center gap-2">
+                    {job.status === 'done' && (
+                      <a
+                        href={getDownloaderFileUrl(job.job_id)}
+                        download
+                        className="rounded-lg border border-[var(--accent-5)]/30 px-3 py-1 text-[0.72rem] font-medium text-[var(--accent-5)] transition-all hover:bg-[var(--accent-5)]/10"
+                      >
+                        Download
+                      </a>
+                    )}
                     {job.status === 'error' && (
                       <button
                         type="button"
@@ -759,10 +765,12 @@ export default function DownloaderPanel({
         </div>
 
         {/* ── Status Footer ── */}
-        <div className="flex items-center gap-4 text-[0.72rem] text-[var(--text-tertiary)]">
-          <span>yt-dlp {status?.yt_dlp_version ?? '...'}</span>
-          <span>·</span>
-          <span>Cookies: {status?.cookies_present ? 'loaded' : 'none'}</span>
+        <div className="flex items-center justify-center">
+          <div className="inline-flex items-center gap-3 rounded-full border border-white/6 bg-white/[0.03] px-5 py-2 text-[0.72rem] text-[var(--text-tertiary)]">
+            <span>yt-dlp {status?.yt_dlp_version ?? '...'}</span>
+            <span className="text-white/10">·</span>
+            <span>Cookies: {status?.cookies_present ? 'loaded' : 'none'}</span>
+          </div>
         </div>
       </div>
 
