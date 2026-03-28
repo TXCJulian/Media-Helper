@@ -16,7 +16,7 @@ services:
       - VALID_VIDEO_EXT=.mp4,.mkv,.mov,.avi
       - VALID_MUSIC_EXT=.flac,.wav,.mp3
       - TRANSCRIBER_URL=${TRANSCRIBER_URL:-http://lyric-transcriber:3334}
-      - ENABLED_FEATURES=${ENABLED_FEATURES:-episodes,music,lyrics,download}
+      - ENABLED_FEATURES=${ENABLED_FEATURES:-episodes,music,lyrics,cutter,download}
       - CUTTER_JOBS_DIR=/data/cutter-jobs
       - CUTTER_JOB_TTL=${CUTTER_JOB_TTL:-86400}
       - DOWNLOADER_JOBS_DIR=/data/download-jobs
