@@ -570,7 +570,9 @@ class TestCutterValidation:
             },
         )
         assert response.status_code == 422
-        assert "detail" in response.json()
+        data = response.json()
+        assert "detail" in data
+        assert "invalid audio track codec" in str(data["detail"]).lower()
 
 
 def test_upload_cookies_rejects_oversized_file(client):

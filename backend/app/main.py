@@ -1823,7 +1823,8 @@ async def download_upload_cookies(file: UploadFile = File(...)):
     dir_name = os.path.dirname(cookie_path)
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
-    with open(cookie_path, "wb") as f:
+    fd = os.open(cookie_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
         f.write(content)
     return {"status": "ok"}
 

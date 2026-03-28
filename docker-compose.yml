@@ -22,7 +22,7 @@ services:
       - DOWNLOADER_JOBS_DIR=/data/download-jobs
       - DOWNLOADER_JOB_TTL=${DOWNLOADER_JOB_TTL:-604800}
       - DOWNLOADS_DIR=${DOWNLOADS_DIR:-/downloads}
-      - YT_DLP_COOKIES=${YT_DLP_COOKIES:-/data/cookies.txt}
+      - YT_DLP_COOKIES=${YT_DLP_COOKIES:-/data/download-jobs/cookies.txt}
       #- HWACCEL=off  # Uncomment to disable GPU-accelerated video encoding
       #- VAAPI_DEVICE=/dev/dri/renderD128  # Uncomment to override VAAPI device path
       - PUID=${PUID:-1000}

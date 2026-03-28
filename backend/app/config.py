@@ -71,7 +71,10 @@ DOWNLOADER_JOBS_DIR = os.getenv("DOWNLOADER_JOBS_DIR", "/data/download-jobs")
 DOWNLOADER_JOB_TTL = int(os.getenv("DOWNLOADER_JOB_TTL", "604800"))
 
 _VALID_FEATURES = {"episodes", "music", "lyrics", "cutter", "download"}
-_features_raw = os.getenv("ENABLED_FEATURES", "episodes,music,cutter,download")
+_default_features = (
+    "episodes,music,lyrics,cutter,download" if TRANSCRIBER_URL else "episodes,music,cutter,download"
+)
+_features_raw = os.getenv("ENABLED_FEATURES", _default_features)
 _parsed_features: list[str] = list(
     dict.fromkeys(
         f.strip().lower()
