@@ -1879,6 +1879,10 @@ async def download_upload_cookies(file: UploadFile = File(...)):
     fd = os.open(cookie_path, flags, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(content)
+    try:
+        os.chmod(cookie_path, 0o600)
+    except OSError:
+        pass
     return {"status": "ok"}
 
 
