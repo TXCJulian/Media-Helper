@@ -1,6 +1,7 @@
 import { connectSSE } from './sse'
+import { API_BASE, assertAuthenticated } from './http'
 
-export const API_BASE = window.location.origin
+export { API_BASE, assertAuthenticated }
 
 const DEFAULT_TIMEOUT_MS = 30_000
 
@@ -13,13 +14,6 @@ async function extractErrorMessage(res: Response): Promise<string> {
     // Response body is not JSON
   }
   return `HTTP ${res.status}: ${res.statusText}`
-}
-
-export function assertAuthenticated(res: Response | XMLHttpRequest): void {
-  if (res.status === 401) {
-    window.dispatchEvent(new Event('auth:expired'))
-    throw new Error('Session expired')
-  }
 }
 
 export async function fetchJson<T>(

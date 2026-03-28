@@ -1678,7 +1678,13 @@ def download_status():
     return get_downloader_status_payload()
 
 
+_DOWNLOAD_JOB_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _DOWNLOAD_INTERNAL_FIELDS = {"output_path", "options", "schema_version"}
+
+
+def _validate_download_job_id(job_id: str) -> None:
+    if not _DOWNLOAD_JOB_ID_RE.match(job_id):
+        raise HTTPException(status_code=422, detail=f"Invalid job_id format: {job_id}")
 
 
 def _sanitize_job_meta(meta: dict) -> dict:
@@ -1694,6 +1700,7 @@ def download_list_jobs_route():
 @app.get("/download/jobs/{job_id}")
 def download_get_job_route(job_id: str):
     require_feature("download")
+    _validate_download_job_id(job_id)
     meta = load_downloader_job_metadata(job_id)
     if not meta:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -1704,6 +1711,7 @@ def download_get_job_route(job_id: str):
 def download_file_route(job_id: str):
     """Download the output file for a completed download job."""
     require_feature("download")
+    _validate_download_job_id(job_id)
     from fastapi.responses import FileResponse
 
     meta = load_downloader_job_metadata(job_id)
@@ -1732,12 +1740,11 @@ def download_file_route(job_id: str):
 @app.delete("/download/jobs/{job_id}")
 def download_delete_job_route(job_id: str):
     require_feature("download")
+    _validate_download_job_id(job_id)
     try:
         delete_downloader_job(job_id)
     except ValueError as e:
-        msg = str(e)
-        code = 422 if "format" in msg.lower() else 404
-        raise HTTPException(status_code=code, detail=msg)
+        raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return {"status": "deleted"}
@@ -1822,6 +1829,7 @@ def download_start(
 def download_start_job(job_id: str):
     """Start a previously queued download job."""
     require_feature("download")
+    _validate_download_job_id(job_id)
     meta = load_downloader_job_metadata(job_id)
     if not meta:
         raise HTTPException(status_code=404, detail="Job not found")

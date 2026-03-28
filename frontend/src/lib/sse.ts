@@ -1,4 +1,4 @@
-import { API_BASE, assertAuthenticated } from './api'
+import { API_BASE, assertAuthenticated } from './http'
 
 interface SSECallbacks {
   onProgress: (data: string) => void
