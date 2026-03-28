@@ -1774,10 +1774,10 @@ def _download_sse_response(job_id: str, url: str, options: dict) -> StreamingRes
                 "size": None,
             }
             try:
-                msg_queue.put(("error_msg", error_payload), timeout=10)
-                msg_queue.put(("done", error_payload), timeout=10)
+                msg_queue.put_nowait(("error_msg", error_payload))
+                msg_queue.put_nowait(("done", error_payload))
             except Exception:
-                pass  # Queue full / client gone
+                pass  # Queue full / client gone — state is persisted in metadata
 
     thread = threading.Thread(target=run_download, daemon=True)
     thread.start()
