@@ -1728,23 +1728,20 @@ def _download_sse_response(job_id: str, url: str, options: dict) -> StreamingRes
             manager.run(msg_queue)
         except Exception as e:
             logger.exception("Download thread failed")
-            msg_queue.put(
-                (
-                    "done",
-                    {
-                        "job_id": job_id,
-                        "url": url,
-                        "status": "error",
-                        "progress": 0.0,
-                        "speed": None,
-                        "eta": None,
-                        "filename": None,
-                        "error": str(e),
-                        "created_at": None,
-                        "size": None,
-                    },
-                )
-            )
+            error_payload = {
+                "job_id": job_id,
+                "url": url,
+                "status": "error",
+                "progress": 0.0,
+                "speed": None,
+                "eta": None,
+                "filename": None,
+                "error": str(e),
+                "created_at": None,
+                "size": None,
+            }
+            msg_queue.put(("error_msg", error_payload))
+            msg_queue.put(("done", error_payload))
 
     thread = threading.Thread(target=run_download, daemon=True)
     thread.start()

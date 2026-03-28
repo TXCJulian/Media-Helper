@@ -585,10 +585,16 @@ def test_upload_cookies_rejects_oversized_file(client):
     assert response.status_code == 400
 
 
-def test_upload_cookies_accepts_valid_netscape_format(client):
+def test_upload_cookies_accepts_valid_netscape_format(client, tmp_path, monkeypatch):
+    import app.main as main_mod
+
+    cookie_path = tmp_path / "cookies.txt"
+    monkeypatch.setattr(main_mod, "get_downloader_cookie_path", lambda: str(cookie_path))
+
     content = b"# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t0\tname\tvalue\n"
     response = client.post(
         "/download/cookies",
         files={"file": ("cookies.txt", content, "text/plain")},
     )
     assert response.status_code == 200
+    assert cookie_path.read_bytes() == content
