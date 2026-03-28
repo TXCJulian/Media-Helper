@@ -440,11 +440,15 @@ def get_ydl_opts(options: dict[str, Any]) -> dict[str, Any]:
     if os.path.isfile(cookie_path):
         ydl_opts["cookiefile"] = cookie_path
 
-    item_limit = int(options.get("item_limit") or 0)
+    try:
+        item_limit = int(options.get("item_limit") or 0)
+    except (ValueError, TypeError):
+        item_limit = 0
     if item_limit > 0:
         ydl_opts["playlistend"] = item_limit
 
-    if bool(options.get("split_chapters")):
+    split_raw = options.get("split_chapters")
+    if str(split_raw).lower() not in ("false", "0", "no", "none", ""):
         ydl_opts["split_chapters"] = True
 
     if media_type == "audio":
