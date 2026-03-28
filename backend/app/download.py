@@ -543,6 +543,8 @@ def _extract_thumbnail_path(info: Mapping[str, Any], outtmpl: str) -> str | None
     for ext in ("jpg", "jpeg", "png", "webp"):
         candidate_name = f"{safe_title}.{ext}"
         candidate = os.path.join(base_dir, candidate_name)
+        if not os.path.realpath(candidate).startswith(os.path.realpath(base_dir) + os.sep):
+            continue
         if os.path.isfile(candidate):
             return candidate
     return None

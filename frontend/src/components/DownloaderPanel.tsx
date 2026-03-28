@@ -197,6 +197,7 @@ export default function DownloaderPanel({
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const logRef = useRef(log)
   logRef.current = log
+  const sseAbortRef = useRef<Set<() => void>>(new Set())
 
   // Persist settings on form change (except url), debounced
   useEffect(() => {
@@ -277,6 +278,21 @@ export default function DownloaderPanel({
     [onLog],
   )
 
+  const trackSSE = useCallback(
+    (abort: () => void) => {
+      sseAbortRef.current.add(abort)
+      return abort
+    },
+    [],
+  )
+
+  useEffect(() => {
+    return () => {
+      sseAbortRef.current.forEach((abort) => abort())
+      sseAbortRef.current.clear()
+    }
+  }, [])
+
   const sseCallbacks = useMemo(
     () => ({
       onProgress: (data: string) => applyEventPatch(data),
@@ -316,14 +332,14 @@ export default function DownloaderPanel({
         onError(err instanceof Error ? err.message : 'Failed to create download job')
       }
     } else {
-      postDownload({ ...form, url }, sseCallbacks)
+      trackSSE(postDownload({ ...form, url }, sseCallbacks))
     }
 
     if (!urlOverride) setForm((prev) => ({ ...prev, url: '' }))
   }
 
   const handleStartQueuedJob = (jobId: string) => {
-    startDownloadJob(jobId, sseCallbacks)
+    trackSSE(startDownloadJob(jobId, sseCallbacks))
   }
 
   const handleBulkSubmit = () => {
