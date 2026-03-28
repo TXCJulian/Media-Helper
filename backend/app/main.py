@@ -1750,8 +1750,13 @@ def download_delete_job_route(job_id: str):
     return {"status": "deleted"}
 
 
+_download_semaphore = threading.Semaphore(5)
+
+
 def _download_sse_response(job_id: str, url: str, options: dict) -> StreamingResponse:
     """Start a download job in a background thread and return an SSE stream."""
+    if not _download_semaphore.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="Too many concurrent downloads, try again later")
     msg_queue: queue.Queue = queue.Queue(maxsize=100)
 
     def run_download():
@@ -1778,6 +1783,8 @@ def _download_sse_response(job_id: str, url: str, options: dict) -> StreamingRes
                 msg_queue.put_nowait(("done", error_payload))
             except Exception:
                 pass  # Queue full / client gone — state is persisted in metadata
+        finally:
+            _download_semaphore.release()
 
     thread = threading.Thread(target=run_download, daemon=True)
     thread.start()
