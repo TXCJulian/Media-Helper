@@ -1752,7 +1752,7 @@ def download_delete_job_route(job_id: str):
 
 def _download_sse_response(job_id: str, url: str, options: dict) -> StreamingResponse:
     """Start a download job in a background thread and return an SSE stream."""
-    msg_queue = queue.Queue()
+    msg_queue: queue.Queue = queue.Queue(maxsize=100)
 
     def run_download():
         try:
@@ -1760,6 +1760,7 @@ def _download_sse_response(job_id: str, url: str, options: dict) -> StreamingRes
             manager.run(msg_queue)
         except Exception as e:
             logger.exception("Download thread failed")
+            meta = load_downloader_job_metadata(job_id) or {}
             error_payload = {
                 "job_id": job_id,
                 "url": url,
@@ -1767,9 +1768,9 @@ def _download_sse_response(job_id: str, url: str, options: dict) -> StreamingRes
                 "progress": 0.0,
                 "speed": None,
                 "eta": None,
-                "filename": None,
+                "filename": meta.get("filename"),
                 "error": str(e),
-                "created_at": None,
+                "created_at": meta.get("created_at"),
                 "size": None,
             }
             msg_queue.put(("error_msg", error_payload))
@@ -1808,6 +1809,12 @@ def download_start(
     options_json: str = Form("{}", alias="options", max_length=5000),
 ):
     require_feature("download")
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=422, detail="Only http and https URLs are allowed")
+
     try:
         options = json.loads(options_json)
     except json.JSONDecodeError:
