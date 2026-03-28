@@ -1678,7 +1678,7 @@ def download_status():
     return get_downloader_status_payload()
 
 
-_DOWNLOAD_INTERNAL_FIELDS = {"output_path", "options"}
+_DOWNLOAD_INTERNAL_FIELDS = {"output_path", "options", "schema_version"}
 
 
 def _sanitize_job_meta(meta: dict) -> dict:
@@ -1848,7 +1848,10 @@ async def download_upload_cookies(file: UploadFile = File(...)):
     dir_name = os.path.dirname(cookie_path)
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
-    fd = os.open(cookie_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(cookie_path, flags, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(content)
     return {"status": "ok"}

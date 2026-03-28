@@ -37,12 +37,13 @@ A media management tool for renaming TV shows, music files, transcribing lyrics,
 
 ## Overview
 
-Media-Helper is a dockerized tool with four modules:
+Media-Helper is a dockerized tool with five modules:
 
 1. **Episode Renamer** - Renames TV show episodes using TMDB metadata
 2. **Music Renamer** - Renames music files based on ID3/audio tags
 3. **Lyrics Transcriber** - Transcribes lyrics from audio files using AI (HDemucs + Whisper + Genius)
 4. **Media Cutter** - Trim and cut audio/video files with waveform preview and per-track codec control
+5. **Downloader** - Download media via yt-dlp with codec/format/quality selection, playlist support, and cookie authentication
 
 The application consists of a FastAPI backend (Python 3.12), a React frontend (Vite + Tailwind CSS), and an optional GPU-powered lyrics transcription service. All services communicate over a Docker bridge network behind an Nginx reverse proxy.
 

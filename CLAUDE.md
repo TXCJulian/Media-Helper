@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Full-stack microservices app for renaming TV show episodes (via TMDB) and music files (via ID3 tags), cutting/trimming media with ffmpeg, and optional lyrics transcription through a separate GPU-powered service. Four feature modules toggled via `ENABLED_FEATURES` env var: `episodes`, `music`, `lyrics`, `cutter`.
+Full-stack microservices app for renaming TV show episodes (via TMDB) and music files (via ID3 tags), cutting/trimming media with ffmpeg, downloading media via yt-dlp, and optional lyrics transcription through a separate GPU-powered service. Five feature modules toggled via `ENABLED_FEATURES` env var: `episodes`, `music`, `lyrics`, `cutter`, `download`.
 
 ## Commands
 
@@ -67,7 +67,7 @@ State management is simple prop drilling from App.tsx - no external state librar
 
 ### Infrastructure
 
-- **Nginx** (`frontend/nginx-app.conf`) - Reverse proxy routes `/rename/`, `/directories/`, `/config`, `/health`, `/transcribe/`, `/cutter/` to backend. SSE routes have buffering disabled and 1800s timeout. 50 GB upload limit.
+- **Nginx** (`frontend/nginx-app.conf`) - Reverse proxy routes `/rename/`, `/directories/`, `/config`, `/health`, `/transcribe/`, `/cutter/`, `/download/` to backend. SSE routes have buffering disabled and 1800s timeout. 50 GB upload limit.
 - **Docker Compose** - Bridge network `renamer-network`. Backend uses Jellyfin's pre-built ffmpeg7 (amd64) or standard ffmpeg (ARM). Volumes: media (`/media:rw`), `cutter-jobs` (persistent job state).
 - **`deploy.yml`** - Production variant pulling pre-built images from Docker Hub (`bosscock/media-renamer:backend`/`:frontend`).
 
@@ -90,7 +90,7 @@ Backend reads from `backend/dependencies/.env` (see `.env.example`):
 - `TMDB_API_KEY` - Required for episode renaming
 - `BASE_PATH` / `BASE_PATHS` - Media root(s), supports multiple comma-separated paths
 - `TVSHOW_FOLDER_NAME` / `MUSIC_FOLDER_NAME` - Subdirectory names under base path
-- `ENABLED_FEATURES` - Comma-separated: `episodes,music,lyrics,cutter`
+- `ENABLED_FEATURES` - Comma-separated: `episodes,music,lyrics,cutter,download`
 - `TRANSCRIBER_URL` - Optional, enables lyrics feature
 - `ALLOWED_ORIGINS` - CORS origins
 - `HWACCEL` - GPU acceleration: `off` or auto-detect (default)
