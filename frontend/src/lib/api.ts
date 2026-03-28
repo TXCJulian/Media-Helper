@@ -1,5 +1,5 @@
-import { connectSSE } from './sse'
-import { API_BASE, assertAuthenticated } from './http'
+import { connectSSE } from '@/lib/sse'
+import { API_BASE, assertAuthenticated } from '@/lib/http'
 
 export { API_BASE, assertAuthenticated }
 

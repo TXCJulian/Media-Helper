@@ -656,6 +656,9 @@ class DownloadManager:
             with YoutubeDL(ydl_opts) as ydl:  # type: ignore[reportArgumentType]
                 info = ydl.extract_info(self.url, download=True)
 
+            if self.cancel_event and self.cancel_event.is_set():
+                raise DownloadCancelled("Cancelled by user")
+
             info_dict = info if isinstance(info, dict) else {}
             media_type = str(self.options.get("type") or "video").lower()
             if media_type == "thumbnail":
