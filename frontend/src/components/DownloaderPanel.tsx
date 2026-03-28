@@ -488,14 +488,21 @@ export default function DownloaderPanel({
 
         {(localError || error) && (
           <div
-            className="flex cursor-pointer items-center justify-between rounded-lg border border-red-500/15 bg-red-500/[0.06] px-4 py-2.5"
-            onClick={() => {
-              setLocalError('')
-              onError('')
-            }}
+            className="flex items-center justify-between rounded-lg border border-red-500/15 bg-red-500/[0.06] px-4 py-2.5"
+            role="alert"
           >
             <p className="text-[0.8rem] text-red-400">{localError || error}</p>
-            <span className="ml-3 shrink-0 text-[0.7rem] text-red-400/50">dismiss</span>
+            <button
+              type="button"
+              className="ml-3 shrink-0 text-[0.7rem] text-red-400/50"
+              onClick={() => {
+                setLocalError('')
+                onError('')
+              }}
+              aria-label="Dismiss error"
+            >
+              dismiss
+            </button>
           </div>
         )}
 
