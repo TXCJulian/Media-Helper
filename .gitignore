@@ -431,3 +431,10 @@ TODO.txt
 /.claude
 .worktrees/
 nul
+
+# Gemini generated files
+.github/commands/gemini-*.toml
+.github/workflows/gemini-*.yml
+
+.gemini/
+gha-creds-*.json

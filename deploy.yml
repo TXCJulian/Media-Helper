@@ -4,7 +4,7 @@ services:
     container_name: media-renamer_backend
     command: []
     environment:
-      - ENABLED_FEATURES=episodes,music,lyrics,cutter #comma-separated list of enabled features: episodes, music, lyrics, cutter. Defaults to episodes,music,cutter
+      - ENABLED_FEATURES=episodes,music,lyrics,cutter,download #comma-separated list of enabled features: episodes, music, lyrics, cutter, download. Defaults to episodes,music,lyrics,cutter,download
       - TMDB_API_KEY=YOUR_TMDB_API_KEY_HERE #API key for The Movie Database (TMDb) - required for episode renaming
       - TRANSCRIBER_URL=http://lyric-transcriber:3334 #URL for the lyric transcriber service, required for lyrics feature
       - PUID=${PUID:-1000}
@@ -20,6 +20,10 @@ services:
       #- CUTTER_JOBS_DIR=/ #directory where cutter job data is stored, defaults to /data/cutter-jobs (should be a volume mount for persistence and file access)
       #- CUTTER_JOB_TTL=VALID_JOB_TTL_HERE #time in seconds after which cutter jobs are automatically deleted, defaults to 86400 (24 hours)
       #- CUTTER_MAX_DIRECT_REMUX_BYTES=VALID_MAX_DIRECT_REMUX_BYTES_HERE #maximum file size in bytes for direct remuxing in cutter module, defaults to 1073741824 (1 GB)
+      #- DOWNLOADER_JOBS_DIR=/ #directory where download job data is stored, defaults to /data/download-jobs (should be a volume mount for persistence)
+      #- DOWNLOADER_JOB_TTL=604800 #time in seconds after which download jobs are automatically deleted, defaults to 604800 (7 days)
+      #- DOWNLOADS_DIR=/ #root directory where downloaded files are saved, defaults to /downloads
+      #- YT_DLP_COOKIES=/ #path to the global cookies.txt file, defaults to /data/cookies.txt
       #- HWACCEL=off  # Uncomment to disable GPU-accelerated video encoding
       #- VAAPI_DEVICE=/dev/dri/renderD128  # Uncomment to override VAAPI device path defaults to /dev/dri/renderD128
     # --- GPU passthrough (uncomment ONE section matching your hardware) ---
@@ -37,7 +41,9 @@ services:
     restart: unless-stopped
     volumes:
       - /path/to/your/media:/media:rw
+      - /path/to/your/downloads:/downloads:rw
       - cutter-jobs:/data/cutter-jobs
+      - download-jobs:/data/download-jobs
     networks:
       - renamer-network
 
@@ -87,4 +93,5 @@ networks:
 
 volumes:
   cutter-jobs:
+  download-jobs:
   transcriber-models:

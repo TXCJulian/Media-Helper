@@ -1684,6 +1684,27 @@ def download_get_job_route(job_id: str):
     return meta
 
 
+@app.get("/download/jobs/{job_id}/file")
+def download_file_route(job_id: str):
+    """Download the output file for a completed download job."""
+    require_feature("download")
+    from fastapi.responses import FileResponse
+
+    meta = load_downloader_job_metadata(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if meta.get("status") != "done":
+        raise HTTPException(status_code=400, detail="Download not complete")
+    output_path = meta.get("output_path")
+    if not output_path or not os.path.isfile(output_path):
+        raise HTTPException(status_code=404, detail="Output file not found")
+    return FileResponse(
+        output_path,
+        filename=os.path.basename(output_path),
+        media_type="application/octet-stream",
+    )
+
+
 @app.delete("/download/jobs/{job_id}")
 def download_delete_job_route(job_id: str):
     require_feature("download")
