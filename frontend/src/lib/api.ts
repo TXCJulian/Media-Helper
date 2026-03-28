@@ -328,9 +328,10 @@ export function postDownload(
     onDone: (data: string) => void
   },
 ): () => void {
+  const { url, ...options } = form
   const params: Record<string, string> = {
-    url: form.url,
-    options: JSON.stringify(form),
+    url,
+    options: JSON.stringify(options),
   }
   return connectSSE('/download/start', params, callbacks)
 }
@@ -338,9 +339,10 @@ export function postDownload(
 export async function createDownloadJob(
   form: import('@/types').DownloadForm,
 ): Promise<import('@/types').DownloadJob> {
+  const { url, ...options } = form
   return postForm('/download/start', {
-    url: form.url,
-    options: JSON.stringify(form),
+    url,
+    options: JSON.stringify({ ...options, auto_start: false }),
   })
 }
 

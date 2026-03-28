@@ -1670,10 +1670,17 @@ def download_status():
     return get_downloader_status_payload()
 
 
+_DOWNLOAD_INTERNAL_FIELDS = {"output_path", "options"}
+
+
+def _sanitize_job_meta(meta: dict) -> dict:
+    return {k: v for k, v in meta.items() if k not in _DOWNLOAD_INTERNAL_FIELDS}
+
+
 @app.get("/download/jobs")
 def download_list_jobs_route():
     require_feature("download")
-    return {"jobs": list_downloader_jobs()}
+    return {"jobs": [_sanitize_job_meta(j) for j in list_downloader_jobs()]}
 
 
 @app.get("/download/jobs/{job_id}")
@@ -1682,7 +1689,7 @@ def download_get_job_route(job_id: str):
     meta = load_downloader_job_metadata(job_id)
     if not meta:
         raise HTTPException(status_code=404, detail="Job not found")
-    return meta
+    return _sanitize_job_meta(meta)
 
 
 @app.get("/download/jobs/{job_id}/file")
@@ -1786,7 +1793,7 @@ def download_start(
     auto_start = str(options.get("auto_start", True)).lower() not in ("false", "0", "no")
     if not auto_start:
         meta = load_downloader_job_metadata(job_id)
-        return {"job_id": job_id, **(meta or {})}
+        return _sanitize_job_meta({"job_id": job_id, **(meta or {})})
 
     return _download_sse_response(job_id, url, options)
 
