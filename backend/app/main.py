@@ -33,6 +33,7 @@ from app.config import (
     ENABLED_FEATURES_SET,
     AUTH_ENABLED,
     DOWNLOADER_JOBS_DIR,
+    DOWNLOADS_DIR,
 )
 from app.auth import verify_login, create_session_cookie, clear_session_cookie, check_session
 from app.rename_episodes import rename_episodes
@@ -201,10 +202,11 @@ async def lifespan(app: FastAPI):
     # Start download cleanup task only if download feature is enabled
     downloader_cleanup_task = None
     if "download" in ENABLED_FEATURES_SET:
-        try:
-            os.makedirs(DOWNLOADER_JOBS_DIR, exist_ok=True)
-        except OSError as e:
-            logger.error("Cannot create downloader jobs directory %s: %s — download feature may fail", DOWNLOADER_JOBS_DIR, e)
+        for d in (DOWNLOADER_JOBS_DIR, DOWNLOADS_DIR):
+            try:
+                os.makedirs(d, exist_ok=True)
+            except OSError as e:
+                logger.error("Cannot create directory %s: %s — download feature may fail", d, e)
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
             logger.error("Downloader feature requires ffmpeg and ffprobe on PATH; download jobs may fail.")
         downloader_cleanup_task = asyncio.create_task(_cleanup_downloader_jobs())
@@ -1725,7 +1727,9 @@ def download_delete_job_route(job_id: str):
     try:
         delete_downloader_job(job_id)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        msg = str(e)
+        code = 422 if "format" in msg.lower() else 404
+        raise HTTPException(status_code=code, detail=msg)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return {"status": "deleted"}
