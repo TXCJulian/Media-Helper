@@ -1773,8 +1773,11 @@ def _download_sse_response(job_id: str, url: str, options: dict) -> StreamingRes
                 "created_at": meta.get("created_at"),
                 "size": None,
             }
-            msg_queue.put(("error_msg", error_payload))
-            msg_queue.put(("done", error_payload))
+            try:
+                msg_queue.put(("error_msg", error_payload), timeout=10)
+                msg_queue.put(("done", error_payload), timeout=10)
+            except Exception:
+                pass  # Queue full / client gone
 
     thread = threading.Thread(target=run_download, daemon=True)
     thread.start()
