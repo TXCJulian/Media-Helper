@@ -1814,10 +1814,11 @@ async def download_upload_cookies(file: UploadFile = File(...)):
     require_feature("download")
     cookie_path = get_downloader_cookie_path()
 
-    content = await file.read()
+    max_size = 1024 * 1024  # 1 MB
+    content = await file.read(max_size + 1)
     if not content:
         raise HTTPException(status_code=400, detail="No cookie data received")
-    if len(content) > 1024 * 1024:
+    if len(content) > max_size:
         raise HTTPException(status_code=400, detail="Cookie file too large (max 1 MB)")
 
     dir_name = os.path.dirname(cookie_path)

@@ -266,13 +266,17 @@ export default function DownloaderPanel({
     }))
   }
 
+  const LOG_STATUSES = new Set(['queued', 'downloading', 'processing', 'done', 'error'])
+
   const applyEventPatch = useCallback(
     (data: string) => {
       const patch = parseDownloadEvent(data)
       if (!patch) return
       setJobs((prev) => mergeJob(prev, patch))
-      if (patch.url && patch.status) {
-        onLog([...logRef.current, `${patch.status}: ${patch.filename ?? patch.url}`])
+      if (patch.status && LOG_STATUSES.has(patch.status)) {
+        const newLog = [...logRef.current, `${patch.status}: ${patch.filename ?? patch.url}`]
+        logRef.current = newLog
+        onLog(newLog)
       }
     },
     [onLog],
@@ -322,7 +326,9 @@ export default function DownloaderPanel({
 
     setLocalError('')
     onError('')
-    onLog([...logRef.current, `queued: ${url}`])
+    const newLog = [...logRef.current, `queued: ${url}`]
+    logRef.current = newLog
+    onLog(newLog)
 
     if (!form.auto_start) {
       try {
