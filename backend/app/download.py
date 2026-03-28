@@ -532,17 +532,18 @@ def _extract_thumbnail_path(info: Mapping[str, Any], outtmpl: str) -> str | None
         fp = thumb.get("filepath")
         if fp and os.path.isfile(str(fp)):
             return str(fp)
-    # Fallback: scan the output directory for an image matching the title
-    title = info.get("title")
-    if not title:
+    # Fallback: derive thumbnail name from the resolved output path
+    src_path = info.get("filepath") or info.get("_filename") or outtmpl
+    if not src_path:
         return None
-    base_dir = os.path.dirname(outtmpl)
+    base_dir = os.path.dirname(os.path.abspath(src_path))
     if not os.path.isdir(base_dir):
         return None
-    safe_title = _safe_prefix(title)
+    stem = os.path.splitext(os.path.basename(src_path))[0]
+    if not stem:
+        return None
     for ext in ("jpg", "jpeg", "png", "webp"):
-        candidate_name = f"{safe_title}.{ext}"
-        candidate = os.path.join(base_dir, candidate_name)
+        candidate = os.path.join(base_dir, f"{stem}.{ext}")
         if not os.path.realpath(candidate).startswith(os.path.realpath(base_dir) + os.sep):
             continue
         if os.path.isfile(candidate):
@@ -657,17 +658,29 @@ class DownloadManager:
                 final_path = _extract_thumbnail_path(info_dict, ydl_opts.get("outtmpl", ""))
             else:
                 final_path = _extract_final_path(info_dict)
-            meta = self._save_meta(
-                status="done",
-                progress=100.0,
-                speed=None,
-                eta=None,
-                filename=_display_name(final_path) or self._load_meta().get("filename"),
-                size=_extract_final_size(info_dict, final_path),
-                error=None,
-                output_path=final_path,
-            )
-            self._emit("done", _job_payload(meta))
+
+            if final_path is None:
+                meta = self._save_meta(
+                    status="error",
+                    error="Download completed but output file could not be located",
+                    speed=None,
+                    eta=None,
+                )
+                payload = _job_payload(meta)
+                self._emit("error_msg", payload)
+                self._emit("done", payload)
+            else:
+                meta = self._save_meta(
+                    status="done",
+                    progress=100.0,
+                    speed=None,
+                    eta=None,
+                    filename=_display_name(final_path) or self._load_meta().get("filename"),
+                    size=_extract_final_size(info_dict, final_path),
+                    error=None,
+                    output_path=final_path,
+                )
+                self._emit("done", _job_payload(meta))
         except DownloadCancelled as exc:
             meta = self._save_meta(
                 status="error",

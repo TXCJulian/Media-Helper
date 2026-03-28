@@ -198,6 +198,7 @@ export default function DownloaderPanel({
   const logRef = useRef(log)
   logRef.current = log
   const sseAbortRef = useRef<Set<() => void>>(new Set())
+  const lastJobStatusRef = useRef<Map<string, string>>(new Map())
 
   // Persist settings on form change (except url), debounced
   useEffect(() => {
@@ -266,17 +267,19 @@ export default function DownloaderPanel({
     }))
   }
 
-  const LOG_STATUSES = new Set(['queued', 'downloading', 'processing', 'done', 'error'])
-
   const applyEventPatch = useCallback(
     (data: string) => {
       const patch = parseDownloadEvent(data)
       if (!patch) return
       setJobs((prev) => mergeJob(prev, patch))
-      if (patch.status && LOG_STATUSES.has(patch.status)) {
-        const newLog = [...logRef.current, `${patch.status}: ${patch.filename ?? patch.url}`]
-        logRef.current = newLog
-        onLog(newLog)
+      if (patch.job_id && patch.status) {
+        const prev = lastJobStatusRef.current.get(patch.job_id)
+        if (prev !== patch.status) {
+          lastJobStatusRef.current.set(patch.job_id, patch.status)
+          const newLog = [...logRef.current, `${patch.status}: ${patch.filename ?? patch.url}`]
+          logRef.current = newLog
+          onLog(newLog)
+        }
       }
     },
     [onLog],
