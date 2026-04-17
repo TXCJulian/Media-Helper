@@ -67,6 +67,8 @@
   --accent-3-glow: rgba(244, 114, 182, 0.18);
   --accent-4: #34d399;
   --accent-4-glow: rgba(52, 211, 153, 0.18);
+  --accent-5: #f59e0b;
+  --accent-5-glow: rgba(245, 158, 11, 0.18);
 
   --text-primary: #eaeaef;
   --text-secondary: #8c8ca0;
@@ -224,8 +226,36 @@
       0 0 0 3px var(--accent-4-glow),
       0 0 20px rgba(52, 211, 153, 0.08);
   }
+  .input-field.input-amber:focus {
+    border-color: var(--accent-5);
+    box-shadow:
+      0 0 0 3px var(--accent-5-glow),
+      0 0 20px rgba(245, 158, 11, 0.08);
+  }
   .input-field.input-error {
     border-color: var(--error);
+  }
+
+  .glass-light {
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.05),
+      0 4px 18px rgba(0, 0, 0, 0.18);
+  }
+
+  .card-download {
+    border-color: var(--glass-border);
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.06),
+      inset 0 0 0 1px rgba(245, 158, 11, 0.08),
+      0 4px 24px rgba(0, 0, 0, 0.2);
+  }
+  .card-download:hover {
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.08),
+      inset 0 0 0 1px rgba(245, 158, 11, 0.14),
+      0 12px 34px rgba(0, 0, 0, 0.24);
   }
 
   .btn-submit {
@@ -295,6 +325,14 @@
       0 0 32px rgba(52, 211, 153, 0.3),
       0 4px 20px rgba(0, 0, 0, 0.3);
   }
+  .btn-submit.btn-amber {
+    background: var(--accent-5);
+  }
+  .btn-submit.btn-amber:hover:not(:disabled) {
+    box-shadow:
+      0 0 32px rgba(245, 158, 11, 0.3),
+      0 4px 20px rgba(0, 0, 0, 0.3);
+  }
 
   /* ── Sliders ── */
   .slider-emerald {
@@ -327,6 +365,41 @@
     cursor: grab;
   }
   .slider-emerald::-moz-range-track {
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .slider-amber {
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.08);
+    outline: none;
+    cursor: pointer;
+  }
+  .slider-amber::-webkit-slider-thumb {
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-5);
+    border: 2px solid rgba(0, 0, 0, 0.3);
+    cursor: grab;
+    transition: box-shadow 0.15s;
+  }
+  .slider-amber::-webkit-slider-thumb:hover {
+    box-shadow: 0 0 0 4px var(--accent-5-glow);
+  }
+  .slider-amber::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-5);
+    border: 2px solid rgba(0, 0, 0, 0.3);
+    cursor: grab;
+  }
+  .slider-amber::-moz-range-track {
     height: 4px;
     border-radius: 2px;
     background: rgba(255, 255, 255, 0.08);

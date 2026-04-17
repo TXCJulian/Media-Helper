@@ -16,9 +16,13 @@ services:
       - VALID_VIDEO_EXT=.mp4,.mkv,.mov,.avi
       - VALID_MUSIC_EXT=.flac,.wav,.mp3
       - TRANSCRIBER_URL=${TRANSCRIBER_URL:-http://lyric-transcriber:3334}
-      - ENABLED_FEATURES=${ENABLED_FEATURES:-episodes,music,lyrics}
+      - ENABLED_FEATURES=${ENABLED_FEATURES:-episodes,music,lyrics,cutter,download}
       - CUTTER_JOBS_DIR=/data/cutter-jobs
       - CUTTER_JOB_TTL=${CUTTER_JOB_TTL:-86400}
+      - DOWNLOADER_JOBS_DIR=/data/download-jobs
+      - DOWNLOADER_JOB_TTL=${DOWNLOADER_JOB_TTL:-604800}
+      - DOWNLOADS_DIR=${DOWNLOADS_DIR:-/downloads}
+      - YT_DLP_COOKIES=${YT_DLP_COOKIES:-/data/download-jobs/cookies.txt}
       #- HWACCEL=off  # Uncomment to disable GPU-accelerated video encoding
       #- VAAPI_DEVICE=/dev/dri/renderD128  # Uncomment to override VAAPI device path
       - PUID=${PUID:-1000}
@@ -41,7 +45,9 @@ services:
     volumes:
       - ./dependencies/.env:/backend/dependencies/.env:ro
       - /path/to/your/media:/media:rw
+      - /path/to/your/downloads:/downloads:rw
       - cutter-jobs:/data/cutter-jobs
+      - download-jobs:/data/download-jobs
     networks:
       - renamer-network
 
@@ -91,4 +97,5 @@ networks:
 
 volumes:
   cutter-jobs:
+  download-jobs:
   transcriber-models:

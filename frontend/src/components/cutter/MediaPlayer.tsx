@@ -124,7 +124,7 @@ export default function MediaPlayer({
   const [muted, setMuted] = useState(false)
   const [isMediaReady, setIsMediaReady] = useState(!needsTranscoding)
   const [loadedAspectRatio, setLoadedAspectRatio] = useState<string | null>(null)
-  // Backend is still producing the file — don't let the browser request it yet
+  // Backend is still producing the file - don't let the browser request it yet
   const isTranscodeRunning =
     needsTranscoding && transcodeState !== 'done' && transcodeState !== 'error'
   const isTranscoding = needsTranscoding && (!isMediaReady || isTranscodeRunning)

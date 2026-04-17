@@ -406,10 +406,10 @@ def needs_transcoding(
     """Return True if the file needs transcoding for browser preview.
 
     Checks file extension plus audio/video codecs. Browsers only
-    support a limited set of containers (MP4, WebM, etc.) — files in
+    support a limited set of containers (MP4, WebM, etc.) - files in
     unsupported containers (MKV, AVI, etc.) must always be transcoded.
     """
-    # Check file extension — more reliable than ffprobe format_name
+    # Check file extension - more reliable than ffprobe format_name
     if filepath:
         ext = os.path.splitext(filepath)[1].lower()
         if ext and ext not in _BROWSER_EXTENSIONS:
@@ -531,7 +531,7 @@ def _preview_status_key(filepath: str, job_id: str) -> str:
 def _audio_transcode_status_key(
     filepath: str, job_id: str, audio_stream_index: int
 ) -> str:
-    """Status key for audio-only transcode — distinct from master preview key."""
+    """Status key for audio-only transcode - distinct from master preview key."""
     return f"{job_id}:{_preview_cache_key(filepath)}:srcaudio{audio_stream_index}"
 
 
@@ -1308,9 +1308,9 @@ def get_or_create_audio_master(
 ) -> tuple[str, bool]:
     """Extract all audio streams from source into a cached MKA file.
 
-    Uses stream copy (no decode/encode) — pure I/O, much faster than
+    Uses stream copy (no decode/encode) - pure I/O, much faster than
     transcoding.  The result is cached per source file in the job directory.
-    Callers should NOT call ``_begin_job_operation`` — this function uses
+    Callers should NOT call ``_begin_job_operation`` - this function uses
     the caller's existing ``cancel_event``.
 
     Returns ``(audio_master_path, was_extracted)`` where *was_extracted*
@@ -1516,7 +1516,7 @@ def transcode_audio_track_from_source(
     """Transcode a single audio track from the source file to AAC MP4.
 
     Unlike ``get_audio_track_preview`` (which extracts from a master preview),
-    this works directly on the source file — no master preview needed.
+    this works directly on the source file - no master preview needed.
     Returns the path to the cached audio-only MP4.
     """
     cancel_event = threading.Event()
@@ -2069,7 +2069,7 @@ def start_background_transcode(
         _transcode_semaphore.acquire()
         try:
             get_or_transcode_preview(filepath, job_id)
-            # Transcode succeeded — clear active flag
+            # Transcode succeeded - clear active flag
             with get_job_meta_lock(job_id):
                 _meta = load_job_metadata(job_id)
                 if _meta:
@@ -2445,7 +2445,10 @@ def cut_file(
                 cmd += [f"-c:a:{out_idx}", enc]
                 # libopus/libvorbis reject 5.1(side); remap to standard 5.1
                 if enc in ("libopus", "libvorbis"):
-                    cmd += [f"-filter:a:{out_idx}", "aformat=channel_layouts=7.1|5.1|stereo|mono"]
+                    cmd += [
+                        f"-filter:a:{out_idx}",
+                        "aformat=channel_layouts=7.1|5.1|stereo|mono",
+                    ]
                 if keep_quality:
                     br = int(bitrates.get(int(track["index"]), 0) or 0)
                     if br > 0:
@@ -2463,7 +2466,10 @@ def cut_file(
                         a_enc = _CODEC_TO_ENCODER.get(audio_codec, audio_codec)
                         cmd += ["-c:a", a_enc]
                         if a_enc in ("libopus", "libvorbis"):
-                            cmd += ["-af", "aformat=channel_layouts=7.1|5.1|stereo|mono"]
+                            cmd += [
+                                "-af",
+                                "aformat=channel_layouts=7.1|5.1|stereo|mono",
+                            ]
                     else:
                         cmd += ["-c:a", "copy"]
                 else:
@@ -2532,7 +2538,7 @@ def cut_file(
                 if stripped:
                     stderr_lines.append(stripped)
                     # Deduplicate repetitive warnings (e.g. per-frame
-                    # "Non-monotonic DTS" messages) — show only the first
+                    # "Non-monotonic DTS" messages) - show only the first
                     # occurrence to avoid flooding the log.
                     # Strip varying numeric values to normalise the key.
                     dedup_key = re.sub(r"\d+", "#", stripped)
@@ -2555,7 +2561,7 @@ def cut_file(
             if _gpu_encoder_name:
                 blacklist_encoder(_gpu_encoder_name)
                 progress_cb(
-                    f"GPU encoder {_gpu_encoder_name} failed — retrying with CPU"
+                    f"GPU encoder {_gpu_encoder_name} failed - retrying with CPU"
                 )
                 # Clean up before recursive retry; set flag so finally doesn't repeat
                 _cleaned_up = True
@@ -2924,7 +2930,7 @@ def cleanup_old_jobs() -> None:
                     delete_job(name)
                     logger.info("Cleaned up expired job %s", name)
             else:
-                # No metadata — check dir mtime
+                # No metadata - check dir mtime
                 mtime = datetime.fromtimestamp(
                     os.path.getmtime(job_dir), tz=timezone.utc
                 )
@@ -2993,7 +2999,7 @@ def cleanup_old_jobs() -> None:
     ]:
         if len(d) > _DICT_SIZE_WARN_THRESHOLD:
             logger.warning(
-                "Cutter runtime dict %s has %d entries (threshold %d) — "
+                "Cutter runtime dict %s has %d entries (threshold %d) - "
                 "possible memory leak",
                 name,
                 len(d),
@@ -3004,8 +3010,11 @@ def cleanup_old_jobs() -> None:
 def encode_file_id(source: str, path: str, job_id: str = "", base: str = "") -> str:
     """URL-safe base64 encode of 'source|job_id|base|path|hmac_signature'."""
     from app.config import SECRET_KEY
+
     payload = f"{source}|{job_id}|{base}|{path}"
-    sig = hmac.new(SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    sig = hmac.new(
+        SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
     raw = f"{payload}|{sig}"
     return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
 
@@ -3019,6 +3028,7 @@ def decode_file_id(file_id: str) -> tuple[str, str, str, str]:
     (e.g., via ``validate_path()``) to prevent directory traversal attacks.
     """
     from app.config import SECRET_KEY
+
     try:
         padding = 4 - len(file_id) % 4
         if padding != 4:
@@ -3033,7 +3043,7 @@ def decode_file_id(file_id: str) -> tuple[str, str, str, str]:
         raise ValueError("Invalid file_id format: no signature")
 
     payload = decoded[:last_pipe]
-    provided_sig = decoded[last_pipe + 1:]
+    provided_sig = decoded[last_pipe + 1 :]
 
     # Verify HMAC
     expected_sig = hmac.new(

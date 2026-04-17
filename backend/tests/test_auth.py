@@ -108,11 +108,9 @@ class TestAuthEnabled:
 
         session_cookie = login_resp.cookies.get("session")
         assert session_cookie is not None
+        auth_client.cookies.set("session", session_cookie)
 
-        resp = auth_client.get(
-            "/directories/tvshows",
-            cookies={"session": session_cookie},
-        )
+        resp = auth_client.get("/directories/tvshows")
         assert resp.status_code == 200
 
     def test_logout_clears_session(self, auth_client):
@@ -138,11 +136,9 @@ class TestAuthEnabled:
 
         session_cookie = login_resp.cookies.get("session")
         assert session_cookie is not None
+        auth_client.cookies.set("session", session_cookie)
 
-        resp = auth_client.get(
-            "/auth/status",
-            cookies={"session": session_cookie},
-        )
+        resp = auth_client.get("/auth/status")
         assert resp.status_code == 200
         data = resp.json()
         assert data["auth_enabled"] is True

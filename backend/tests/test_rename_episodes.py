@@ -201,7 +201,7 @@ class TestRenameEpisodesPatternFallback:
             dry_run=True,
         )
         assert error is None
-        # All 3 should match — no skips
+        # All 3 should match - no skips
         skips = [l for l in logs if "[ SKIP ]" in l]
         assert len(skips) == 0
 

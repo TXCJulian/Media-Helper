@@ -1,4 +1,4 @@
-import { API_BASE, assertAuthenticated } from './api'
+import { API_BASE, assertAuthenticated } from './http'
 
 interface SSECallbacks {
   onProgress: (data: string) => void
@@ -105,7 +105,7 @@ export function connectSSE(
 
       // Stream ended without a done event
       if (!receivedDone && !controller.signal.aborted) {
-        callbacks.onError('Connection lost — stream ended unexpectedly')
+        callbacks.onError('Connection lost - stream ended unexpectedly')
       }
     } catch {
       if (!controller.signal.aborted) {

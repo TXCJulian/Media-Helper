@@ -48,7 +48,9 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY") or "YOUR_TMDB_API_KEY"
 VALID_VIDEO_EXT = set(os.getenv("VALID_VIDEO_EXT", ".mp4,.mkv,.mov,.avi").split(","))
 VALID_MUSIC_EXT = set(os.getenv("VALID_MUSIC_EXT", ".mp3,.flac,.m4a,.wav").split(","))
 TRANSCRIBER_URL = os.getenv("TRANSCRIBER_URL", "")
-ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3333").split(",")]
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3333").split(",")
+]
 
 VALID_CUTTER_EXT = set(
     os.getenv(
@@ -56,7 +58,7 @@ VALID_CUTTER_EXT = set(
         ".mp4,.mkv,.mov,.avi,.webm,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.thd,.opus,.ogg,.aiff",
     ).split(",")
 )
-CUTTER_JOBS_DIR = os.getenv("CUTTER_JOBS_DIR", "/tmp/cutter-jobs")
+CUTTER_JOBS_DIR = os.getenv("CUTTER_JOBS_DIR", "/data/cutter-jobs")
 CUTTER_JOB_TTL = int(os.getenv("CUTTER_JOB_TTL", "86400"))
 CUTTER_MAX_DIRECT_REMUX_BYTES = int(
     os.getenv("CUTTER_MAX_DIRECT_REMUX_BYTES", str(1024 * 1024 * 1024))
@@ -64,8 +66,19 @@ CUTTER_MAX_DIRECT_REMUX_BYTES = int(
 HWACCEL = os.getenv("HWACCEL", "").lower().strip()
 VAAPI_DEVICE = os.getenv("VAAPI_DEVICE", "/dev/dri/renderD128")
 
-_VALID_FEATURES = {"episodes", "music", "lyrics", "cutter"}
-_features_raw = os.getenv("ENABLED_FEATURES", "episodes,music,cutter")
+# --- Downloader ---
+DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "/downloads")
+YT_DLP_COOKIES = os.getenv("YT_DLP_COOKIES", "")
+DOWNLOADER_JOBS_DIR = os.getenv("DOWNLOADER_JOBS_DIR", "/data/download-jobs")
+DOWNLOADER_JOB_TTL = int(os.getenv("DOWNLOADER_JOB_TTL", "604800"))
+
+_VALID_FEATURES = {"episodes", "music", "lyrics", "cutter", "download"}
+_default_features = (
+    "episodes,music,lyrics,cutter,download"
+    if TRANSCRIBER_URL
+    else "episodes,music,cutter,download"
+)
+_features_raw = os.getenv("ENABLED_FEATURES", _default_features)
 _parsed_features: list[str] = list(
     dict.fromkeys(
         f.strip().lower()
@@ -89,6 +102,7 @@ AUTH_ENABLED = bool(AUTH_USERNAME and AUTH_PASSWORD)
 
 # --- Secret key (for session cookies and file ID signing) ---
 _SECRET_KEY_PATH = "/var/lib/media-renamer/.secret_key"
+
 
 def _load_or_generate_secret_key() -> str:
     env_key = os.getenv("SECRET_KEY", "").strip()
@@ -119,12 +133,14 @@ def _load_or_generate_secret_key() -> str:
         logger.warning("Could not persist SECRET_KEY to %s: %s", _SECRET_KEY_PATH, e)
     return key
 
+
 SECRET_KEY = _load_or_generate_secret_key()
 
 # Hash password at startup if auth is enabled, then scrub plaintext
 _PASSWORD_HASH: bytes | None = None
 if AUTH_ENABLED:
     import bcrypt as _bcrypt
+
     _PASSWORD_HASH = _bcrypt.hashpw(AUTH_PASSWORD.encode("utf-8"), _bcrypt.gensalt())
     os.environ.pop("AUTH_PASSWORD", None)
     AUTH_PASSWORD = ""
