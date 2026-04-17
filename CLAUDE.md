@@ -41,7 +41,7 @@ docker compose -f deploy.yml up -d      # Production (pre-built images)
 
 ## Architecture
 
-### Backend (Python 3.12, FastAPI)
+### Backend (Python 3.14, FastAPI)
 
 - **`app/main.py`** - FastAPI app with lifespan-managed watchdog observer for filesystem monitoring. All API routes defined here. Path validation prevents directory traversal.
 - **`app/config.py`** - Central config loading from environment variables (base paths, API keys, extensions, feature toggles).
