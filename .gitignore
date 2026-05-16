@@ -431,3 +431,4 @@ TODO.txt
 /.claude
 .worktrees/
 nul
+.github/ 
