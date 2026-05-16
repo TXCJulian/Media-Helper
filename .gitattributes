@@ -1,6 +1,11 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Default: normalize line endings to LF on commit
+* text=auto eol=lf
 
 # Shell scripts must always use LF, even on Windows checkouts,
 # or their shebang line breaks when baked into a Linux container image.
 *.sh text eol=lf
+
+# Windows-specific files can use CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
