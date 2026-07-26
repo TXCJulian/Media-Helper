@@ -4,6 +4,9 @@ interface SSECallbacks {
   onProgress: (data: string) => void
   onError: (data: string) => void
   onDone: (data: string) => void
+  /** Called when the stream terminates without a `done` event, so callers can
+   *  clear any in-progress UI state. Never called after `onDone`. */
+  onClose?: () => void
 }
 
 export function connectSSE(
@@ -19,6 +22,8 @@ export function connectSSE(
   for (const [k, v] of Object.entries(params)) {
     if (v) formData.append(k, v)
   }
+
+  let receivedDone = false
 
   ;(async () => {
     let response: Response
@@ -56,7 +61,6 @@ export function connectSSE(
 
     const decoder = new TextDecoder()
     let buffer = ''
-    let receivedDone = false
 
     try {
       while (true) {
@@ -112,7 +116,9 @@ export function connectSSE(
         callbacks.onError('Connection lost')
       }
     }
-  })()
+  })().finally(() => {
+    if (!receivedDone) callbacks.onClose?.()
+  })
 
   return () => controller.abort()
 }

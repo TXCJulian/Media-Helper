@@ -48,7 +48,9 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY") or "YOUR_TMDB_API_KEY"
 VALID_VIDEO_EXT = set(os.getenv("VALID_VIDEO_EXT", ".mp4,.mkv,.mov,.avi").split(","))
 VALID_MUSIC_EXT = set(os.getenv("VALID_MUSIC_EXT", ".mp3,.flac,.m4a,.wav").split(","))
 TRANSCRIBER_URL = os.getenv("TRANSCRIBER_URL", "")
-ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3333").split(",")]
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3333").split(",")
+]
 
 VALID_CUTTER_EXT = set(
     os.getenv(
@@ -90,6 +92,7 @@ AUTH_ENABLED = bool(AUTH_USERNAME and AUTH_PASSWORD)
 # --- Secret key (for session cookies and file ID signing) ---
 _SECRET_KEY_PATH = "/var/lib/media-renamer/.secret_key"
 
+
 def _load_or_generate_secret_key() -> str:
     env_key = os.getenv("SECRET_KEY", "").strip()
     if env_key:
@@ -119,12 +122,14 @@ def _load_or_generate_secret_key() -> str:
         logger.warning("Could not persist SECRET_KEY to %s: %s", _SECRET_KEY_PATH, e)
     return key
 
+
 SECRET_KEY = _load_or_generate_secret_key()
 
 # Hash password at startup if auth is enabled, then scrub plaintext
 _PASSWORD_HASH: bytes | None = None
 if AUTH_ENABLED:
     import bcrypt as _bcrypt
+
     _PASSWORD_HASH = _bcrypt.hashpw(AUTH_PASSWORD.encode("utf-8"), _bcrypt.gensalt())
     os.environ.pop("AUTH_PASSWORD", None)
     AUTH_PASSWORD = ""

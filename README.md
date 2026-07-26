@@ -44,14 +44,14 @@ Media-Helper is a dockerized tool with four modules:
 3. **Lyrics Transcriber** — Transcribes lyrics from audio files using AI (HDemucs + Whisper + Genius)
 4. **Media Cutter** — Trim and cut audio/video files with waveform preview and per-track codec control
 
-The application consists of a FastAPI backend (Python 3.12), a React frontend (Vite + Tailwind CSS), and an optional GPU-powered lyrics transcription service. All services communicate over a Docker bridge network behind an Nginx reverse proxy.
+The application consists of a FastAPI backend (Python 3.14), a React frontend (Vite + Tailwind CSS), and an optional GPU-powered lyrics transcription service. All services communicate over a Docker bridge network behind an Nginx reverse proxy.
 
 ## Features
 
 ### TV Shows
 
 - Automatic series search via TMDB API (multi-language: DE, EN, etc.)
-- Episode renaming: `S01E01 - Episode title.ext`
+- Episode renaming: `SxxExx - Episode title.ext` (`S` = season number, `E` = episode number)
 - Intelligent filename-to-episode matching with configurable threshold
 - Sequence assignment mode for unmatched files
 - Batch processing of entire seasons
@@ -62,8 +62,9 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 - Metadata-based renaming from ID3, FLAC, Vorbis, Opus, AIFF, ASF, Musepack tags
 - Supported formats: FLAC, WAV, MP3, OGG Vorbis, OGG Opus, AIFF, ASF, Musepack
 - Umlaut normalization for filesystem compatibility
-- Schema: `Tracknr - Artist - Title.ext`
+- Schema: `DxxTxx Title.ext` (`D` = disc number, `T` = track number)
 - Artist and album directory filters
+- Choose whether sidecar `.lrc`/`.txt` lyrics are renamed alongside the song or deleted
 
 ### Lyrics Transcription
 
@@ -73,7 +74,8 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 - Real-time progress streaming via Server-Sent Events (SSE)
 - GPU health indicator showing connected GPU model
 - Skip existing lyrics option
-- Advanced options: language override, skip vocal separation, skip Genius correction
+- Advanced options: Whisper model size, language override, skip vocal separation, skip Genius correction
+- Genius artist/title override when a single song is selected (for wrong or missing tags)
 - **Requires optional GPU service ([Whisper_Lyric-Transcriber](https://github.com/TXCJulian/Whisper_Lyric-Transcriber))**
 
 ### Media Cutter
@@ -111,7 +113,7 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 
 **Backend:**
 
-- Python 3.12 (LTS)
+- Python 3.14
 - FastAPI + Uvicorn
 - TMDB API (The Movie Database)
 - Mutagen (audio metadata)
@@ -122,9 +124,9 @@ The application consists of a FastAPI backend (Python 3.12), a React frontend (V
 **Frontend:**
 
 - React 19 (Functional Components + Hooks)
-- Vite 7 (build tool + HMR)
+- Vite 8 (build tool + HMR)
 - Tailwind CSS 4
-- TypeScript 5
+- TypeScript 7
 - Vitest (testing)
 
 **Infrastructure:**
@@ -174,6 +176,7 @@ Browser                    Frontend Container               Backend Container
 - **Docker Compose** (Version 2.0+)
 - **TMDB API Key** ([free at themoviedb.org](https://www.themoviedb.org/settings/api))
 - **Media directory** with read/write permissions
+- **Node** 22.22.2+, 24.15+, or 26+ (only for local frontend development; the Docker build is unaffected)
 - **Optional**: Hardware-acceleration compatible APU/GPU (for ffmpeg in cutter section)
 - **Optional**: NVIDIA GPU + CUDA drivers (for lyrics transcription)
 
@@ -323,7 +326,7 @@ The application expects the following structure in your media directory:
 | Method | Endpoint | Description |
 | ------ | -------- | ----------- |
 | `GET` | `/directories/music` | List music directories (query: `artist`, `album`) |
-| `POST` | `/rename/music` | Rename music files (form: `directory`, `dry_run`) |
+| `POST` | `/rename/music` | Rename music files (form: `directory`, `base`, `dry_run`, `lyrics_action`) |
 
 ### Lyrics Transcription Endpoints
 
@@ -331,7 +334,7 @@ The application expects the following structure in your media directory:
 | ------ | -------- | ----------- |
 | `GET` | `/transcribe/health` | Transcriber service health + GPU info |
 | `GET` | `/transcribe/files` | List music files with lyrics status (query: `directory`) |
-| `GET` | `/transcribe/start` | Start transcription (SSE stream, query: `directory`, `files`, `output_format`, `skip_existing`, `language`, `skip_separation`, `skip_correction`) |
+| `POST` | `/transcribe/start` | Start transcription (SSE stream, form: `directory`, `base`, `files` (JSON array of filenames), `output_format`, `skip_existing`, `language`, `no_separation`, `no_correction`, `whisper_model`, `artist_override`, `title_override`) |
 
 ### Media Cutter Endpoints
 

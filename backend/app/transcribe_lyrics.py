@@ -8,6 +8,27 @@ from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
+# Whisper model sizes accepted by the transcriber service. The UI exposes a
+# subset; the full list is allowed for direct API callers.
+VALID_WHISPER_MODELS: frozenset[str] = frozenset(
+    {
+        "tiny",
+        "tiny.en",
+        "base",
+        "base.en",
+        "small",
+        "small.en",
+        "medium",
+        "medium.en",
+        "large-v1",
+        "large-v2",
+        "large-v3",
+        "large-v3-turbo",
+        "turbo",
+    }
+)
+DEFAULT_WHISPER_MODEL = "large-v3-turbo"
+
 _LOG_TAGS: dict[str, str] = {
     "UPLOAD": "[UPLOAD]\t\t",
     "PROCESS": "[PROCESS]\t\t",

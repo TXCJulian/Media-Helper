@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 
 DISALLOWED_RE = re.compile(r'[\x00-\x1F<>:"/\\|?*]')
 
+# Lyrics files the transcriber writes next to an audio file.
+LYRIC_EXTENSIONS = (".txt", ".lrc")
+# What to do with them when their audio file is renamed.
+LYRICS_ACTIONS = frozenset({"rename", "delete"})
+
 
 def try_decode_bytes(b: bytes) -> str:
     """Try multiple decodings in order, return str."""
@@ -73,6 +78,17 @@ def sanitize_tag_value(value) -> str:
     s = s.strip()
 
     return s
+
+
+def leading_int(raw: Any) -> int:
+    """Leading integer of a disc/track tag, or 0 if there is none.
+
+    Must run on the *raw* tag value: these tags commonly use the "7/12"
+    (number-of-total) form, and sanitize_tag_value() strips the '/' as a path
+    separator, which would silently turn 7/12 into 712.
+    """
+    m = re.match(r"\s*(\d+)", str(raw if raw is not None else ""))
+    return int(m.group(1)) if m else 0
 
 
 def get_first_tag_value(audio: Any, tag_name: str) -> Optional[str]:
@@ -129,9 +145,71 @@ def load_audio_file(filepath: str) -> Optional[Any]:
         return None
 
 
+def handle_sidecar_lyrics(
+    old_audio_path: str,
+    new_audio_path: str,
+    lyrics_action: str,
+    dry_run: bool,
+    logs: list[str],
+) -> None:
+    """Rename or delete the .lrc/.txt files sitting next to a renamed audio file.
+
+    `new_audio_path` is the *final* path the audio landed on, so the lyrics keep
+    matching it even when collision_safe_path() appended a suffix.
+    """
+    old_stem = os.path.splitext(old_audio_path)[0]
+    new_stem = os.path.splitext(new_audio_path)[0]
+
+    for lyric_ext in LYRIC_EXTENSIONS:
+        old_lyric = old_stem + lyric_ext
+        if not os.path.exists(old_lyric):
+            continue
+
+        if lyrics_action == "delete":
+            if dry_run:
+                logs.append(
+                    f"[DELETE]\tWould remove lyric file: {os.path.basename(old_lyric)}"
+                )
+            else:
+                try:
+                    os.remove(old_lyric)
+                    logs.append(
+                        f"[DELETE]\tLyric file removed: {os.path.basename(old_lyric)}"
+                    )
+                except OSError as e:
+                    logs.append(f"[!]\t{lyric_ext} deletion failed: {e}")
+            continue
+
+        # "rename" — keep the lyrics, following the audio file's new name.
+        new_lyric = new_stem + lyric_ext
+        if dry_run:
+            logs.append(
+                f"[LYRICS]\tWould rename '{os.path.basename(old_lyric)}' -> "
+                f"{os.path.basename(new_lyric)}"
+            )
+            continue
+
+        # An unrelated file may already occupy the destination; never clobber it.
+        safe_lyric = collision_safe_path(new_lyric)
+        try:
+            os.rename(old_lyric, safe_lyric)
+            logs.append(
+                f"[LYRICS]\t'{os.path.basename(old_lyric)}' -> "
+                f"{os.path.basename(safe_lyric)}"
+            )
+        except OSError as e:
+            logs.append(f"[!]\t{lyric_ext} rename failed: {e}")
+
+
 def rename_music(
-    directory: str, dry_run: bool = False
+    directory: str, dry_run: bool = False, lyrics_action: str = "rename"
 ) -> tuple[list[str], Optional[str]]:
+
+    if lyrics_action not in LYRICS_ACTIONS:
+        raise ValueError(
+            f"Invalid lyrics_action '{lyrics_action}'. "
+            f"Must be one of: {', '.join(sorted(LYRICS_ACTIONS))}"
+        )
 
     logs: list[str] = []
     error: Optional[str] = None
@@ -182,28 +260,15 @@ def rename_music(
             continue
 
         title = sanitize_tag_value(raw_title)
-        track_s = sanitize_tag_value(raw_track)
-
-        disk_num = 0
-        try:
-            if raw_disk:
-                m = re.search(r"\d", str(raw_disk))
-                disk_num = int(m.group(0)) if m else 0
-        except (ValueError, AttributeError):
-            disk_num = 0
-
-        m2 = re.match(r"\s*(\d+)", track_s)
-        try:
-            track_num = int(m2.group(1)) if m2 else 0
-        except (ValueError, AttributeError):
-            track_num = 0
+        disk_num = leading_int(raw_disk)
+        track_num = leading_int(raw_track)
 
         if not title:
             skipped_files.append((filename, "Title tag is empty"))
             continue
 
         _, ext = os.path.splitext(filename)
-        new_name_base = f"{disk_num:02d}-{track_num:02d} {title}{ext}"
+        new_name_base = f"D{disk_num:02d}T{track_num:02d} {title}{ext}"
         new_name_base = new_name_base.strip()
         new_path = os.path.join(directory, new_name_base)
 
@@ -217,33 +282,20 @@ def rename_music(
         if not dry_run:
             try:
                 os.rename(filepath, new_path)
-                base_name = os.path.splitext(filepath)[0]
-                for lyric_ext in [".txt", ".lrc"]:
-                    old_lyric = base_name + lyric_ext
-                    if os.path.exists(old_lyric):
-                        try:
-                            os.remove(old_lyric)
-                            logs.append(
-                                f"[DELETE]\tLyric file removed: {os.path.basename(old_lyric)}"
-                            )
-                        except Exception as e:
-                            logs.append(f"[!]\t{lyric_ext} deletion failed: {e}")
-                logs.append(f"[RENAME]\t'{filename}' -> {os.path.basename(new_path)}")
-                renamed_count += 1
-            except Exception as e:
+            except OSError as e:
                 skipped_files.append((filename, f"Error renaming: {str(e)}"))
                 continue
+            logs.append(f"[RENAME]\t'{filename}' -> {os.path.basename(new_path)}")
+            # Only after the audio moved, so the lyrics follow its final name.
+            handle_sidecar_lyrics(filepath, new_path, lyrics_action, False, logs)
         else:
-            base_name = os.path.splitext(filepath)[0]
-            for lyric_ext in [".txt", ".lrc"]:
-                old_lyric = base_name + lyric_ext
-                if os.path.exists(old_lyric):
-                    logs.append(
-                        f"[DELETE]\tWould remove lyric file: {os.path.basename(old_lyric)}"
-                    )
             logs.append(
                 f"[DRYRUN]\tWould rename '{filename}' -> {os.path.basename(new_path)}"
             )
+            handle_sidecar_lyrics(filepath, new_path, lyrics_action, True, logs)
+
+        # Counted for both modes, so a dry run previews the real run's summary.
+        renamed_count += 1
 
     if not dry_run and renamed_count > 0:
         flush_directory(directory)
@@ -254,7 +306,8 @@ def rename_music(
 
     if dry_run:
         logs.append(
-            f"\nSummary: {renamed_count} files would be renamed, {skipped_count} skipped"
+            f"\nSummary: {renamed_count} files would be renamed, "
+            f"{already_correct_count} already correct, {skipped_count} skipped"
         )
     else:
         logs.append(

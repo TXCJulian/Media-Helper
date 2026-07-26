@@ -41,13 +41,13 @@ docker compose -f deploy.yml up -d      # Production (pre-built images)
 
 ## Architecture
 
-### Backend (Python 3.12, FastAPI)
+### Backend (Python 3.14, FastAPI)
 
 - **`app/main.py`** — FastAPI app with lifespan-managed watchdog observer for filesystem monitoring. All API routes defined here. Path validation prevents directory traversal.
 - **`app/config.py`** — Central config loading from environment variables (base paths, API keys, extensions, feature toggles).
 - **`app/get_dirs.py`** — LRU-cached directory scanning. Watchdog events clear caches automatically.
 - **`app/rename_episodes.py`** — TMDB search → episode matching via `SequenceMatcher` → rename to `S01E01 Title.ext`. Supports language fallback (fetch English if translation missing), umlaut transliteration, accent stripping, and configurable match threshold.
-- **`app/rename_music.py`** — Mutagen metadata extraction (supports FLAC, WAV, MP3, Ogg, AIFF, ASF, Musepack) → rename to `DD-TT Title.ext`. Handles mojibake encoding repair and filename collision avoidance.
+- **`app/rename_music.py`** — Mutagen metadata extraction (supports FLAC, WAV, MP3, Ogg, AIFF, ASF, Musepack) → rename to `DxxTxx Title.ext` (disc/track). Handles mojibake encoding repair and filename collision avoidance. Sidecar `.lrc`/`.txt` lyrics are renamed along with the song, or deleted, per `lyrics_action`.
 - **`app/cutter.py`** — Media cutting/trimming with ffmpeg. Probes files with ffprobe, generates waveforms, determines codec/container compatibility, supports stream-copy (lossless instant cut) and full transcode. Per-track codec selection for audio (AAC, FLAC, Opus, AC3, MP3, etc.) and video (H.264, H.265, VP9, AV1). Job-based architecture with persistent state in `/data/cutter-jobs`, 50 GB upload limit.
 - **`app/hwaccel.py`** — GPU encoder auto-detection (NVIDIA NVENC, Intel QSV, AMD AMF, VAAPI). Transparently substitutes GPU for CPU encoders with graceful CPU fallback. Configurable via `HWACCEL` env var.
 - **`app/transcribe_lyrics.py`** — SSE proxy to external `lyric-transcriber` service. Upload → poll job → download results → save `.lrc`/`.txt` alongside audio. 30-minute polling timeout.

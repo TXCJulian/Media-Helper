@@ -33,9 +33,19 @@ from app.config import (
     ENABLED_FEATURES_SET,
     AUTH_ENABLED,
 )
-from app.auth import verify_login, create_session_cookie, clear_session_cookie, check_session
+from app.auth import (
+    verify_login,
+    create_session_cookie,
+    clear_session_cookie,
+    check_session,
+)
 from app.rename_episodes import rename_episodes
-from app.rename_music import rename_music, load_audio_file, get_first_tag_value
+from app.rename_music import (
+    rename_music,
+    load_audio_file,
+    get_first_tag_value,
+    LYRICS_ACTIONS,
+)
 from app.get_dirs import (
     _get_all_dirs_cached,
     _get_music_dirs_cached,
@@ -47,6 +57,8 @@ from app.transcribe_lyrics import (
     get_file_lyrics_status,
     check_existing_lyrics,
     transcribe_file,
+    VALID_WHISPER_MODELS,
+    DEFAULT_WHISPER_MODEL,
 )
 from app.cutter import (
     probe_file,
@@ -197,12 +209,16 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
         path: str = scope.get("path", "")
-        if path in _AUTH_EXEMPT_EXACT or any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES):
+        if path in _AUTH_EXEMPT_EXACT or any(
+            path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES
+        ):
             await self.app(scope, receive, send)
             return
         request = Request(scope)
         if not check_session(request):
-            response = JSONResponse({"detail": "Authentication required"}, status_code=401)
+            response = JSONResponse(
+                {"detail": "Authentication required"}, status_code=401
+            )
             await response(scope, receive, send)
             return
         await self.app(scope, receive, send)
@@ -414,8 +430,17 @@ async def rename_music_route(
     directory: str = Form(..., max_length=500),
     dry_run: bool = Form(...),
     base: str = Form(..., max_length=200),
+    lyrics_action: str = Form("rename", max_length=10),
 ):
     require_feature("music")
+    if lyrics_action not in LYRICS_ACTIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid lyrics action '{lyrics_action}'. Must be one of: "
+                + ", ".join(sorted(LYRICS_ACTIONS))
+            ),
+        )
     try:
         base_path = resolve_base(base)
     except ValueError:
@@ -430,9 +455,16 @@ async def rename_music_route(
             "directories": _get_music_dirs_cached(),
         }
 
-    logger.info("Renaming music: dir=%s, dry_run=%s", directory, dry_run)
+    logger.info(
+        "Renaming music: dir=%s, dry_run=%s, lyrics_action=%s",
+        directory,
+        dry_run,
+        lyrics_action,
+    )
 
-    logs, error = rename_music(directory=path, dry_run=dry_run)
+    logs, error = rename_music(
+        directory=path, dry_run=dry_run, lyrics_action=lyrics_action
+    )
 
     if error:
         logger.error("Music rename failed: %s", error)
@@ -474,16 +506,46 @@ def list_transcribable_files(
     return {"files": [get_file_lyrics_status(f) for f in music_files]}
 
 
+def _sse_headers() -> dict[str, str]:
+    return {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+
+
+def _transcription_error_stream(message: str) -> StreamingResponse:
+    """Report a start-up failure over SSE.
+
+    The client consumes this endpoint purely as an event stream, so a plain JSON
+    body would look like a stream that ended without a `done` event and leave the
+    UI spinning forever.
+    """
+
+    def gen():
+        yield f"event: error_msg\ndata: {message}\n\n"
+        yield "event: done\ndata: Completed: 0/0, Errors: 1\n\n"
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream", headers=_sse_headers()
+    )
+
+
 @app.post("/transcribe/start")
 def start_transcription(
     directory: str = Form(..., max_length=500),
-    files: str = Form("", max_length=5000),
+    files: str = Form("", max_length=10000),  # JSON array of filenames
     output_format: str = Form("lrc", max_length=5),
     skip_existing: bool = Form(True),
     language: str = Form("", max_length=10),
     no_separation: bool = Form(False),
     no_correction: bool = Form(False),
     base: str = Form(..., max_length=200),
+    whisper_model: str = Form(DEFAULT_WHISPER_MODEL, max_length=50),
+    # Genius lookup overrides — only honoured for a single-file batch, since
+    # one artist/title pair cannot describe several songs.
+    artist_override: str = Form("", max_length=200),
+    title_override: str = Form("", max_length=200),
 ):
     require_feature("lyrics")
     if output_format not in ("lrc", "txt", "all"):
@@ -491,8 +553,16 @@ def start_transcription(
             status_code=422,
             detail="Invalid output format. Must be 'lrc', 'txt', or 'all'.",
         )
+    if whisper_model not in VALID_WHISPER_MODELS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid whisper model '{whisper_model}'. Must be one of: "
+                + ", ".join(sorted(VALID_WHISPER_MODELS))
+            ),
+        )
     if not TRANSCRIBER_URL:
-        return {"error": "TRANSCRIBER_URL not set"}
+        return _transcription_error_stream("TRANSCRIBER_URL not set")
 
     try:
         base_path = resolve_base(base)
@@ -501,23 +571,43 @@ def start_transcription(
     music_base = os.path.join(base_path, MUSIC_FOLDER_NAME)
     path = validate_path(music_base, directory)
     if not os.path.isdir(path):
-        return {"error": "Directory not found"}
+        return _transcription_error_stream("Directory not found")
 
     if files:
+        # A JSON array is used instead of a delimited string because filenames
+        # may contain commas (e.g. "01-13 Illegal, legal, egal....flac").
+        try:
+            requested = json.loads(files)
+            if not isinstance(requested, list) or not all(
+                isinstance(f, str) for f in requested
+            ):
+                raise ValueError("expected a JSON array of filenames")
+        except (json.JSONDecodeError, ValueError) as e:
+            raise HTTPException(
+                status_code=422, detail=f"Invalid 'files' parameter: {e}"
+            )
         # Sanitize filenames to basenames only (prevent path traversal via filenames)
-        selected = [os.path.join(path, os.path.basename(f)) for f in files.split(",")]
+        selected = [os.path.join(path, os.path.basename(f)) for f in requested]
         selected = [f for f in selected if os.path.isfile(f)]
     else:
         selected = get_music_files(path, VALID_MUSIC_EXT)
 
     if not selected:
-        return {"error": "No music files found"}
+        return _transcription_error_stream("No music files found")
+
+    # Overrides describe one specific song, so they only apply to a single-file
+    # batch — silently reusing them across a whole album would mislabel every
+    # Genius lookup after the first.
+    single_file = len(selected) == 1
+    use_artist_override = artist_override.strip() if single_file else ""
+    use_title_override = title_override.strip() if single_file else ""
 
     logger.info(
-        "Starting transcription: dir=%s, files=%d, format=%s",
+        "Starting transcription: dir=%s, files=%d, format=%s, model=%s",
         directory,
         len(selected),
         output_format,
+        whisper_model,
     )
 
     msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -549,7 +639,7 @@ def start_transcription(
             else:
                 effective_format = output_format
 
-            # Extract metadata for Genius correction
+            # Extract metadata for Genius correction; explicit overrides win.
             file_artist = None
             file_title = None
             if not no_correction:
@@ -557,6 +647,8 @@ def start_transcription(
                 if audio:
                     file_artist = get_first_tag_value(audio, "artist")
                     file_title = get_first_tag_value(audio, "title")
+                file_artist = use_artist_override or file_artist
+                file_title = use_title_override or file_title
 
             def progress_cb(msg):
                 msg_queue.put(("progress", msg))
@@ -566,6 +658,7 @@ def start_transcription(
                 transcriber_url=TRANSCRIBER_URL,
                 output_format=effective_format,
                 no_separation=no_separation,
+                whisper_model=whisper_model,
                 language=language or None,
                 artist=file_artist,
                 title=file_title,
@@ -604,11 +697,7 @@ def start_transcription(
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=_sse_headers(),
     )
 
 
@@ -688,7 +777,9 @@ def list_cutter_files(
                         "name": entry.name,
                         "size": entry.stat().st_size,
                         "extension": ext,
-                        "file_id": encode_file_id("server", rel_path, job_id="", base=base),
+                        "file_id": encode_file_id(
+                            "server", rel_path, job_id="", base=base
+                        ),
                     }
                 )
         except OSError:

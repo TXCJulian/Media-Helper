@@ -14,12 +14,16 @@ export interface EpisodeForm {
   lang: string
 }
 
+/** What to do with .lrc/.txt files next to a renamed audio file. */
+export type LyricsAction = 'rename' | 'delete'
+
 export interface MusicForm {
   artist: string
   album: string
   directory: string
   base: string
   dry_run: boolean
+  lyrics_action: LyricsAction
 }
 
 export interface DirectoriesResponse {
@@ -43,6 +47,10 @@ export interface LyricsForm {
   language: string
   no_separation: boolean
   no_correction: boolean
+  whisper_model: string
+  /** Genius lookup overrides — only sent when exactly one song is selected. */
+  artist_override: string
+  title_override: string
 }
 
 export interface TranscriberHealth {

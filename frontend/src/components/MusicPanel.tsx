@@ -6,6 +6,7 @@ import PanelLayout from '@/components/PanelLayout'
 import LogPanel from '@/components/LogPanel'
 import FormSection from '@/components/ui/FormSection'
 import DirectorySelect from '@/components/ui/DirectorySelect'
+import SegmentedControl from '@/components/ui/SegmentedControl'
 import ToggleSwitch from '@/components/ui/ToggleSwitch'
 
 interface MusicPanelProps {
@@ -33,10 +34,12 @@ export default function MusicPanel({
     directory: '',
     base: '',
     dry_run: true,
+    lyrics_action: 'rename',
   })
   const [directories, setDirectories] = useState<DirectoryEntry[]>([])
   const [isLoadingDirs, setIsLoadingDirs] = useState(false)
   const [isRenaming, setIsRenaming] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
 
   const debouncedArtist = useDebounce(form.artist, 500)
   const debouncedAlbum = useDebounce(form.album, 500)
@@ -95,6 +98,7 @@ export default function MusicPanel({
         directory: form.directory,
         base: form.base,
         dry_run: form.dry_run,
+        lyrics_action: form.lyrics_action,
       })
       if (data.error) onError(data.error)
       onLog(data.log ?? [])
@@ -161,6 +165,42 @@ export default function MusicPanel({
             color="indigo"
             label="Dry Run"
           />
+
+          <div className="mt-[0.85rem]">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="flex cursor-pointer items-center gap-2 border-none bg-none p-0 font-[Geist,sans-serif] text-[0.75rem] text-[var(--text-tertiary)] transition-colors duration-200 hover:text-[var(--text-secondary)]"
+            >
+              <span
+                className={`text-[0.55rem] transition-transform duration-200 ${showAdvanced ? 'rotate-90' : ''}`}
+              >
+                ▶
+              </span>
+              Advanced Options
+            </button>
+
+            {showAdvanced && (
+              <div className="mt-3 rounded-[10px] border border-[var(--border)] bg-[rgba(0,0,0,0.2)] p-4">
+                <label className="field-label">Lyrics Files (.lrc / .txt)</label>
+                <SegmentedControl
+                  options={[
+                    { label: 'Rename', value: 'rename' },
+                    { label: 'Delete', value: 'delete' },
+                  ]}
+                  value={form.lyrics_action}
+                  onChange={(v) => update('lyrics_action', v as MusicForm['lyrics_action'])}
+                  disabled={busy}
+                  color="indigo"
+                />
+                <p className="mt-[0.35rem] text-[0.68rem] leading-snug text-[var(--text-tertiary)]">
+                  {form.lyrics_action === 'rename'
+                    ? 'Transcribed lyrics follow the song to its new name.'
+                    : 'Transcribed lyrics are deleted and must be transcribed again.'}
+                </p>
+              </div>
+            )}
+          </div>
         </FormSection>
 
         <button type="submit" disabled={busy} className="btn-submit btn-indigo">

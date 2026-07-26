@@ -120,8 +120,7 @@ export default function CutterPanel({
   const setSource = useCallback(
     (
       updater:
-        | Partial<CutterSourceState>
-        | ((prev: CutterSourceState) => Partial<CutterSourceState>),
+        Partial<CutterSourceState> | ((prev: CutterSourceState) => Partial<CutterSourceState>),
     ) => {
       const current = persistedRef.current
       const key = current.form.source === 'server' ? 'serverState' : 'uploadState'

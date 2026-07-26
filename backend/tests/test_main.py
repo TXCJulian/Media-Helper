@@ -146,7 +146,13 @@ class TestPathTraversal:
         })
         assert resp.status_code == 400
 
-    def test_transcribe_files_path_traversal(self, client, base_label):
+    def test_transcribe_files_path_traversal(self, client, base_label, monkeypatch):
+        # 'lyrics' is off in the default feature set, so require_feature() would
+        # short-circuit with a 404 and the traversal check would never run.
+        import app.main as main_mod
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"lyrics"})
+
         resp = client.get("/transcribe/files", params={
             "directory": "../../../etc",
             "base": base_label,
@@ -443,3 +449,196 @@ class TestCutterValidation:
         )
         assert response.status_code == 422
         assert "Invalid audio track codec" in response.json()["detail"]
+
+
+class TestTranscribeStart:
+    """Regression tests for /transcribe/start file selection."""
+
+    def _setup(self, monkeypatch, tmp_media_dir, names):
+        import app.main as main_mod
+
+        album = tmp_media_dir / "Music" / "SSIO" / "BB.U.M.SS.N"
+        album.mkdir(parents=True)
+        for name in names:
+            (album / name).write_bytes(b"\x00" * 100)
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"lyrics", "music"})
+        monkeypatch.setattr(main_mod, "TRANSCRIBER_URL", "http://transcriber:3334")
+        monkeypatch.setattr(
+            main_mod, "transcribe_file", lambda **_kwargs: ([], None)
+        )
+        return "SSIO/BB.U.M.SS.N"
+
+    def test_filename_with_comma_is_selected(
+        self, client, tmp_media_dir, base_label, monkeypatch
+    ):
+        comma_name = "01-13 Illegal, legal, egal....flac"
+        directory = self._setup(
+            monkeypatch, tmp_media_dir, [comma_name, "01-01 Other.flac"]
+        )
+
+        resp = client.post(
+            "/transcribe/start",
+            data={
+                "directory": directory,
+                "base": base_label,
+                "files": json.dumps([comma_name]),
+                "output_format": "lrc",
+                "skip_existing": "false",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        assert "event: done" in resp.text
+        assert "Completed: 1/1" in resp.text
+
+    def test_no_matching_files_still_returns_sse(
+        self, client, tmp_media_dir, base_label, monkeypatch
+    ):
+        directory = self._setup(monkeypatch, tmp_media_dir, ["01-01 Other.flac"])
+
+        resp = client.post(
+            "/transcribe/start",
+            data={
+                "directory": directory,
+                "base": base_label,
+                "files": json.dumps(["does-not-exist.flac"]),
+                "output_format": "lrc",
+            },
+        )
+
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        assert "event: error_msg" in resp.text
+        assert "event: done" in resp.text
+
+    def test_rejects_unknown_whisper_model(
+        self, client, tmp_media_dir, base_label, monkeypatch
+    ):
+        directory = self._setup(monkeypatch, tmp_media_dir, ["01-01 Other.flac"])
+
+        resp = client.post(
+            "/transcribe/start",
+            data={
+                "directory": directory,
+                "base": base_label,
+                "output_format": "lrc",
+                "whisper_model": "definitely-not-a-model",
+            },
+        )
+
+        assert resp.status_code == 422
+        assert "Invalid whisper model" in resp.json()["detail"]
+
+    def test_overrides_applied_for_single_file(
+        self, client, tmp_media_dir, base_label, monkeypatch
+    ):
+        import app.main as main_mod
+
+        directory = self._setup(monkeypatch, tmp_media_dir, ["01-01 Other.flac"])
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            main_mod, "transcribe_file", lambda **kw: (calls.append(kw), ([], None))[1]
+        )
+
+        resp = client.post(
+            "/transcribe/start",
+            data={
+                "directory": directory,
+                "base": base_label,
+                "output_format": "lrc",
+                "skip_existing": "false",
+                "whisper_model": "medium",
+                "artist_override": "SSIO",
+                "title_override": "Nullkommaneun",
+            },
+        )
+
+        assert "event: done" in resp.text
+        assert len(calls) == 1
+        assert calls[0]["whisper_model"] == "medium"
+        assert calls[0]["artist"] == "SSIO"
+        assert calls[0]["title"] == "Nullkommaneun"
+
+    def test_overrides_ignored_for_multi_file(
+        self, client, tmp_media_dir, base_label, monkeypatch
+    ):
+        import app.main as main_mod
+
+        directory = self._setup(
+            monkeypatch, tmp_media_dir, ["01-01 A.flac", "01-02 B.flac"]
+        )
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            main_mod, "transcribe_file", lambda **kw: (calls.append(kw), ([], None))[1]
+        )
+
+        resp = client.post(
+            "/transcribe/start",
+            data={
+                "directory": directory,
+                "base": base_label,
+                "output_format": "lrc",
+                "skip_existing": "false",
+                "artist_override": "SSIO",
+                "title_override": "Nullkommaneun",
+            },
+        )
+
+        assert "event: done" in resp.text
+        assert len(calls) == 2
+        assert all(c["title"] != "Nullkommaneun" for c in calls)
+
+
+class TestRenameMusicLyricsAction:
+    def test_rejects_unknown_lyrics_action(self, client, base_label):
+        resp = client.post("/rename/music", data={
+            "directory": "ABBA",
+            "base": base_label,
+            "dry_run": True,
+            "lyrics_action": "shred",
+        })
+        assert resp.status_code == 422
+        assert "Invalid lyrics action" in resp.json()["detail"]
+
+    def test_action_is_forwarded(self, client, tmp_media_dir, base_label, monkeypatch):
+        import app.main as main_mod
+
+        album = tmp_media_dir / "Music" / "ABBA"
+        album.mkdir(parents=True)
+        (album / "song.flac").write_bytes(b"\x00")
+
+        seen: dict = {}
+        monkeypatch.setattr(
+            main_mod, "rename_music", lambda **kw: (seen.update(kw), ([], None))[1]
+        )
+
+        resp = client.post("/rename/music", data={
+            "directory": "ABBA",
+            "base": base_label,
+            "dry_run": True,
+            "lyrics_action": "delete",
+        })
+
+        assert resp.status_code == 200
+        assert seen["lyrics_action"] == "delete"
+
+    def test_defaults_to_rename(self, client, tmp_media_dir, base_label, monkeypatch):
+        import app.main as main_mod
+
+        album = tmp_media_dir / "Music" / "ABBA"
+        album.mkdir(parents=True)
+        (album / "song.flac").write_bytes(b"\x00")
+
+        seen: dict = {}
+        monkeypatch.setattr(
+            main_mod, "rename_music", lambda **kw: (seen.update(kw), ([], None))[1]
+        )
+
+        client.post("/rename/music", data={
+            "directory": "ABBA",
+            "base": base_label,
+            "dry_run": True,
+        })
+
+        assert seen["lyrics_action"] == "rename"

@@ -26,6 +26,14 @@ interface LyricsPanelProps {
   showBaseLabel?: boolean
 }
 
+// UI subset of the models the backend accepts, ordered fastest-to-most-accurate.
+const WHISPER_MODELS = [
+  { label: 'Small', value: 'small' },
+  { label: 'Medium', value: 'medium' },
+  { label: 'Turbo', value: 'large-v3-turbo' },
+  { label: 'Large', value: 'large-v3' },
+]
+
 function shortGpuName(gpu: string | null | undefined): string {
   if (!gpu) return ''
   return gpu.replace(/^NVIDIA GeForce /, '')
@@ -50,6 +58,9 @@ export default function LyricsPanel({
     language: '',
     no_separation: false,
     no_correction: false,
+    whisper_model: 'large-v3-turbo',
+    artist_override: '',
+    title_override: '',
   })
   const [directories, setDirectories] = useState<DirectoryEntry[]>([])
   const [isLoadingDirs, setIsLoadingDirs] = useState(false)
@@ -181,6 +192,9 @@ export default function LyricsPanel({
   const selectAll = () => setSelectedFiles(new Set(musicFiles.map((f) => f.name)))
   const deselectAll = () => setSelectedFiles(new Set())
 
+  const isSingleSelection = selectedFiles.size === 1
+  const selectedFileName = isSingleSelection ? [...selectedFiles][0] : null
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (selectedFiles.size === 0 || isTranscribing) return
@@ -198,11 +212,20 @@ export default function LyricsPanel({
       skip_existing: String(form.skip_existing),
       no_separation: String(form.no_separation),
       no_correction: String(form.no_correction),
+      whisper_model: form.whisper_model,
     }
     if (form.language) params.language = form.language
 
+    // Overrides describe one specific song — the backend ignores them for
+    // multi-file batches, so don't send them at all.
+    if (isSingleSelection && !form.no_correction) {
+      if (form.artist_override) params.artist_override = form.artist_override
+      if (form.title_override) params.title_override = form.title_override
+    }
+
     if (selectedFiles.size < musicFiles.length) {
-      params.files = Array.from(selectedFiles).join(',')
+      // JSON, not a delimited string — filenames may contain commas.
+      params.files = JSON.stringify(Array.from(selectedFiles))
     }
 
     abortSSERef.current?.()
@@ -222,6 +245,11 @@ export default function LyricsPanel({
         setIsTranscribing(false)
         abortSSERef.current = null
         refreshFiles()
+      },
+      onClose: () => {
+        // Stream died without a `done` event — don't leave the button spinning.
+        setIsTranscribing(false)
+        abortSSERef.current = null
       },
     })
   }
@@ -428,6 +456,20 @@ export default function LyricsPanel({
             {showAdvanced && (
               <div className="mt-3 rounded-[10px] border border-[var(--border)] bg-[rgba(0,0,0,0.2)] p-4">
                 <div className="mb-[0.65rem]">
+                  <label className="field-label">Whisper Model</label>
+                  <SegmentedControl
+                    options={WHISPER_MODELS}
+                    value={form.whisper_model}
+                    onChange={(v) => update('whisper_model', v)}
+                    disabled={busy}
+                    color="rose"
+                  />
+                  <p className="mt-[0.35rem] text-[0.68rem] leading-snug text-[var(--text-tertiary)]">
+                    Larger models are more accurate but slower. Turbo is the best all-round choice.
+                  </p>
+                </div>
+
+                <div className="mb-[0.65rem]">
                   <label className="field-label">Language (empty = Auto)</label>
                   <input
                     type="text"
@@ -438,6 +480,7 @@ export default function LyricsPanel({
                     className="input-field input-rose !h-9 !text-[0.8rem]"
                   />
                 </div>
+
                 <div className="flex flex-col gap-[0.4rem]">
                   <ToggleSwitch
                     checked={form.no_separation}
@@ -454,6 +497,41 @@ export default function LyricsPanel({
                     label="Skip Genius Correction"
                   />
                 </div>
+
+                {/* One artist/title pair can only describe one song, so these
+                    overrides are offered for single-song runs only. */}
+                {isSingleSelection && !form.no_correction && (
+                  <div className="mt-[0.85rem] border-t border-[var(--border)] pt-[0.85rem]">
+                    <label className="field-label">Genius Lookup Override</label>
+                    <p className="mb-[0.5rem] text-[0.68rem] leading-snug text-[var(--text-tertiary)]">
+                      Defaults to the tags in{' '}
+                      <span className="text-[var(--text-secondary)]">{selectedFileName}</span>. Set
+                      these if the tags are wrong or missing.
+                    </p>
+                    <div className="flex gap-3">
+                      <div className="flex-1">
+                        <input
+                          type="text"
+                          value={form.artist_override}
+                          onChange={(e) => update('artist_override', e.target.value)}
+                          placeholder="Artist"
+                          disabled={busy}
+                          className="input-field input-rose !h-9 !text-[0.8rem]"
+                        />
+                      </div>
+                      <div className="flex-1">
+                        <input
+                          type="text"
+                          value={form.title_override}
+                          onChange={(e) => update('title_override', e.target.value)}
+                          placeholder="Title"
+                          disabled={busy}
+                          className="input-field input-rose !h-9 !text-[0.8rem]"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
