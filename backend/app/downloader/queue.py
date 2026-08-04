@@ -36,6 +36,7 @@ class DownloadQueue:
         self._active: dict[str, threading.Event] = {}
         self._cancelled_while_queued: set[str] = set()
         self._cancel_reason: dict[str, str] = {}
+        self._pending: set[str] = set()
         self._running = False
 
     def start(self) -> None:
@@ -69,6 +70,7 @@ class DownloadQueue:
     def enqueue(self, job_id: str) -> None:
         with self._lock:
             self._cancelled_while_queued.discard(job_id)
+            self._pending.add(job_id)
         self._queue.put(job_id)
 
     def depth(self) -> int:
@@ -106,8 +108,18 @@ class DownloadQueue:
         return True
 
     def recover(self) -> None:
-        """Re-enqueue jobs left mid-flight by a previous process."""
+        """Re-enqueue jobs left mid-flight by a previous process.
+
+        `reset_active_to_queued()` resets every job in an active stage,
+        including any this process is already running or has queued, so jobs
+        this process owns are skipped rather than enqueued a second time.
+        """
         for job_id in self._store.reset_active_to_queued():
+            with self._lock:
+                owned = job_id in self._active or job_id in self._pending
+            if owned:
+                logger.debug("Job %s is already live here; not recovering", job_id)
+                continue
             self.enqueue(job_id)
 
     def _work(self) -> None:
@@ -117,6 +129,7 @@ class DownloadQueue:
                 if item is _SHUTDOWN:
                     return
                 with self._lock:
+                    self._pending.discard(str(item))
                     running = self._running
                 if not running:
                     # Shutting down. The sentinels sit behind whatever backlog
@@ -136,6 +149,14 @@ class DownloadQueue:
         with self._lock:
             if job_id in self._cancelled_while_queued:
                 self._cancelled_while_queued.discard(job_id)
+                return
+            if job_id in self._active:
+                # A duplicate enqueue of a job that is already running. Taking
+                # the slot would overwrite the live runner's cancel event with
+                # one nothing holds, leaving that runner uncancellable.
+                logger.warning(
+                    "Job %s is already running; ignoring duplicate enqueue", job_id
+                )
                 return
             cancel_event = threading.Event()
             self._active[job_id] = cancel_event
@@ -168,14 +189,34 @@ class DownloadQueue:
             except Exception:
                 logger.exception("Could not record failure for job %s", job_id)
         finally:
+            # The reason and the stage it implies are settled in one locked
+            # section. Reading the reason and writing the stage separately
+            # loses a cancel: `cancel()` can overwrite the reason in between,
+            # returning True to the API while the write that lands is the one
+            # the superseded reason chose.
             with self._lock:
                 self._active.pop(job_id, None)
                 reason = self._cancel_reason.pop(job_id, None)
-            if reason == _SHUTDOWN_CANCEL:
-                # The process going down is not something the user did, so the
-                # job must not be left claiming they cancelled it. `queued` is
-                # the honest resting state for "interrupted before finishing",
-                # and it is what the next process's recover() resumes from.
-                job = self._store.get_job(job_id)
-                if job is not None and job.stage == "cancelled":
-                    self._store.set_job_stage(job_id, "queued")
+                if reason is not None:
+                    self._settle_cancelled_stage_locked(job_id, reason)
+
+    def _settle_cancelled_stage_locked(self, job_id: str, reason: str) -> None:
+        """Reconcile the stored stage with why the job's cancel event was set.
+
+        Call while holding self._lock, so a concurrent cancel() cannot change
+        the reason between this decision and the write it implies.
+        """
+        job = self._store.get_job(job_id)
+        if job is None:
+            return
+        if reason == _SHUTDOWN_CANCEL and job.stage == "cancelled":
+            # The process going down is not something the user did, so the job
+            # must not be left claiming they cancelled it. `queued` is the
+            # honest resting state for "interrupted before finishing", and it
+            # is what the next process's recover() resumes from.
+            self._store.set_job_stage(job_id, "queued")
+        elif reason == _USER_CANCEL and job.stage == "queued":
+            # The user cancelled while the job was unwinding under a shutdown,
+            # so the shutdown's `queued` landed last. Their cancellation is the
+            # authoritative outcome, and the API already told them it took.
+            self._store.set_job_stage(job_id, "cancelled", "Cancelled by user")

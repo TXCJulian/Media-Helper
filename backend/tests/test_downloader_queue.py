@@ -373,6 +373,141 @@ def test_user_cancel_still_in_flight_when_stop_lands_stays_cancelled(store):
         q.stop()
 
 
+class _ParkingWriteStore:
+    """Delegates to a real JobStore but parks the first write of one stage.
+
+    Holds a worker inside `set_job_stage` so a test can drive another thread
+    through the window that write is standing in.
+    """
+
+    def __init__(self, store, stage, entered, proceed):
+        self._store = store
+        self._stage = stage
+        self._entered = entered
+        self._proceed = proceed
+        self._parked = False
+
+    def __getattr__(self, name):
+        return getattr(self._store, name)
+
+    def set_job_stage(self, job_id, stage, error=None):
+        if stage == self._stage and not self._parked:
+            self._parked = True
+            self._entered.set()
+            self._proceed.wait(timeout=5)
+        return self._store.set_job_stage(job_id, stage, error)
+
+
+def test_user_cancel_racing_the_shutdown_rewrite_is_not_lost(store):
+    """A cancel that lands while a shutdown-interrupted job is writing its
+    stage must still end `cancelled` -- the API already promised the user it
+    took, and `queued` would silently re-download it after a restart."""
+    entered = threading.Event()
+    proceed = threading.Event()
+    result: dict[str, bool] = {}
+
+    def raising_runner(store_, job, cancel_event):
+        cancel_event.wait(timeout=5)
+        raise RuntimeError("aborted")
+
+    parking = _ParkingWriteStore(store, "queued", entered, proceed)
+    q = DownloadQueue(parking, raising_runner, workers=1)
+    q.start()
+    job_id = store.create_job("https://example.com/1", {})
+    try:
+        q.enqueue(job_id)
+        deadline = time.monotonic() + 5
+        while not q.is_active(job_id) and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        stopper = threading.Thread(target=lambda: q.stop(timeout=5))
+        stopper.start()
+        # The worker is now parked inside the shutdown's `queued` write.
+        assert entered.wait(timeout=5)
+
+        canceller = threading.Thread(
+            target=lambda: result.__setitem__("returned", q.cancel(job_id)),
+            name="canceller",
+        )
+        canceller.start()
+        canceller.join(timeout=5)
+        assert not canceller.is_alive(), "cancel() deadlocked against the worker"
+
+        proceed.set()
+        stopper.join(timeout=10)
+
+        assert result["returned"] is True
+        job = store.get_job(job_id)
+        assert job.stage == "cancelled", "the API said cancelled; the store must agree"
+        assert job.error == "Cancelled by user"
+    finally:
+        proceed.set()
+        q.stop()
+
+
+def test_recover_does_not_re_enqueue_a_job_this_process_is_running(store):
+    started = threading.Semaphore(0)
+    release = threading.Event()
+    runs: list[str] = []
+
+    def runner(store_, job, cancel_event):
+        runs.append(job.id)
+        started.release()
+        release.wait(timeout=5)
+        store_.set_job_stage(job.id, "done")
+
+    q = DownloadQueue(store, runner, workers=1)
+    q.start()
+    try:
+        job_id = store.create_job("https://example.com/1", {})
+        q.enqueue(job_id)
+        assert started.acquire(timeout=5), "job must be running before recover()"
+
+        q.recover()
+        assert q.depth() == 0, "a running job must not be queued a second time"
+
+        release.set()
+        deadline = time.monotonic() + 5
+        while store.get_job(job_id).stage != "done" and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert runs == [job_id]
+    finally:
+        release.set()
+        q.stop()
+
+
+def test_duplicate_enqueue_cannot_steal_a_running_jobs_cancel_event(store):
+    started = threading.Semaphore(0)
+    observed = threading.Event()
+    runs: list[str] = []
+
+    def runner(store_, job, cancel_event):
+        runs.append(job.id)
+        started.release()
+        if cancel_event.wait(timeout=5):
+            observed.set()
+            store_.set_job_stage(job.id, "cancelled", "Cancelled by user")
+        else:
+            store_.set_job_stage(job.id, "done")
+
+    q = DownloadQueue(store, runner, workers=2)
+    q.start()
+    try:
+        job_id = store.create_job("https://example.com/1", {})
+        q.enqueue(job_id)
+        assert started.acquire(timeout=5)
+
+        q.enqueue(job_id)
+        # Give the second worker every chance to claim the duplicate.
+        time.sleep(0.2)
+
+        assert q.cancel(job_id) is True
+        assert observed.wait(timeout=5), "the running runner never saw the cancel"
+        assert runs == [job_id], "the duplicate must not have run"
+    finally:
+        q.stop()
+
+
 def test_recover_requeues_interrupted_jobs(store):
     done = threading.Event()
     seen: list[str] = []
