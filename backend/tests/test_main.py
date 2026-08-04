@@ -195,103 +195,45 @@ class TestDownloaderEndpoints:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert set(data.keys()) == {"yt_dlp_version", "cookies_present", "downloads_dir"}
+        assert set(data.keys()) == {
+            "yt_dlp_version",
+            "cookies_present",
+            "downloads_dir",
+            "queue_depth",
+            "workers",
+        }
 
-    def test_download_start_streams_progress_and_done(self, client, monkeypatch):
-        import app.main as main_mod
-
-        captured: dict = {}
-
-        def fake_create_job(_url, options):
-            captured["options"] = options
-            return "11111111-1111-1111-1111-111111111111"
-
-        monkeypatch.setattr(main_mod, "create_downloader_job", fake_create_job)
-
-        class FakeManager:
-            def __init__(self, job_id, url, options):
-                captured["job_id"] = job_id
-                captured["url"] = url
-                captured["options"] = options
-
-            def run(self, msg_queue):
-                msg_queue.put(
-                    (
-                        "progress",
-                        {
-                            "job_id": "11111111-1111-1111-1111-111111111111",
-                            "url": captured["url"],
-                            "status": "downloading",
-                            "progress": 50.0,
-                            "speed": "1.0MiB/s",
-                            "eta": "00:10",
-                            "filename": "demo.mp4",
-                            "error": None,
-                            "created_at": "2026-01-01T00:00:00+00:00",
-                            "size": None,
-                        },
-                    )
-                )
-                msg_queue.put(
-                    (
-                        "done",
-                        {
-                            "job_id": "11111111-1111-1111-1111-111111111111",
-                            "url": captured["url"],
-                            "status": "done",
-                            "progress": 100.0,
-                            "speed": None,
-                            "eta": None,
-                            "filename": "demo.mp4",
-                            "error": None,
-                            "created_at": "2026-01-01T00:00:00+00:00",
-                            "size": "12.0MiB",
-                        },
-                    )
-                )
-
-        monkeypatch.setattr(main_mod, "DownloadManager", FakeManager)
-
+    def test_download_create_returns_job_ids_without_starting_work(self, client):
         resp = client.post(
-            "/download/start",
-            data={
-                "url": "https://example.com/watch?v=demo",
-                "options": json.dumps({"type": "video", "format": "mp4", "quality": "720p"}),
+            "/download",
+            json={
+                "urls": ["https://example.com/watch?v=demo"],
+                "options": {"type": "video", "format": "mp4", "auto_start": False},
             },
         )
 
         assert resp.status_code == 200
-        assert captured["options"]["format"] == "mp4"
-        assert "event: progress" in resp.text
-        assert "event: done" in resp.text
+        job_ids = resp.json()["job_ids"]
+        assert len(job_ids) == 1
 
-    def test_download_start_rejects_invalid_options_json(self, client):
+        job = client.get(f"/download/jobs/{job_ids[0]}").json()
+        assert job["stage"] == "queued"
+        assert job["url"] == "https://example.com/watch?v=demo"
+
+    def test_download_create_rejects_non_http_url(self, client):
         resp = client.post(
-            "/download/start",
-            data={"url": "https://example.com/watch?v=demo", "options": "{not-json"},
+            "/download", json={"urls": ["ftp://example.com/x"], "options": {}}
         )
 
         assert resp.status_code == 422
 
-    def test_download_delete_job_conflict_returns_409(self, client, monkeypatch):
-        import app.main as main_mod
-
-        monkeypatch.setattr(
-            main_mod,
-            "delete_downloader_job",
-            lambda _job_id: (_ for _ in ()).throw(RuntimeError("Job is still busy and could not be deleted")),
-        )
-
+    def test_download_delete_unknown_job_returns_404(self, client):
         resp = client.delete("/download/jobs/11111111-1111-1111-1111-111111111111")
 
-        assert resp.status_code == 409
-        assert "still busy" in resp.json()["detail"]
+        assert resp.status_code == 404
 
-    def test_download_cookie_upload_writes_file_bytes(self, client, tmp_path, monkeypatch):
-        import app.main as main_mod
-
-        cookie_path = tmp_path / "cookies.txt"
-        monkeypatch.setattr(main_mod, "get_downloader_cookie_path", lambda: str(cookie_path))
+    def test_download_cookie_upload_writes_file_bytes(self, client):
+        import app.downloader.routes as routes_mod
 
         resp = client.post(
             "/download/cookies",
@@ -299,7 +241,37 @@ class TestDownloaderEndpoints:
         )
 
         assert resp.status_code == 200
-        assert cookie_path.read_bytes() == b"cookie-data"
+        with open(routes_mod.cookie_path(), "rb") as f:
+            assert f.read() == b"cookie-data"
+
+    def test_download_routes_absent_when_feature_disabled(self, tmp_path):
+        """The feature flag gates route registration, not just the handler."""
+        import importlib
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(tmp_path),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes",
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.downloader.routes as routes_mod
+            importlib.reload(routes_mod)
+            import app.main as main_mod
+            importlib.reload(main_mod)
+
+            with TestClient(main_mod.app) as c:
+                paths = c.get("/openapi.json").json()["paths"]
+                assert not any(p.startswith("/download") for p in paths)
+                assert c.get("/download/status").status_code == 404
+                # No store or worker pool was built either.
+                assert routes_mod._store is None
+                assert routes_mod._queue is None
 
 
 class TestCutterStreamValidation:
@@ -779,14 +751,11 @@ def test_upload_cookies_rejects_oversized_file(client):
         "/download/cookies",
         files={"file": ("cookies.txt", huge, "text/plain")},
     )
-    assert response.status_code == 400
+    assert response.status_code == 413
 
 
-def test_upload_cookies_accepts_valid_netscape_format(client, tmp_path, monkeypatch):
-    import app.main as main_mod
-
-    cookie_path = tmp_path / "cookies.txt"
-    monkeypatch.setattr(main_mod, "get_downloader_cookie_path", lambda: str(cookie_path))
+def test_upload_cookies_accepts_valid_netscape_format(client):
+    import app.downloader.routes as routes_mod
 
     content = b"# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t0\tname\tvalue\n"
     response = client.post(
@@ -794,4 +763,5 @@ def test_upload_cookies_accepts_valid_netscape_format(client, tmp_path, monkeypa
         files={"file": ("cookies.txt", content, "text/plain")},
     )
     assert response.status_code == 200
-    assert cookie_path.read_bytes() == content
+    with open(routes_mod.cookie_path(), "rb") as f:
+        assert f.read() == content
