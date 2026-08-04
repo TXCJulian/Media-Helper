@@ -55,6 +55,9 @@ class EventBroadcaster:
             except queue.Full:
                 try:
                     q.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
                     q.put_nowait(event)
-                except (queue.Empty, queue.Full):
+                except queue.Full:
                     pass

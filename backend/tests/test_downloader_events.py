@@ -1,3 +1,5 @@
+import queue
+
 from app.downloader.events import EventBroadcaster, job_to_payload
 from app.downloader.store import Item, Job
 
@@ -46,3 +48,44 @@ def test_slow_subscriber_does_not_block_publisher():
     for i in range(10):
         bus.publish({"n": i})
     assert q.qsize() == 2
+
+
+def test_publish_delivers_newest_event_despite_concurrent_drain():
+    """Regression test for a race in the Full-recovery path.
+
+    Sequence under test: put_nowait raises Full, then -- before the
+    recovery get_nowait runs -- a concurrent consumer (e.g. the SSE
+    handler reading this same queue on another thread) drains the queue
+    completely. The recovery get_nowait then raises Empty. The newest
+    event must still be delivered once capacity is available; only the
+    oldest entry may ever be sacrificed, per the class docstring.
+
+    A real background thread cannot be forced into this exact
+    interleaving deterministically -- it would only be probabilistic,
+    and a probabilistic test here would be flaky (most runs the retry
+    put would just race past instead of hitting the empty case). Per
+    the brief's own guidance, we instead simulate the concurrent drain
+    deterministically by monkeypatching get_nowait to perform the drain
+    itself (standing in for the other thread) before restoring the real
+    method, so the interleaving described above is exercised on every
+    run without any timing dependency.
+    """
+    bus = EventBroadcaster(maxsize=1)
+    q = bus.subscribe()
+    q.put_nowait({"n": "old"})  # fill to capacity so the next publish hits Full
+
+    real_get_nowait = q.get_nowait
+
+    def concurrent_drain_then_empty():
+        # Simulate another thread draining the queue first, then our own
+        # recovery get_nowait finding nothing left -- exactly the
+        # interleaving that previously caused the new event to be lost.
+        q.get_nowait = real_get_nowait
+        real_get_nowait()
+        raise queue.Empty()
+
+    q.get_nowait = concurrent_drain_then_empty
+
+    bus.publish({"n": "new"})
+
+    assert q.get_nowait() == {"n": "new"}
