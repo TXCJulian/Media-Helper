@@ -276,6 +276,12 @@ async def upload_cookies(file: UploadFile = File(...)) -> dict[str, str]:
     fd = os.open(path, flags, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(content)
+    try:
+        # O_CREAT's mode only applies to a file it creates, so an overwrite of
+        # an existing cookie file would keep whatever permissions it had.
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
     return {"status": "ok"}
 
 
