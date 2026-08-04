@@ -52,12 +52,20 @@ class _IndexAllocator:
     `enumerate(entries)` position: those two index spaces only coincide in
     the simple, non-gappy case, and disagreeing between them produced
     phantom/duplicate item rows for the same underlying file.
+
+    `for_path` and `new_index` are deliberately the only two ways to obtain
+    an index. In particular there is no "most recently allocated index"
+    accessor: an event that carries no path has no identity, and attributing
+    it to the last-allocated row is wrong, because allocation only happens
+    once a path is known - so while a *new* item is still resolving its
+    destination, the last-allocated row still belongs to the *previous*,
+    already-finished item. Writing to it there corrupts a completed sibling.
+    Such events are dropped instead (see `_make_hook`).
     """
 
     def __init__(self) -> None:
         self._by_path: dict[str, int] = {}
         self._next = 0
-        self._current: int | None = None
 
     def for_path(self, path: str) -> int:
         """Return the row index for `path`, allocating one on first sight."""
@@ -67,7 +75,6 @@ class _IndexAllocator:
             index = self._next
             self._next += 1
             self._by_path[real] = index
-        self._current = index
         return index
 
     def new_index(self) -> int:
@@ -75,21 +82,7 @@ class _IndexAllocator:
         whose output file could not be located at all)."""
         index = self._next
         self._next += 1
-        self._current = index
         return index
-
-    def current(self) -> int | None:
-        """The most recently allocated index, or None if nothing has been
-        allocated yet this run.
-
-        Used to attribute a hook event that carries no usable path (yet) to
-        "the item currently being worked on": yt-dlp downloads sequentially,
-        so that is the most recently allocated row. This must never mint a
-        new index of its own - doing so risks a second, phantom row for the
-        same file once its real path resolves and `for_path` allocates (or
-        reuses) its own index independently.
-        """
-        return self._current
 
 
 def _ydl_factory(opts: dict[str, Any]):
@@ -263,45 +256,39 @@ def _make_hook(
         status = str(data.get("status") or "")
         filename = data.get("filename")
         if status == "downloading":
+            if not filename:
+                # A percentage with no file attached identifies nothing. The
+                # allocator only knows a row once a path is known, so the
+                # most recently allocated row belongs to the *previous*,
+                # already-finished item whenever a new item is still
+                # resolving its destination - writing here would stamp this
+                # item's fractional progress onto a completed sibling
+                # (upsert_item is a partial update, so that row would keep
+                # stage="done" while its progress rewound). Real yt-dlp
+                # always supplies `filename` on progress events, so this is
+                # not a path production ever takes; drop the event.
+                return
             downloaded = data.get("downloaded_bytes") or 0
             total = data.get("total_bytes") or data.get("total_bytes_estimate") or 0
             progress = min((downloaded / total * 100.0) if total else 0.0, 100.0)
-            if filename:
-                downloaded_paths.add(os.path.realpath(str(filename)))
-                index = allocator.for_path(str(filename))
-                store.upsert_item(
-                    job_id,
-                    index,
-                    title=_display_name(filename),
-                    progress=progress,
-                    stage="downloading",
-                )
-            else:
-                # No path resolved yet for this event. The allocator is the
-                # only index authority (there is no second numbering
-                # scheme), so this cannot mint a new row without risking a
-                # duplicate once the real path does resolve. Attribute it
-                # to "the item currently being worked on" instead: yt-dlp
-                # downloads sequentially, so that is the most recently
-                # allocated row. Only touch progress - not title or stage -
-                # so a stray pathless ping can never clobber an already-
-                # completed sibling's identity, only nudge its displayed
-                # percentage. If nothing has been allocated yet, there is no
-                # row to attribute this to at all, so it is dropped.
-                index = allocator.current()
-                if index is not None:
-                    store.upsert_item(job_id, index, progress=progress)
-                return
+            downloaded_paths.add(os.path.realpath(str(filename)))
+            index = allocator.for_path(str(filename))
+            store.upsert_item(
+                job_id,
+                index,
+                title=_display_name(filename),
+                progress=progress,
+                stage="downloading",
+            )
         elif status == "finished":
             path = str(filename) if filename and os.path.isfile(str(filename)) else None
             if path is None:
-                # No usable path (e.g. a stray/failed postprocessing
-                # callback). As above, this must never allocate a new row -
-                # it is not evidence of a genuinely new output file. Bump
-                # the current row's progress only, if one exists yet.
-                index = allocator.current()
-                if index is not None:
-                    store.upsert_item(job_id, index, progress=100.0)
+                # Same reasoning: a "finished" event with no usable path
+                # (missing filename, or one that never landed on disk)
+                # identifies no file and must not be written to any row. The
+                # post-extract_info reconciliation loop below has
+                # entry-derived identity and already covers entries that
+                # produced no usable hook event.
                 return
             assert_within_allowed_roots(path)
             index = allocator.for_path(path)

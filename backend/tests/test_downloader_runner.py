@@ -49,7 +49,17 @@ def test_single_video_job_reaches_done(store, tmp_path, monkeypatch):
     _install_fake_ydl(
         monkeypatch,
         events=[
-            {"status": "downloading", "downloaded_bytes": 1024, "total_bytes": 2048},
+            # `filename` is present on real yt-dlp progress events (see the
+            # progress_hooks docstring in YoutubeDL.py, and
+            # FileDownloader.download which supplies it); the brief's original
+            # double omitted it, which exercised a path-less branch that
+            # production never takes and that is now deliberately dropped.
+            {
+                "status": "downloading",
+                "filename": str(media),
+                "downloaded_bytes": 1024,
+                "total_bytes": 2048,
+            },
             {"status": "finished", "filename": str(media)},
         ],
         info={"title": "Video", "requested_downloads": [{"filepath": str(media)}]},
@@ -428,6 +438,112 @@ def test_pathless_downloading_event_does_not_clobber_prior_completed_item(
     assert item.stage == "done"
     assert item.path == str(track_a)
     assert item.title == "A.mp3"
+    assert item.progress == 100.0
+
+
+def test_pathless_downloading_event_does_not_rewind_completed_sibling_progress(
+    store, tmp_path, monkeypatch
+):
+    """A path-less 'downloading' event carries a percentage but nothing that
+    identifies which file it belongs to. It must not be attributed to any
+    existing row: the most recently allocated row belongs to the *previous*,
+    already-finished item (allocation only happens once a path is known), so
+    writing this event's fractional progress there corrupts a completed
+    sibling into stage='done' with progress well under 100. A later entry
+    fails here, so no post-extract_info reconciliation pass can repair it."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    track_a = out / "A.mp3"
+    track_a.write_bytes(b"x" * 10)
+
+    class PartialFailureYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            events = [
+                {
+                    "status": "downloading",
+                    "filename": str(track_a),
+                    "downloaded_bytes": 5,
+                    "total_bytes": 10,
+                },
+                {"status": "finished", "filename": str(track_a)},
+                # A NEW item begins downloading; yt-dlp has not resolved its
+                # destination filename yet, so this event names no file.
+                {"status": "downloading", "downloaded_bytes": 1, "total_bytes": 10},
+            ]
+            for event in events:
+                for hook in self._opts["progress_hooks"]:
+                    hook(event)
+            raise RuntimeError("ERROR: second track is unavailable")
+
+    monkeypatch.setattr(
+        runner, "_ydl_factory", lambda opts: PartialFailureYDL(opts, [], {})
+    )
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+
+    job_id = store.create_job("https://example.com/list", {"type": "audio"})
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    job = store.get_job(job_id)
+    assert job.stage == "error"
+    assert len(job.items) == 1
+    item = job.items[0]
+    assert item.stage == "done"
+    assert item.path == str(track_a)
+    # The completed sibling's progress must be untouched by the unrelated,
+    # unidentifiable event that followed it.
+    assert item.progress == 100.0
+
+
+def test_pathless_finished_event_does_not_rewind_completed_sibling_progress(
+    store, tmp_path, monkeypatch
+):
+    """Same as above for a 'finished' event with no usable path: it identifies
+    no file, so it must not be written to any row. Here the in-flight item is
+    only half downloaded when an unrelated, unresolvable 'finished' event
+    arrives; attributing that event to the in-flight row would falsely show it
+    as 100% complete."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    track_a = out / "A.mp3"
+    track_a.write_bytes(b"x" * 10)
+
+    class PartialFailureYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            events = [
+                {
+                    "status": "downloading",
+                    "filename": str(track_a),
+                    "downloaded_bytes": 5,
+                    "total_bytes": 10,
+                },
+                # An unrelated "finished" event whose file never materialised
+                # (e.g. a failed postprocessing step), while track A is still
+                # only half downloaded.
+                {"status": "finished", "filename": str(out / "ghost.mp3")},
+            ]
+            for event in events:
+                for hook in self._opts["progress_hooks"]:
+                    hook(event)
+            raise RuntimeError("ERROR: postprocessing failed")
+
+    monkeypatch.setattr(
+        runner, "_ydl_factory", lambda opts: PartialFailureYDL(opts, [], {})
+    )
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+
+    job_id = store.create_job("https://example.com/list", {"type": "audio"})
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    job = store.get_job(job_id)
+    assert job.stage == "error"
+    assert len(job.items) == 1
+    assert job.items[0].path is None
+    assert job.items[0].stage == "downloading"
+    # The half-finished item must still read 50%, not be jumped to 100% by an
+    # event that never identified it.
+    assert job.items[0].progress == 50.0
 
 
 def test_finished_event_with_unresolvable_filename_does_not_allocate_stray_row(
@@ -480,3 +596,4 @@ def test_finished_event_with_unresolvable_filename_does_not_allocate_stray_row(
     item = job.items[0]
     assert item.path == str(track_a)
     assert item.stage == "done"
+    assert item.progress == 100.0
