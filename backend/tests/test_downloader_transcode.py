@@ -1,3 +1,4 @@
+import os
 import subprocess
 import threading
 from unittest.mock import MagicMock, patch
@@ -162,6 +163,61 @@ def test_transcode_kills_process_when_cancelled():
             )
 
     proc.kill.assert_called_once()
+
+
+def test_transcode_removes_partial_output_on_inline_cancel(tmp_path):
+    """Cancellation detected by the main loop's inline check (a progress line
+    arrived while cancel_event was already set) must remove any partial
+    output left behind - otherwise a truncated, unplayable file is left
+    sitting where the finished file was expected."""
+    dst = str(tmp_path / "out.mkv")
+    with open(dst, "wb") as f:
+        f.write(b"partial ffmpeg output")
+
+    cancel = threading.Event()
+    cancel.set()
+    proc = _fake_proc(["out_time_ms=1000000\n"])
+
+    with patch.object(transcode, "probe_duration", return_value=10.0), patch(
+        "subprocess.Popen", return_value=proc
+    ):
+        with pytest.raises(transcode.TranscodeCancelled):
+            transcode.transcode_file("/in.mp4", dst, "h265", cancel, lambda _: None)
+
+    assert not os.path.exists(dst)
+
+
+def test_transcode_removes_partial_output_on_watcher_cancel(tmp_path):
+    """Cancellation detected only by the watcher thread (a stalled encode
+    with zero progress lines) must also remove any partial output. This is a
+    separate raise site from the inline check above - a fix to one does not
+    cover the other."""
+    dst = str(tmp_path / "out.mkv")
+    with open(dst, "wb") as f:
+        f.write(b"partial ffmpeg output")
+
+    cancel = threading.Event()
+    cancel.set()
+
+    blocking_stdout = _BlockingStdout()
+    proc = MagicMock()
+    proc.stdout = blocking_stdout
+    proc.poll.return_value = None  # still "running"
+
+    def _fake_kill():
+        proc.poll.return_value = -9
+        blocking_stdout.close()
+
+    proc.kill.side_effect = _fake_kill
+    proc.wait.return_value = -9
+
+    with patch.object(transcode, "probe_duration", return_value=10.0), patch(
+        "subprocess.Popen", return_value=proc
+    ):
+        with pytest.raises(transcode.TranscodeCancelled):
+            transcode.transcode_file("/in.mp4", dst, "h265", cancel, lambda _: None)
+
+    assert not os.path.exists(dst)
 
 
 def test_probe_duration_parses_ffprobe():

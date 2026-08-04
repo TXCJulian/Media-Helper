@@ -134,6 +134,7 @@ def transcode_file(
             for line in proc.stdout or []:
                 if cancel_event.is_set():
                     proc.kill()
+                    _remove_partial(dst)
                     raise TranscodeCancelled("Cancelled by user")
                 line = line.strip()
                 if line.startswith("out_time_ms=") and duration > 0:
@@ -151,6 +152,7 @@ def transcode_file(
             watcher.join(timeout=1.0)
 
         if cancel_event.is_set():
+            _remove_partial(dst)
             raise TranscodeCancelled("Cancelled by user")
 
         if returncode != 0:
