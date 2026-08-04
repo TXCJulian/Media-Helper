@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -31,6 +32,10 @@ _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
 _HEARTBEAT_SECONDS = 15.0
+# How long the event stream waits before re-checking its subscription. Short
+# enough to be imperceptible on a progress bar, and idle polling of an empty
+# in-memory queue costs nothing.
+_POLL_SECONDS = 0.25
 
 _store: JobStore | None = None
 _queue: DownloadQueue | None = None
@@ -228,26 +233,56 @@ def download_item_file(job_id: str, index: int) -> FileResponse:
 
 
 @router.get("/download/events")
-def download_events() -> StreamingResponse:
+async def download_events() -> StreamingResponse:
+    """Snapshot on connect, then deltas, for as long as the client stays.
+
+    Deliberately `async def` over an async generator. The panel holds one of
+    these open per browser tab indefinitely, so a sync generator would pin an
+    AnyIO worker thread for the lifetime of the tab; past AnyIO's 40-thread
+    default that starves every other `def` endpoint in the application, not
+    just the downloader.
+
+    `EventBroadcaster` stays synchronous and thread-safe on purpose - worker
+    threads publish into it from `on_change` while holding the non-reentrant
+    `DownloadQueue._lock`, so it must never become awaitable. The bridge to
+    asyncio belongs here: poll the subscription without blocking, and yield
+    the event loop between polls.
+    """
     broadcaster = get_broadcaster()
     store = get_store()
 
-    def generate():
+    async def generate():
         subscription = broadcaster.subscribe()
         try:
+            # Off the event loop: a store read can block on the store lock
+            # while a worker is mid-write. It is a one-shot borrow of a
+            # thread, not a pin - nothing below this line touches a thread.
+            jobs = await asyncio.to_thread(store.list_jobs)
             snapshot = {
                 "type": "snapshot",
-                "jobs": [job_to_payload(job) for job in store.list_jobs()],
+                "jobs": [job_to_payload(job) for job in jobs],
             }
             yield f"data: {json.dumps(snapshot)}\n\n"
+            last_frame = time.monotonic()
             while True:
                 try:
-                    event = subscription.get(timeout=_HEARTBEAT_SECONDS)
+                    event = subscription.get_nowait()
                 except queue_mod.Empty:
-                    yield ": heartbeat\n\n"
+                    await asyncio.sleep(_POLL_SECONDS)
+                    if time.monotonic() - last_frame >= _HEARTBEAT_SECONDS:
+                        last_frame = time.monotonic()
+                        yield ": heartbeat\n\n"
                     continue
+                # A data frame keeps the connection alive as well as a comment
+                # does, so the heartbeat clock restarts on any frame sent.
+                last_frame = time.monotonic()
                 yield f"data: {json.dumps(event)}\n\n"
         finally:
+            # Load-bearing. On disconnect the CancelledError is delivered into
+            # this frame at the `await` above, so this runs during unwinding
+            # rather than whenever the generator happens to be collected.
+            # Without it every reconnect would strand a queue that publish()
+            # fans out to forever.
             broadcaster.unsubscribe(subscription)
 
     return StreamingResponse(

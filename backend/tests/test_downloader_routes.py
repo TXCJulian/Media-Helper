@@ -1,12 +1,16 @@
 import asyncio
-import gc
 import importlib
 import json
 import os
+import threading
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+
+# Comfortably longer than the endpoint's poll interval, so a test that waits
+# this long is guaranteed to have crossed at least one poll cycle.
+_POLL_MARGIN = 0.4
 
 
 @pytest.fixture
@@ -142,27 +146,40 @@ def test_cookie_upload_and_delete(client):
     assert client.get("/download/status").json()["cookies_present"] is False
 
 
-async def _first_sse_chunk(response):
-    """Pull one chunk from a StreamingResponse, then close the stream.
+def routes_module():
+    import app.downloader.routes as routes_mod
+
+    return routes_mod
+
+
+def sse_payload(chunk):
+    text = chunk.decode() if isinstance(chunk, bytes) else chunk
+    assert text.startswith("data: "), f"not a data frame: {text!r}"
+    return json.loads(text[6:])
+
+
+async def _first_sse_chunk():
+    """Pull one chunk from the real endpoint, then close the stream.
 
     The event stream is deliberately endless, and Starlette's TestClient runs
     the whole ASGI call to completion before returning a response object
     (`portal.call(self.app, ...)` in `_TestClientTransport.handle_request`), so
     `client.stream("GET", "/download/events")` would block forever. Driving the
-    response's own body iterator exercises the real endpoint without needing a
-    stream that ends.
+    response's own body iterator exercises the real endpoint - it is the same
+    object uvicorn consumes - without needing a stream that ends.
+
+    Both subscriber counts are read inside the loop, before `asyncio.run`'s
+    `shutdown_asyncgens()` could close the generator for us. That keeps the
+    endpoint's own `finally` load-bearing rather than incidentally covered.
     """
+    response = await routes_module().download_events()
+    assert response.media_type == "text/event-stream"
     iterator = response.body_iterator
     chunk = await iterator.__anext__()
-    subscribers_while_open = routes_module().get_broadcaster().subscriber_count()
+    while_open = routes_module().get_broadcaster().subscriber_count()
     await iterator.aclose()
-    return chunk, subscribers_while_open
-
-
-def routes_module():
-    import app.downloader.routes as routes_mod
-
-    return routes_mod
+    after_close = routes_module().get_broadcaster().subscriber_count()
+    return chunk, while_open, after_close
 
 
 def test_downloader_routes_are_registered(client):
@@ -178,15 +195,10 @@ def test_events_stream_emits_initial_snapshot(client):
         json={"urls": ["https://example.com/a"], "options": {"auto_start": False}},
     )
 
-    response = routes_module().download_events()
-    assert response.media_type == "text/event-stream"
+    chunk, while_open, _ = asyncio.run(_first_sse_chunk())
 
-    chunk, subscribers_while_open = asyncio.run(_first_sse_chunk(response))
-
-    assert subscribers_while_open == 1
-    text = chunk.decode() if isinstance(chunk, bytes) else chunk
-    assert text.startswith("data: ")
-    payload = json.loads(text[6:])
+    assert while_open == 1
+    payload = sse_payload(chunk)
     assert payload["type"] == "snapshot"
     assert len(payload["jobs"]) == 1
 
@@ -195,18 +207,56 @@ def test_events_stream_unsubscribes_when_the_client_goes_away(client):
     broadcaster = routes_module().get_broadcaster()
     assert broadcaster.subscriber_count() == 0
 
-    response = routes_module().download_events()
-    asyncio.run(_first_sse_chunk(response))
+    _, while_open, after_close = asyncio.run(_first_sse_chunk())
 
     # Closing the stream must release the subscription, or every reconnect
     # would leave a queue behind for publish() to fan out to forever.
-    gc.collect()
+    assert while_open == 1
+    assert after_close == 0
     assert broadcaster.subscriber_count() == 0
+
+
+def test_events_stream_unsubscribes_when_the_request_is_cancelled(client):
+    """A disconnecting browser cancels the ASGI task, it does not aclose().
+
+    This is the path that actually runs in production: Starlette cancels
+    `stream_response` when `listen_for_disconnect` fires. The CancelledError is
+    delivered into the generator at its `await`, so the `finally` must unwind
+    the subscription there too - not merely when someone politely closes it.
+    """
+    broadcaster = routes_module().get_broadcaster()
+    assert broadcaster.subscriber_count() == 0
+
+    async def consume_until_cancelled():
+        response = await routes_module().download_events()
+        iterator = response.body_iterator
+
+        async def consume():
+            async for _chunk in iterator:
+                pass
+
+        task = asyncio.create_task(consume())
+        # Wait until the generator is past the snapshot and parked in its poll
+        # loop, so we are cancelling a genuinely idle stream.
+        for _ in range(200):
+            if broadcaster.subscriber_count() == 1:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("stream never subscribed")
+        await asyncio.sleep(_POLL_MARGIN)
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return broadcaster.subscriber_count()
+
+    assert asyncio.run(consume_until_cancelled()) == 0
 
 
 def test_events_stream_receives_deltas_after_the_snapshot(client):
     async def snapshot_then_delta():
-        response = routes_module().download_events()
+        response = await routes_module().download_events()
         iterator = response.body_iterator
         await iterator.__anext__()  # snapshot
         client.post(
@@ -217,10 +267,32 @@ def test_events_stream_receives_deltas_after_the_snapshot(client):
         await iterator.aclose()
         return delta
 
-    chunk = asyncio.run(snapshot_then_delta())
-    text = chunk.decode() if isinstance(chunk, bytes) else chunk
-    payload = json.loads(text[6:])
+    payload = sse_payload(asyncio.run(snapshot_then_delta()))
     assert payload["type"] == "job"
     assert payload["job"]["stage"] == "queued"
     assert "options" not in payload["job"]
+
+
+def test_events_stream_does_not_occupy_a_worker_thread_while_idle(client):
+    """The whole point of the async rewrite: an idle stream holds no thread.
+
+    A sync generator blocking on `subscription.get(timeout=...)` would sit in
+    an AnyIO worker thread for the entire wait. One stream per open browser tab
+    would then exhaust the 40-thread default and starve every other `def`
+    endpoint in the application.
+    """
+    async def idle_thread_count():
+        response = await routes_module().download_events()
+        iterator = response.body_iterator
+        await iterator.__anext__()  # snapshot
+        before = threading.active_count()
+        # Several poll cycles: a thread-blocking implementation would be
+        # holding one for all of them.
+        await asyncio.sleep(_POLL_MARGIN * 3)
+        during = threading.active_count()
+        await iterator.aclose()
+        return before, during
+
+    before, during = asyncio.run(idle_thread_count())
+    assert during <= before
 
