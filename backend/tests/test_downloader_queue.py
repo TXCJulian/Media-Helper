@@ -254,6 +254,125 @@ def test_cancelled_job_whose_runner_raises_is_not_marked_error(store):
         q.stop()
 
 
+def test_job_interrupted_by_shutdown_ends_queued_and_is_recovered(store):
+    """A process shutdown is not a user cancellation and must not be recorded
+    as one; the job has to come back on the next process's recover()."""
+    started = threading.Semaphore(0)
+
+    def runner(store_, job, cancel_event):
+        started.release()
+        cancel_event.wait(timeout=5)
+        store_.set_job_stage(job.id, "cancelled", "Cancelled by user")
+
+    q = DownloadQueue(store, runner, workers=1)
+    q.start()
+    try:
+        job_id = store.create_job("https://example.com/1", {})
+        q.enqueue(job_id)
+        assert started.acquire(timeout=5)
+
+        q.stop(timeout=5)
+        interrupted = store.get_job(job_id)
+        assert interrupted.stage == "queued", "shutdown must not claim the user cancelled"
+        assert interrupted.error is None
+    finally:
+        q.stop()
+
+    seen: list[str] = []
+    done = threading.Event()
+
+    def next_process_runner(store_, job, cancel_event):
+        seen.append(job.id)
+        store_.set_job_stage(job.id, "done")
+        done.set()
+
+    fresh = DownloadQueue(store, next_process_runner, workers=1)
+    fresh.start()
+    try:
+        fresh.recover()
+        assert done.wait(timeout=5)
+        assert seen == [job_id]
+    finally:
+        fresh.stop()
+
+
+def test_user_cancelled_job_is_not_resurrected_by_a_later_recover(store):
+    def runner(store_, job, cancel_event):
+        cancel_event.wait(timeout=5)
+        store_.set_job_stage(job.id, "cancelled", "Cancelled by user")
+
+    q = DownloadQueue(store, runner, workers=1)
+    q.start()
+    try:
+        job_id = store.create_job("https://example.com/1", {})
+        q.enqueue(job_id)
+
+        deadline = time.monotonic() + 5
+        while not q.is_active(job_id) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert q.cancel(job_id) is True
+
+        deadline = time.monotonic() + 5
+        while q.is_active(job_id) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert store.get_job(job_id).stage == "cancelled"
+    finally:
+        q.stop()
+
+    assert store.get_job(job_id).stage == "cancelled"
+
+    seen: list[str] = []
+    fresh = DownloadQueue(store, lambda s, j, c: seen.append(j.id), workers=1)
+    fresh.start()
+    try:
+        fresh.recover()
+        time.sleep(0.3)
+        assert seen == [], "a user cancellation must not be resurrected"
+    finally:
+        fresh.stop()
+
+
+def test_user_cancel_still_in_flight_when_stop_lands_stays_cancelled(store):
+    """The user cancelled first; a shutdown arriving before the runner has
+    finished unwinding must not rewrite their cancellation into `queued`."""
+    saw_cancel = threading.Event()
+    release = threading.Event()
+
+    def runner(store_, job, cancel_event):
+        cancel_event.wait(timeout=5)
+        saw_cancel.set()
+        release.wait(timeout=5)
+        store_.set_job_stage(job.id, "cancelled", "Cancelled by user")
+
+    q = DownloadQueue(store, runner, workers=1)
+    q.start()
+    job_id = store.create_job("https://example.com/1", {})
+    try:
+        q.enqueue(job_id)
+        deadline = time.monotonic() + 5
+        while not q.is_active(job_id) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert q.cancel(job_id) is True
+        assert saw_cancel.wait(timeout=5)
+
+        stopper = threading.Thread(target=lambda: q.stop(timeout=5))
+        stopper.start()
+        # A sentinel on the queue proves stop() has passed its locked section,
+        # so its shutdown bookkeeping has already run against this job.
+        deadline = time.monotonic() + 5
+        while q.depth() < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        release.set()
+        stopper.join(timeout=10)
+
+        job = store.get_job(job_id)
+        assert job.stage == "cancelled", "user cancellation must win over shutdown"
+        assert job.error == "Cancelled by user"
+    finally:
+        release.set()
+        q.stop()
+
+
 def test_recover_requeues_interrupted_jobs(store):
     done = threading.Event()
     seen: list[str] = []

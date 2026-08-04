@@ -9,6 +9,12 @@ logger = logging.getLogger(__name__)
 
 _SHUTDOWN = object()
 
+# Why a running job's cancel event was set. Recorded at the moment the event is
+# set, because the two are indistinguishable afterwards and they mean opposite
+# things: a user cancellation is final, a shutdown interruption must resume.
+_USER_CANCEL = "user"
+_SHUTDOWN_CANCEL = "shutdown"
+
 JobRunner = Callable[[JobStore, Job, threading.Event], None]
 
 
@@ -29,6 +35,7 @@ class DownloadQueue:
         self._lock = threading.Lock()
         self._active: dict[str, threading.Event] = {}
         self._cancelled_while_queued: set[str] = set()
+        self._cancel_reason: dict[str, str] = {}
         self._running = False
 
     def start(self) -> None:
@@ -48,7 +55,10 @@ class DownloadQueue:
             if not self._running:
                 return
             self._running = False
-            for event in self._active.values():
+            for job_id, event in self._active.items():
+                # setdefault: a user cancellation already recorded for this job
+                # stands. The user's intent outranks the shutdown.
+                self._cancel_reason.setdefault(job_id, _SHUTDOWN_CANCEL)
                 event.set()
         for _ in self._threads:
             self._queue.put(_SHUTDOWN)
@@ -79,6 +89,10 @@ class DownloadQueue:
         with self._lock:
             event = self._active.get(job_id)
             if event is not None:
+                # Plain assignment, not setdefault: an explicit user
+                # cancellation overrides a shutdown already in progress, so
+                # `cancelled` always means the user asked for it.
+                self._cancel_reason[job_id] = _USER_CANCEL
                 event.set()
                 return True
 
@@ -114,6 +128,10 @@ class DownloadQueue:
             finally:
                 self._queue.task_done()
 
+    def _reason_for(self, job_id: str) -> str | None:
+        with self._lock:
+            return self._cancel_reason.get(job_id)
+
     def _run_one(self, job_id: str) -> None:
         with self._lock:
             if job_id in self._cancelled_while_queued:
@@ -134,7 +152,12 @@ class DownloadQueue:
             # `cancelled`: cancellation never produces `error`.
             if cancel_event.is_set():
                 logger.info("Job %s aborted after cancellation: %s", job_id, exc)
-                stage, message = "cancelled", "Cancelled by user"
+                if self._reason_for(job_id) == _SHUTDOWN_CANCEL:
+                    # Written straight to `queued` so no observer ever sees a
+                    # shutdown briefly claiming to be a user cancellation.
+                    stage, message = "queued", None
+                else:
+                    stage, message = "cancelled", "Cancelled by user"
             else:
                 logger.error(
                     "Worker failed on job %s: %s", job_id, exc, exc_info=True
@@ -147,3 +170,12 @@ class DownloadQueue:
         finally:
             with self._lock:
                 self._active.pop(job_id, None)
+                reason = self._cancel_reason.pop(job_id, None)
+            if reason == _SHUTDOWN_CANCEL:
+                # The process going down is not something the user did, so the
+                # job must not be left claiming they cancelled it. `queued` is
+                # the honest resting state for "interrupted before finishing",
+                # and it is what the next process's recover() resumes from.
+                job = self._store.get_job(job_id)
+                if job is not None and job.stage == "cancelled":
+                    self._store.set_job_stage(job_id, "queued")
