@@ -40,6 +40,42 @@ class DownloadCancelled(RuntimeError):
     """Raised when a running download job is cancelled."""
 
 
+class _IndexAllocator:
+    """Assigns store row indices from a single keyspace, keyed by resolved
+    output path.
+
+    Both the progress hook and the post-download reconciliation loop share
+    one instance per run, so a given file always lands in the same store
+    row regardless of which of them writes it first. This replaces an
+    earlier design where the hook derived its index from yt-dlp's
+    `playlist_index` and the reconciliation loop derived its index from
+    `enumerate(entries)` position: those two index spaces only coincide in
+    the simple, non-gappy case, and disagreeing between them produced
+    phantom/duplicate item rows for the same underlying file.
+    """
+
+    def __init__(self) -> None:
+        self._by_path: dict[str, int] = {}
+        self._next = 0
+
+    def for_path(self, path: str) -> int:
+        """Return the row index for `path`, allocating one on first sight."""
+        real = os.path.realpath(path)
+        index = self._by_path.get(real)
+        if index is None:
+            index = self._next
+            self._next += 1
+            self._by_path[real] = index
+        return index
+
+    def new_index(self) -> int:
+        """Allocate a row index not tied to any known path (e.g. an entry
+        whose output file could not be located at all)."""
+        index = self._next
+        self._next += 1
+        return index
+
+
 def _ydl_factory(opts: dict[str, Any]):
     """Indirection point so tests can substitute a fake yt-dlp."""
     return YoutubeDL(opts)
@@ -109,18 +145,19 @@ def run_job(
         output_root = resolve_output_root(job.options)
         os.makedirs(output_root, exist_ok=True)
         opts = build_ydl_opts(job.options, output_root, cookie_path)
+        # Single source of truth for both "which store row is this file"
+        # and "was this path genuinely fetched this run". One allocator
+        # instance is shared by the hook and the reconciliation loop below,
+        # so a given output file always lands in exactly one row no matter
+        # which of them writes it first.
+        allocator = _IndexAllocator()
         # Realpaths that received at least one "downloading" hook event this
         # run, i.e. were genuinely fetched rather than skipped because the
-        # destination already existed (see overwrites=False in build_ydl_opts
-        # and _ALREADY_EXISTS_MESSAGE below). Keyed by path rather than the
-        # hook's playlist_index: that index and the final entries-list
-        # position only coincide in the simple, non-gappy case (dropped
-        # unavailable entries, playliststart offsets, or extractor
-        # renumbering all break that assumption), whereas the path is
-        # unambiguous.
+        # destination already existed (see overwrites=False in
+        # build_ydl_opts and _ALREADY_EXISTS_MESSAGE below).
         downloaded_paths: set[str] = set()
         opts["progress_hooks"].append(
-            _make_hook(store, job.id, cancel_event, downloaded_paths)
+            _make_hook(store, job.id, cancel_event, downloaded_paths, allocator)
         )
 
         # A failing entry (e.g. one unavailable track in a playlist) makes
@@ -141,25 +178,18 @@ def run_job(
             raise RuntimeError("Download produced no output")
 
         # Reconcile with whatever the hook already wrote durably during the
-        # run, rather than assuming this loop is the sole owner of each
-        # item: an entry the hook already completed keeps its recorded
-        # path/stage, and this loop only backfills a title if one is
-        # missing. Entries the hook never saw a "finished" event for (no
-        # hook events at all in some test doubles, or a hook event that
-        # arrived under a different index - see downloaded_paths above) are
-        # still recorded here from the entry's own data.
-        current_items = {item.index: item for item in store.get_job(job.id).items}
+        # run: each entry's row index comes from the same path-keyed
+        # allocator the hook used, so an entry the hook already completed
+        # is simply re-written with the (equivalent or better) data
+        # available here - never a different row. Entries the hook never
+        # saw a "finished" event for (no hook events at all in some test
+        # doubles) get their row allocated here for the first time.
         recorded = 0
-        for index, entry in enumerate(entries):
+        for entry in entries:
             path = _entry_path(entry)
-            title = str(entry.get("title") or _display_name(path) or f"Item {index + 1}")
-            already_done = current_items.get(index)
-            if already_done is not None and already_done.stage == "done" and already_done.path:
-                if title and not already_done.title:
-                    store.upsert_item(job.id, index, title=title)
-                recorded += 1
-                continue
             if path is None:
+                index = allocator.new_index()
+                title = str(entry.get("title") or f"Item {index + 1}")
                 store.upsert_item(
                     job.id,
                     index,
@@ -169,6 +199,8 @@ def run_job(
                 )
                 continue
             assert_within_allowed_roots(path)
+            index = allocator.for_path(path)
+            title = str(entry.get("title") or _display_name(path) or f"Item {index + 1}")
             item_fields: dict[str, Any] = dict(
                 title=title,
                 path=path,
@@ -207,22 +239,26 @@ def _make_hook(
     job_id: str,
     cancel_event: threading.Event,
     downloaded_paths: set[str],
+    allocator: "_IndexAllocator",
 ):
     def hook(data: dict[str, Any]) -> None:
         if cancel_event.is_set():
             raise DownloadCancelled("Cancelled by user")
         status = str(data.get("status") or "")
-        # This index is only used to pick which store row this particular
-        # hook call updates in real time; it is not relied on to decide
-        # whether the file was pre-existing (see downloaded_paths, keyed by
-        # path instead - playlist_index and the final entries-list position
-        # are not guaranteed to agree).
-        index = int(data.get("playlist_index") or 1) - 1
-        index = max(index, 0)
         filename = data.get("filename")
         if status == "downloading":
             if filename:
                 downloaded_paths.add(os.path.realpath(str(filename)))
+                index = allocator.for_path(str(filename))
+            else:
+                # No path known yet for this event; fall back to yt-dlp's
+                # own playlist_index purely as a temporary, best-effort
+                # progress-display slot. It is never treated as this file's
+                # identity - once "finished" resolves a real path, the
+                # allocator (keyed by that path, see below) decides the row,
+                # so this fallback slot is simply superseded rather than
+                # merged with it.
+                index = max(int(data.get("playlist_index") or 1) - 1, 0)
             downloaded = data.get("downloaded_bytes") or 0
             total = data.get("total_bytes") or data.get("total_bytes_estimate") or 0
             progress = (downloaded / total * 100.0) if total else 0.0
@@ -240,11 +276,13 @@ def _make_hook(
                 # bare "finished" event); leave final recording to the
                 # post-extract_info reconciliation loop, which has the
                 # entry's own data to fall back on.
+                index = max(int(data.get("playlist_index") or 1) - 1, 0)
                 store.upsert_item(
                     job_id, index, title=_display_name(filename), progress=100.0
                 )
                 return
             assert_within_allowed_roots(path)
+            index = allocator.for_path(path)
             fields: dict[str, Any] = dict(
                 title=_display_name(path),
                 path=path,

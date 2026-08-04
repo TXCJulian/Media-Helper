@@ -370,3 +370,11 @@ def test_mismatched_playlist_index_does_not_false_flag_as_pre_existing(
     by_path = {i.path: i for i in job.items if i.path}
     assert by_path[paths[0]].error is None
     assert by_path[paths[1]].error is None
+
+    # A mismatched playlist_index/entries-position keyspace must not
+    # produce a phantom duplicate row: exactly one row per genuinely
+    # distinct output file, each carrying its own entry-derived title.
+    assert len(job.items) == 2
+    assert {i.path for i in job.items} == set(paths)
+    assert by_path[paths[0]].title == "A"
+    assert by_path[paths[1]].title == "B"
