@@ -378,3 +378,105 @@ def test_mismatched_playlist_index_does_not_false_flag_as_pre_existing(
     assert {i.path for i in job.items} == set(paths)
     assert by_path[paths[0]].title == "A"
     assert by_path[paths[1]].title == "B"
+
+
+def test_pathless_downloading_event_does_not_clobber_prior_completed_item(
+    store, tmp_path, monkeypatch
+):
+    """A 'downloading' hook event with no filename yet (yt-dlp has not
+    resolved a destination for the item currently being worked on) must not
+    be keyed by yt-dlp's playlist_index as a fallback: that keyspace is
+    independent of the allocator's own and can collide with an
+    already-issued index, clobbering an already-completed row back toward a
+    bare in-progress placeholder. Since a later entry then fails, there is
+    no post-extract_info reconciliation pass to repair the damage."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    track_a = out / "A.mp3"
+    track_a.write_bytes(b"x" * 10)
+
+    class PartialFailureYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            events = [
+                {
+                    "status": "downloading",
+                    "filename": str(track_a),
+                    "downloaded_bytes": 5,
+                    "total_bytes": 10,
+                },
+                {"status": "finished", "filename": str(track_a)},
+                # A second item starts, but yt-dlp has not resolved a
+                # destination filename for it yet.
+                {"status": "downloading", "downloaded_bytes": 1, "total_bytes": 10},
+            ]
+            for event in events:
+                for hook in self._opts["progress_hooks"]:
+                    hook(event)
+            raise RuntimeError("ERROR: second track is unavailable")
+
+    monkeypatch.setattr(runner, "_ydl_factory", lambda opts: PartialFailureYDL(opts, [], {}))
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+
+    job_id = store.create_job("https://example.com/list", {"type": "audio"})
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    job = store.get_job(job_id)
+    assert job.stage == "error"
+    assert len(job.items) == 1
+    item = job.items[0]
+    assert item.stage == "done"
+    assert item.path == str(track_a)
+    assert item.title == "A.mp3"
+
+
+def test_finished_event_with_unresolvable_filename_does_not_allocate_stray_row(
+    store, tmp_path, monkeypatch
+):
+    """A 'finished' event whose filename does not point to an existing file
+    (e.g. a stray or failed postprocessing callback) must not allocate a
+    new row via the playlist_index fallback. Since a later entry then
+    fails, there is no post-extract_info reconciliation pass that could
+    clean up a stray row if one were created."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    track_a = out / "A.mp3"
+    track_a.write_bytes(b"x" * 10)
+
+    class PartialFailureYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            events = [
+                {
+                    "status": "downloading",
+                    "filename": str(track_a),
+                    "downloaded_bytes": 5,
+                    "total_bytes": 10,
+                },
+                {"status": "finished", "filename": str(track_a)},
+                # A "finished" event carrying a playlist_index far from any
+                # allocated so far, whose filename never actually landed on
+                # disk (e.g. a failed postprocessing step).
+                {
+                    "status": "finished",
+                    "playlist_index": 5,
+                    "filename": str(out / "ghost.mp3"),
+                },
+            ]
+            for event in events:
+                for hook in self._opts["progress_hooks"]:
+                    hook(event)
+            raise RuntimeError("ERROR: second track never materialized")
+
+    monkeypatch.setattr(runner, "_ydl_factory", lambda opts: PartialFailureYDL(opts, [], {}))
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+
+    job_id = store.create_job("https://example.com/list", {"type": "audio"})
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    job = store.get_job(job_id)
+    assert job.stage == "error"
+    assert len(job.items) == 1
+    item = job.items[0]
+    assert item.path == str(track_a)
+    assert item.stage == "done"

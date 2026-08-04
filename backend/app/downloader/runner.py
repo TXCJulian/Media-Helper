@@ -57,6 +57,7 @@ class _IndexAllocator:
     def __init__(self) -> None:
         self._by_path: dict[str, int] = {}
         self._next = 0
+        self._current: int | None = None
 
     def for_path(self, path: str) -> int:
         """Return the row index for `path`, allocating one on first sight."""
@@ -66,6 +67,7 @@ class _IndexAllocator:
             index = self._next
             self._next += 1
             self._by_path[real] = index
+        self._current = index
         return index
 
     def new_index(self) -> int:
@@ -73,7 +75,21 @@ class _IndexAllocator:
         whose output file could not be located at all)."""
         index = self._next
         self._next += 1
+        self._current = index
         return index
+
+    def current(self) -> int | None:
+        """The most recently allocated index, or None if nothing has been
+        allocated yet this run.
+
+        Used to attribute a hook event that carries no usable path (yet) to
+        "the item currently being worked on": yt-dlp downloads sequentially,
+        so that is the most recently allocated row. This must never mint a
+        new index of its own - doing so risks a second, phantom row for the
+        same file once its real path resolves and `for_path` allocates (or
+        reuses) its own index independently.
+        """
+        return self._current
 
 
 def _ydl_factory(opts: dict[str, Any]):
@@ -247,39 +263,45 @@ def _make_hook(
         status = str(data.get("status") or "")
         filename = data.get("filename")
         if status == "downloading":
+            downloaded = data.get("downloaded_bytes") or 0
+            total = data.get("total_bytes") or data.get("total_bytes_estimate") or 0
+            progress = min((downloaded / total * 100.0) if total else 0.0, 100.0)
             if filename:
                 downloaded_paths.add(os.path.realpath(str(filename)))
                 index = allocator.for_path(str(filename))
+                store.upsert_item(
+                    job_id,
+                    index,
+                    title=_display_name(filename),
+                    progress=progress,
+                    stage="downloading",
+                )
             else:
-                # No path known yet for this event; fall back to yt-dlp's
-                # own playlist_index purely as a temporary, best-effort
-                # progress-display slot. It is never treated as this file's
-                # identity - once "finished" resolves a real path, the
-                # allocator (keyed by that path, see below) decides the row,
-                # so this fallback slot is simply superseded rather than
-                # merged with it.
-                index = max(int(data.get("playlist_index") or 1) - 1, 0)
-            downloaded = data.get("downloaded_bytes") or 0
-            total = data.get("total_bytes") or data.get("total_bytes_estimate") or 0
-            progress = (downloaded / total * 100.0) if total else 0.0
-            store.upsert_item(
-                job_id,
-                index,
-                title=_display_name(filename),
-                progress=min(progress, 100.0),
-                stage="downloading",
-            )
+                # No path resolved yet for this event. The allocator is the
+                # only index authority (there is no second numbering
+                # scheme), so this cannot mint a new row without risking a
+                # duplicate once the real path does resolve. Attribute it
+                # to "the item currently being worked on" instead: yt-dlp
+                # downloads sequentially, so that is the most recently
+                # allocated row. Only touch progress - not title or stage -
+                # so a stray pathless ping can never clobber an already-
+                # completed sibling's identity, only nudge its displayed
+                # percentage. If nothing has been allocated yet, there is no
+                # row to attribute this to at all, so it is dropped.
+                index = allocator.current()
+                if index is not None:
+                    store.upsert_item(job_id, index, progress=progress)
+                return
         elif status == "finished":
             path = str(filename) if filename and os.path.isfile(str(filename)) else None
             if path is None:
-                # No usable path yet (e.g. a test double that only sends a
-                # bare "finished" event); leave final recording to the
-                # post-extract_info reconciliation loop, which has the
-                # entry's own data to fall back on.
-                index = max(int(data.get("playlist_index") or 1) - 1, 0)
-                store.upsert_item(
-                    job_id, index, title=_display_name(filename), progress=100.0
-                )
+                # No usable path (e.g. a stray/failed postprocessing
+                # callback). As above, this must never allocate a new row -
+                # it is not evidence of a genuinely new output file. Bump
+                # the current row's progress only, if one exists yet.
+                index = allocator.current()
+                if index is not None:
+                    store.upsert_item(job_id, index, progress=100.0)
                 return
             assert_within_allowed_roots(path)
             index = allocator.for_path(path)
