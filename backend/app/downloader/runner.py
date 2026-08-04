@@ -109,15 +109,27 @@ def run_job(
         output_root = resolve_output_root(job.options)
         os.makedirs(output_root, exist_ok=True)
         opts = build_ydl_opts(job.options, output_root, cookie_path)
-        # Indices that received at least one "downloading" hook event this
+        # Realpaths that received at least one "downloading" hook event this
         # run, i.e. were genuinely fetched rather than skipped because the
         # destination already existed (see overwrites=False in build_ydl_opts
-        # and _ALREADY_EXISTS_MESSAGE below).
-        downloaded_indices: set[int] = set()
+        # and _ALREADY_EXISTS_MESSAGE below). Keyed by path rather than the
+        # hook's playlist_index: that index and the final entries-list
+        # position only coincide in the simple, non-gappy case (dropped
+        # unavailable entries, playliststart offsets, or extractor
+        # renumbering all break that assumption), whereas the path is
+        # unambiguous.
+        downloaded_paths: set[str] = set()
         opts["progress_hooks"].append(
-            _make_hook(store, job.id, cancel_event, downloaded_indices)
+            _make_hook(store, job.id, cancel_event, downloaded_paths)
         )
 
+        # A failing entry (e.g. one unavailable track in a playlist) makes
+        # extract_info raise before it ever returns, so the entries loop
+        # below never runs at all. Items that already completed via the
+        # hook's "finished" branch were already written durably to the
+        # store (path/size/stage="done") the moment they finished, so an
+        # exception here does not lose them - it only sets the job-level
+        # error via the outer except below.
         with _ydl_factory(opts) as ydl:
             info = ydl.extract_info(job.url, download=True)
 
@@ -128,10 +140,25 @@ def run_job(
         if not entries:
             raise RuntimeError("Download produced no output")
 
+        # Reconcile with whatever the hook already wrote durably during the
+        # run, rather than assuming this loop is the sole owner of each
+        # item: an entry the hook already completed keeps its recorded
+        # path/stage, and this loop only backfills a title if one is
+        # missing. Entries the hook never saw a "finished" event for (no
+        # hook events at all in some test doubles, or a hook event that
+        # arrived under a different index - see downloaded_paths above) are
+        # still recorded here from the entry's own data.
+        current_items = {item.index: item for item in store.get_job(job.id).items}
         recorded = 0
         for index, entry in enumerate(entries):
             path = _entry_path(entry)
             title = str(entry.get("title") or _display_name(path) or f"Item {index + 1}")
+            already_done = current_items.get(index)
+            if already_done is not None and already_done.stage == "done" and already_done.path:
+                if title and not already_done.title:
+                    store.upsert_item(job.id, index, title=title)
+                recorded += 1
+                continue
             if path is None:
                 store.upsert_item(
                     job.id,
@@ -149,8 +176,8 @@ def run_job(
                 progress=100.0,
                 stage="done",
             )
-            if index not in downloaded_indices:
-                # No "downloading" event was ever seen for this index, yet a
+            if os.path.realpath(path) not in downloaded_paths:
+                # No "downloading" event was ever seen for this path, yet a
                 # file exists at the destination: yt-dlp's overwrites=False
                 # skipped it because it was already there. Record it as done
                 # (the file is present and usable) but don't claim it was
@@ -179,34 +206,58 @@ def _make_hook(
     store: JobStore,
     job_id: str,
     cancel_event: threading.Event,
-    downloaded_indices: set[int],
+    downloaded_paths: set[str],
 ):
     def hook(data: dict[str, Any]) -> None:
         if cancel_event.is_set():
             raise DownloadCancelled("Cancelled by user")
         status = str(data.get("status") or "")
+        # This index is only used to pick which store row this particular
+        # hook call updates in real time; it is not relied on to decide
+        # whether the file was pre-existing (see downloaded_paths, keyed by
+        # path instead - playlist_index and the final entries-list position
+        # are not guaranteed to agree).
         index = int(data.get("playlist_index") or 1) - 1
         index = max(index, 0)
+        filename = data.get("filename")
         if status == "downloading":
-            downloaded_indices.add(index)
+            if filename:
+                downloaded_paths.add(os.path.realpath(str(filename)))
             downloaded = data.get("downloaded_bytes") or 0
             total = data.get("total_bytes") or data.get("total_bytes_estimate") or 0
             progress = (downloaded / total * 100.0) if total else 0.0
             store.upsert_item(
                 job_id,
                 index,
-                title=_display_name(data.get("filename")),
+                title=_display_name(filename),
                 progress=min(progress, 100.0),
                 stage="downloading",
             )
         elif status == "finished":
-            store.upsert_item(
-                job_id,
-                index,
-                title=_display_name(data.get("filename")),
+            path = str(filename) if filename and os.path.isfile(str(filename)) else None
+            if path is None:
+                # No usable path yet (e.g. a test double that only sends a
+                # bare "finished" event); leave final recording to the
+                # post-extract_info reconciliation loop, which has the
+                # entry's own data to fall back on.
+                store.upsert_item(
+                    job_id, index, title=_display_name(filename), progress=100.0
+                )
+                return
+            assert_within_allowed_roots(path)
+            fields: dict[str, Any] = dict(
+                title=_display_name(path),
+                path=path,
+                size=_file_size(path),
                 progress=100.0,
-                stage="downloading",
+                stage="done",
             )
+            if os.path.realpath(path) not in downloaded_paths:
+                fields["error"] = _ALREADY_EXISTS_MESSAGE
+            # Record durably now: if a later playlist entry fails,
+            # extract_info raises before the post-loop below ever runs, and
+            # this write is what keeps this item's result from being lost.
+            store.upsert_item(job_id, index, **fields)
 
     return hook
 
