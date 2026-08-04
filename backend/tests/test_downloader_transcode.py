@@ -220,6 +220,51 @@ def test_transcode_removes_partial_output_on_watcher_cancel(tmp_path):
     assert not os.path.exists(dst)
 
 
+class _StdoutThenCancel:
+    """Yields the given lines, then sets `cancel_event` only once they've all
+    been consumed - simulating a cancel request that arrives at (or just
+    after) the exact moment ffmpeg finishes encoding on its own, rather than
+    a cancel that actually interrupted the process."""
+
+    def __init__(self, lines, cancel_event):
+        self._lines = iter(lines)
+        self._cancel_event = cancel_event
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        try:
+            return next(self._lines)
+        except StopIteration:
+            self._cancel_event.set()
+            raise
+
+
+def test_transcode_keeps_output_when_cancel_arrives_after_success(tmp_path):
+    """A cancel_event that becomes set only after ffmpeg has already exited 0
+    must be treated as a no-op, not a cancellation: the output is complete
+    and correct, so transcode_file must return normally and must NOT delete
+    it. Deleting a finished file here would be data loss, not cleanup - a
+    killed process never exits 0 on any platform this app supports, so
+    returncode == 0 is a reliable signal that nothing was actually killed."""
+    dst = str(tmp_path / "out.mkv")
+    with open(dst, "wb") as f:
+        f.write(b"finished ffmpeg output")
+
+    cancel = threading.Event()
+    lines = ["out_time_ms=10000000\n", "progress=end\n"]
+    proc = _fake_proc(lines, returncode=0)
+    proc.stdout = _StdoutThenCancel(lines, cancel)
+
+    with patch.object(transcode, "probe_duration", return_value=10.0), patch(
+        "subprocess.Popen", return_value=proc
+    ):
+        transcode.transcode_file("/in.mp4", dst, "h265", cancel, lambda _: None)
+
+    assert os.path.exists(dst)
+
+
 def test_probe_duration_parses_ffprobe():
     completed = subprocess.CompletedProcess(
         args=[], returncode=0, stdout="123.45\n", stderr=""

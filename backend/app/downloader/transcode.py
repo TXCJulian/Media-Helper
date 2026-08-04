@@ -151,7 +151,13 @@ def transcode_file(
             returncode = proc.wait()
             watcher.join(timeout=1.0)
 
-        if cancel_event.is_set():
+        # A cancel that arrives after ffmpeg already exited successfully is a
+        # no-op, not a cancellation: the output is complete and correct, and
+        # a killed process never exits 0 on any platform we support. Only
+        # treat this as a genuine cancellation when the process didn't
+        # actually finish cleanly - deleting a finished file here would be
+        # data loss, not cleanup.
+        if cancel_event.is_set() and returncode != 0:
             _remove_partial(dst)
             raise TranscodeCancelled("Cancelled by user")
 
