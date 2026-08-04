@@ -82,37 +82,37 @@ class JobStore:
         with self._lock:
             self._conn.close()
 
-    def _notify(self, job_id: str) -> None:
-        if self._on_change is None:
-            return
-        job = self.get_job(job_id)
-        if job is not None:
-            self._on_change(job)
+    def _read_job_locked(self, job_id: str) -> Job | None:
+        """Read job while already holding self._lock. Do not call without holding lock."""
+        row = self._conn.execute(
+            "SELECT * FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        item_rows = self._conn.execute(
+            "SELECT * FROM items WHERE job_id = ? ORDER BY idx", (job_id,)
+        ).fetchall()
+        return _to_job(row, item_rows)
 
     def create_job(
         self, url: str, options: dict[str, Any], stage: str = "queued"
     ) -> str:
         job_id = str(uuid.uuid4())
+        job = None
         with self._lock:
             self._conn.execute(
                 "INSERT INTO jobs (id, url, options, stage) VALUES (?, ?, ?, ?)",
                 (job_id, url, json.dumps(options), stage),
             )
             self._conn.commit()
-        self._notify(job_id)
+            job = self._read_job_locked(job_id)
+        if job is not None and self._on_change is not None:
+            self._on_change(job)
         return job_id
 
     def get_job(self, job_id: str) -> Job | None:
         with self._lock:
-            row = self._conn.execute(
-                "SELECT * FROM jobs WHERE id = ?", (job_id,)
-            ).fetchone()
-            if row is None:
-                return None
-            item_rows = self._conn.execute(
-                "SELECT * FROM items WHERE job_id = ? ORDER BY idx", (job_id,)
-            ).fetchall()
-        return _to_job(row, item_rows)
+            return self._read_job_locked(job_id)
 
     def list_jobs(self, limit: int = 200) -> list[Job]:
         with self._lock:
@@ -133,6 +133,7 @@ class JobStore:
     ) -> None:
         if stage not in STAGES:
             raise ValueError(f"Unknown stage: {stage}")
+        job = None
         with self._lock:
             self._conn.execute(
                 "UPDATE jobs SET stage = ?, error = ?, updated_at = datetime('now') "
@@ -140,12 +141,15 @@ class JobStore:
                 (stage, error, job_id),
             )
             self._conn.commit()
-        self._notify(job_id)
+            job = self._read_job_locked(job_id)
+        if job is not None and self._on_change is not None:
+            self._on_change(job)
 
     def upsert_item(self, job_id: str, index: int, **fields: Any) -> None:
         unknown = set(fields) - set(_ITEM_FIELDS)
         if unknown:
             raise ValueError(f"Unknown item fields: {sorted(unknown)}")
+        job = None
         with self._lock:
             self._conn.execute(
                 "INSERT OR IGNORE INTO items (job_id, idx) VALUES (?, ?)",
@@ -161,7 +165,9 @@ class JobStore:
                 "UPDATE jobs SET updated_at = datetime('now') WHERE id = ?", (job_id,)
             )
             self._conn.commit()
-        self._notify(job_id)
+            job = self._read_job_locked(job_id)
+        if job is not None and self._on_change is not None:
+            self._on_change(job)
 
     def delete_job(self, job_id: str) -> bool:
         with self._lock:

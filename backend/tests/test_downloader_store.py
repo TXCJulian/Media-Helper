@@ -110,3 +110,34 @@ def test_on_change_fires_for_stage_and_item_updates():
     assert len(seen) == 3
     assert all(isinstance(j, Job) for j in seen)
     assert seen[-1].items[0].progress == 1.0
+
+
+def test_on_change_payload_corresponds_to_write():
+    """Each callback payload must reflect the state at that write time, not current state.
+
+    This test verifies that when two sequential stage changes occur, each callback
+    captures the job state from that specific write, not the latest state.
+    """
+    seen = []
+    store = JobStore(":memory:", on_change=seen.append)
+    job_id = store.create_job("https://example.com/v", {})
+
+    # First write: stage=downloading with no error
+    store.set_job_stage(job_id, "downloading", error=None)
+
+    # Second write: stage=transcoding with error
+    store.set_job_stage(job_id, "transcoding", error="interrupted")
+
+    # Filter to stage change callbacks (skip create)
+    stage_callbacks = [j for j in seen if j.stage in ("downloading", "transcoding")]
+
+    # Should have exactly 2 stage change callbacks
+    assert len(stage_callbacks) == 2, f"Expected 2 stage callbacks, got {len(stage_callbacks)}"
+
+    # First callback should reflect downloading state
+    assert stage_callbacks[0].stage == "downloading"
+    assert stage_callbacks[0].error is None
+
+    # Second callback should reflect transcoding state with error
+    assert stage_callbacks[1].stage == "transcoding"
+    assert stage_callbacks[1].error == "interrupted"
