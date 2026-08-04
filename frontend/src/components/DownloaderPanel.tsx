@@ -79,10 +79,7 @@ const VIDEO_CODEC_FORMATS: Record<string, string[]> = {
   av1: ['mp4', 'mkv', 'webm'],
 }
 
-function getFilteredFormats(
-  type: string,
-  codec: string,
-): { label: string; value: string }[] {
+function getFilteredFormats(type: string, codec: string): { label: string; value: string }[] {
   const all = FORMAT_OPTIONS[type] ?? []
   if (type !== 'video' || codec === 'auto') return all
   const allowed = VIDEO_CODEC_FORMATS[codec]
@@ -90,10 +87,7 @@ function getFilteredFormats(
   return all.filter((o) => o.value === 'auto' || allowed.includes(o.value))
 }
 
-function getFilteredCodecs(
-  type: string,
-  format: string,
-): { label: string; value: string }[] {
+function getFilteredCodecs(type: string, format: string): { label: string; value: string }[] {
   const all = CODEC_OPTIONS[type] ?? []
   if (type !== 'video' || format === 'auto') return all
   return all.filter((o) => {
@@ -320,13 +314,11 @@ export default function DownloaderPanel({
 
   const startTrackedSSE = useCallback(
     (
-      start: (
-        callbacks: {
-          onProgress: (data: string) => void
-          onError: (data: string) => void
-          onDone: (data: string) => void
-        },
-      ) => () => void,
+      start: (callbacks: {
+        onProgress: (data: string) => void
+        onError: (data: string) => void
+        onDone: (data: string) => void
+      }) => () => void,
       callbacks: {
         onProgress: (data: string) => void
         onError: (data: string) => void
