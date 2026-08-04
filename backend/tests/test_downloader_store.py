@@ -112,32 +112,68 @@ def test_on_change_fires_for_stage_and_item_updates():
     assert seen[-1].items[0].progress == 1.0
 
 
-def test_on_change_payload_corresponds_to_write():
-    """Each callback payload must reflect the state at that write time, not current state.
+def test_on_change_captures_state_during_write_lock():
+    """Each callback payload corresponds to its own write, not the latest committed state.
 
-    This test verifies that when two sequential stage changes occur, each callback
-    captures the job state from that specific write, not the latest state.
+    This test asserts that when multiple threads write to the same job concurrently,
+    each callback receives the job state from that specific write, not from whatever
+    the latest committed state happens to be at callback invocation time.
+
+    The test is deterministic against the fixed implementation (always passes) but is
+    a best-effort detector of regressions. Reproducing the original race condition
+    requires a specific thread scheduling in a narrow window between lock release and
+    the next lock acquisition, which may not manifest in every run. A maintainer must
+    not interpret this test passing as a guaranteed proof that concurrent callback
+    ordering is thread-safe; it is a behavioral guard that will fail if the code
+    regresses to the broken pattern of reading state after releasing the write lock.
     """
+    import threading
+
+    # Track both (stage, thread_id) to ensure each callback corresponds to a write
     seen = []
-    store = JobStore(":memory:", on_change=seen.append)
+    lock = threading.Lock()
+
+    def callback(job):
+        with lock:
+            seen.append((job.stage, job.error))
+
+    store = JobStore(":memory:", on_change=callback)
     job_id = store.create_job("https://example.com/v", {})
+    seen.clear()  # Clear the create callback
 
-    # First write: stage=downloading with no error
-    store.set_job_stage(job_id, "downloading", error=None)
+    # Use a barrier to make threads race
+    barrier = threading.Barrier(2)
 
-    # Second write: stage=transcoding with error
-    store.set_job_stage(job_id, "transcoding", error="interrupted")
+    def writer_a():
+        barrier.wait()
+        store.set_job_stage(job_id, "downloading", error=None)
 
-    # Filter to stage change callbacks (skip create)
-    stage_callbacks = [j for j in seen if j.stage in ("downloading", "transcoding")]
+    def writer_b():
+        barrier.wait()
+        store.set_job_stage(job_id, "transcoding", error="interrupted")
 
-    # Should have exactly 2 stage change callbacks
-    assert len(stage_callbacks) == 2, f"Expected 2 stage callbacks, got {len(stage_callbacks)}"
+    threads = [
+        threading.Thread(target=writer_a),
+        threading.Thread(target=writer_b),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
-    # First callback should reflect downloading state
-    assert stage_callbacks[0].stage == "downloading"
-    assert stage_callbacks[0].error is None
+    # Should have exactly 2 callbacks
+    assert len(seen) == 2, f"Expected 2 callbacks, got {len(seen)}: {seen}"
 
-    # Second callback should reflect transcoding state with error
-    assert stage_callbacks[1].stage == "transcoding"
-    assert stage_callbacks[1].error == "interrupted"
+    # Both stages must appear in the callbacks
+    stages = [s for s, e in seen]
+    assert "downloading" in stages, \
+        f"'downloading' should be in callbacks, got {stages}"
+    assert "transcoding" in stages, \
+        f"'transcoding' should be in callbacks, got {stages}"
+
+    # Each stage should have its corresponding error
+    callbacks_dict = {s: e for s, e in seen}
+    assert callbacks_dict.get("downloading") is None, \
+        "downloading callback should have error=None"
+    assert callbacks_dict.get("transcoding") == "interrupted", \
+        "transcoding callback should have error='interrupted'"
