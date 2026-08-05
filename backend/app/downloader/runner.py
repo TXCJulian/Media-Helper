@@ -363,31 +363,34 @@ def _finalise_transcode(
     """Move a finished encode from its scratch name to its real one.
 
     Returns the path the output ended up at. Never overwrites an existing
-    file, and never removes `source` when `keep_source` is set.
-    """
-    if not keep_source:
-        # Freeing the source's name first is what lets a same-container
-        # re-encode land on the plain `Title.mp4` rather than being pushed to
-        # `Title (1).mp4` by a collision with the very file it replaces.
-        try:
-            os.remove(source)
-        except OSError:
-            logger.warning("Could not remove pre-transcode source %s", source)
+    file other than `source` itself, and never removes `source` when
+    `keep_source` is set.
 
+    The source is only ever removed *after* the encode is safely in place. The
+    ordering matters: unlinking it first meant that a failure in the move (or
+    in the root check before it) left the caller unlinking the scratch file
+    too, destroying both the original and its re-encode.
+    """
     destination = f"{stem}.{extension}"
-    if os.path.exists(source) and os.path.realpath(destination) == os.path.realpath(
-        source
-    ):
-        # Same container, and the source is still on disk - either kept
-        # deliberately (it pre-dated this run) or its removal failed. Either
-        # way it must not be clobbered, so the encode gets its own name.
+    replaces_source = os.path.exists(source) and os.path.realpath(
+        destination
+    ) == os.path.realpath(source)
+
+    if replaces_source and keep_source:
+        # The encode would land exactly on a file that must survive, so it
+        # gets its own name instead.
         destination = unique_path(f"{stem}.transcoded.{extension}")
-    else:
-        # Any other pre-existing file at this name belongs to somebody else.
+    elif not replaces_source:
+        # Any pre-existing file at this name belongs to somebody else.
         destination = unique_path(destination)
 
     assert_within_allowed_roots(destination)
+    # Same container and the source is being replaced: `os.replace` swaps the
+    # encode in atomically, so the name never has to be freed up front and
+    # there is no window where neither file exists.
     os.replace(scratch, destination)
+    if not keep_source and not replaces_source:
+        _remove_quietly(source)
     return destination
 
 

@@ -788,6 +788,52 @@ def test_same_container_transcode_keeps_the_plain_filename(
     assert sorted(p.name for p in out.iterdir()) == ["Video.mp4"]
 
 
+def test_a_failed_rename_leaves_the_source_intact(store, tmp_path, monkeypatch):
+    """Removing the source before moving the encode into place meant that a
+    failure in the move - or in the root check in front of it - left the
+    caller unlinking the scratch file too, destroying both the original and
+    its re-encode."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    source = out / "Video.mp4"
+    source.write_bytes(b"the only copy")
+
+    encoded = []
+
+    def failing_transcode(src, dst, codec, cancel_event, on_progress):
+        _fake_transcode(src, dst, codec, cancel_event, on_progress)
+        encoded.append(True)
+
+    def reject_the_destination(path):
+        # Everything up to and including the scratch name passes; the final
+        # name fails, which is where the old ordering had already deleted the
+        # source.
+        if encoded and path == str(out / "Video.mp4"):
+            raise ValueError("outside allowed roots")
+
+    _install_fake_ydl(
+        monkeypatch,
+        events=_downloaded_events(source),
+        info={"title": "Video", "requested_downloads": [{"filepath": str(source)}]},
+    )
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(
+        runner, "assert_within_allowed_roots", reject_the_destination
+    )
+    monkeypatch.setattr(runner, "transcode_file", failing_transcode)
+
+    job_id = store.create_job(
+        "https://example.com/v", {"type": "video", "codec": "h264", "format": "mp4"}
+    )
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    assert store.get_job(job_id).stage == "error"
+    assert source.exists(), "the source must survive a failed rename"
+    assert source.read_bytes() == b"the only copy"
+    # The scratch file is still cleaned up; only the original is preserved.
+    assert sorted(p.name for p in out.iterdir()) == ["Video.mp4"]
+
+
 def test_transcode_never_overwrites_an_unrelated_existing_file(
     store, tmp_path, monkeypatch
 ):
