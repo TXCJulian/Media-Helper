@@ -219,9 +219,27 @@ async def lifespan(app: FastAPI):
             logger.error(
                 "Downloader requires ffmpeg and ffprobe on PATH; jobs will fail."
             )
-        init_downloader()
-        downloader_started = True
-        downloader_cleanup_task = asyncio.create_task(_cleanup_downloader_jobs())
+        try:
+            init_downloader()
+        except Exception:
+            # A downloader that cannot reach its data directory is a broken
+            # downloader, not a dead application. An unwritable /downloads bind
+            # mount or an unopenable SQLite file must not stop episodes, music
+            # and cutter from serving — and an exception escaping here would
+            # also skip the shutdown below, orphaning the watchdog observers
+            # and the cutter cleanup task. Broad on purpose: sqlite3.Error is
+            # not an OSError.
+            logger.exception(
+                "Downloader failed to start; the feature will be unavailable"
+            )
+            try:
+                # Release anything the failed init had already built.
+                shutdown_downloader()
+            except Exception:
+                logger.exception("Downloader cleanup after a failed start failed")
+        else:
+            downloader_started = True
+            downloader_cleanup_task = asyncio.create_task(_cleanup_downloader_jobs())
 
     try:
         yield

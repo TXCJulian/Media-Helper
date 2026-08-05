@@ -273,6 +273,58 @@ class TestDownloaderEndpoints:
                 assert routes_mod._store is None
                 assert routes_mod._queue is None
 
+    def test_downloader_failing_to_start_does_not_kill_the_app(self, tmp_path):
+        """An unwritable downloader data dir must degrade one feature, not all.
+
+        The code this replaced wrapped its directory creation in try/except and
+        only logged. init_downloader() opens SQLite as well, so a failure here
+        must not escape lifespan startup: the app would never serve, and
+        because the raise happens before the try/finally, the watchdog
+        observers and the cutter cleanup task would both be orphaned.
+        """
+        import importlib
+
+        media = tmp_path / "media"
+        (media / "TV Shows").mkdir(parents=True)
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(media),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes,cutter,download",
+            "DOWNLOADS_DIR": str(tmp_path / "downloads"),
+            "DOWNLOADER_DATA_DIR": str(tmp_path / "dl-data"),
+            "DOWNLOADER_DB": str(tmp_path / "dl-data" / "downloader.db"),
+            "CUTTER_JOBS_DIR": str(tmp_path / "cutter-jobs"),
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.downloader.routes as routes_mod
+            importlib.reload(routes_mod)
+            import app.main as main_mod
+            importlib.reload(main_mod)
+
+            with patch.object(
+                routes_mod, "JobStore", side_effect=OSError("read-only file system")
+            ):
+                with TestClient(main_mod.app) as c:
+                    # The app serves, and the untouched features still work.
+                    assert c.get("/health").status_code == 200
+                    assert c.get("/directories/tvshows").status_code == 200
+                    # The downloader itself is unavailable, not half-built.
+                    assert routes_mod._store is None
+                    assert routes_mod._queue is None
+
+                # The watchers were actually started, so this is not vacuous...
+                assert main_mod._observers
+                # ...and the shutdown half of lifespan still ran, rather than
+                # being skipped by an exception raised before the try block.
+                assert all(not obs.is_alive() for obs in main_mod._observers)
+
 
 class TestCutterStreamValidation:
     def test_cutter_stream_rejects_invalid_audio_index(self, client, tmp_path, monkeypatch):

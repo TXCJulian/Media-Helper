@@ -2,9 +2,9 @@ import asyncio
 import importlib
 import json
 import os
-import threading
 from unittest.mock import patch
 
+import anyio.to_thread
 import pytest
 from fastapi.testclient import TestClient
 
@@ -273,26 +273,54 @@ def test_events_stream_receives_deltas_after_the_snapshot(client):
     assert "options" not in payload["job"]
 
 
-def test_events_stream_does_not_occupy_a_worker_thread_while_idle(client):
+def test_idle_event_stream_borrows_no_anyio_worker_thread(client):
     """The whole point of the async rewrite: an idle stream holds no thread.
 
-    A sync generator blocking on `subscription.get(timeout=...)` would sit in
-    an AnyIO worker thread for the entire wait. One stream per open browser tab
-    would then exhaust the 40-thread default and starve every other `def`
-    endpoint in the application.
+    A sync generator blocking on `subscription.get(timeout=...)` sits inside
+    Starlette's `iterate_in_threadpool`, which borrows a token from AnyIO's
+    default 40-token thread limiter for the entire wait. One stream per open
+    browser tab would exhaust it and starve every other `def` endpoint in the
+    application.
+
+    Measured with a consumer task actively awaiting the next frame, because
+    that is what `stream_response` does in production and it is the only state
+    in which a sync implementation would be holding its token. Sampling while
+    no `__anext__` is pending would pass under either implementation. The
+    limiter is also the right instrument rather than `threading.active_count()`:
+    the snapshot's `asyncio.to_thread(store.list_jobs)` materialises a thread in
+    asyncio's own executor, which would mask the signal in a raw thread count.
     """
-    async def idle_thread_count():
+    broadcaster = routes_module().get_broadcaster()
+
+    async def borrowed_while_idle():
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        baseline = limiter.borrowed_tokens
         response = await routes_module().download_events()
         iterator = response.body_iterator
-        await iterator.__anext__()  # snapshot
-        before = threading.active_count()
-        # Several poll cycles: a thread-blocking implementation would be
-        # holding one for all of them.
-        await asyncio.sleep(_POLL_MARGIN * 3)
-        during = threading.active_count()
-        await iterator.aclose()
-        return before, during
 
-    before, during = asyncio.run(idle_thread_count())
-    assert during <= before
+        async def consume():
+            async for _chunk in iterator:
+                pass
+
+        task = asyncio.create_task(consume())
+        for _ in range(200):
+            if broadcaster.subscriber_count() == 1:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("stream never subscribed")
+        # Several poll cycles with __anext__ pending throughout.
+        await asyncio.sleep(_POLL_MARGIN * 2)
+        borrowed = limiter.borrowed_tokens
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return baseline, borrowed
+
+    baseline, borrowed = asyncio.run(borrowed_while_idle())
+    assert baseline == 0
+    assert borrowed == 0
 
