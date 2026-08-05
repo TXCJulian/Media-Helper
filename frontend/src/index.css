@@ -238,7 +238,7 @@
     border-color: var(--accent-6);
     box-shadow:
       0 0 0 3px var(--accent-6-glow),
-      inset 0 1px 2px rgba(0, 0, 0, 0.2);
+      0 0 20px rgba(34, 211, 238, 0.08);
   }
   .input-field.input-error {
     border-color: var(--error);
@@ -345,7 +345,9 @@
     background: var(--accent-6);
   }
   .btn-submit.btn-cyan:hover:not(:disabled) {
-    background: #06b6d4;
+    box-shadow:
+      0 0 32px rgba(34, 211, 238, 0.3),
+      0 4px 20px rgba(0, 0, 0, 0.3);
   }
 
   /* ── Sliders ── */
