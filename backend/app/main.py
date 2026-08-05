@@ -1,9 +1,10 @@
 from fastapi import FastAPI, Query, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from starlette.types import ASGIApp, Receive, Scope, Send
 from contextlib import asynccontextmanager
+from email.utils import formatdate
 import asyncio
 import json
 import mimetypes
@@ -1114,14 +1115,29 @@ def cutter_stream(
             raise HTTPException(status_code=500, detail=str(e))
 
     # Serve raw file with HTTP Range support
-    file_size = os.path.getsize(resolved)
+    stat_result = os.stat(resolved)
+    file_size = stat_result.st_size
     ext = os.path.splitext(resolved)[1].lower()
     content_type = _MEDIA_CONTENT_TYPES.get(
         ext,
         mimetypes.guess_type(resolved)[0] or "application/octet-stream",
     )
 
+    # Without validators a browser cannot reuse a single byte it has already
+    # fetched, so every re-buffer and every scrub re-reads the whole range from
+    # disk -- expensive when the source lives on a network share. A preview file
+    # is immutable for a given (mtime, size), so it is safe to let the browser
+    # cache ranges and revalidate cheaply.
+    etag = f'"{int(stat_result.st_mtime)}-{file_size}"'
+    cache_headers = {
+        "ETag": etag,
+        "Last-Modified": formatdate(stat_result.st_mtime, usegmt=True),
+        "Cache-Control": "private, max-age=3600",
+    }
+
     range_header = request.headers.get("range")
+    if not range_header and request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=cache_headers)
     if range_header:
         # Parse Range: bytes=X-Y
         _range_re = re.match(r"bytes=(\d*)-(\d*)", range_header.strip())
@@ -1159,6 +1175,7 @@ def cutter_stream(
                 "Content-Range": f"bytes {start}-{end}/{file_size}",
                 "Content-Length": str(content_length),
                 "Accept-Ranges": "bytes",
+                **cache_headers,
             },
         )
 
@@ -1177,6 +1194,7 @@ def cutter_stream(
         headers={
             "Content-Length": str(file_size),
             "Accept-Ranges": "bytes",
+            **cache_headers,
         },
     )
 
