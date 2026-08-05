@@ -28,10 +28,13 @@ class FakeYDL:
     def __exit__(self, *exc):
         return False
 
+    def fire(self, event):
+        for hook in self._opts["progress_hooks"]:
+            hook(event)
+
     def extract_info(self, url, download=True):
         for event in self._events:
-            for hook in self._opts["progress_hooks"]:
-                hook(event)
+            self.fire(event)
         return self._info
 
 
@@ -911,3 +914,282 @@ def test_transcode_stage_tolerates_a_job_deleted_mid_flight(store):
     store.delete_job(job_id)
 
     runner._run_transcode_stage(store, job, threading.Event())
+
+
+# ---------------------------------------------------------------------------
+# Intermediate download files (merge / audio extraction)
+#
+# Every test above drives the fake yt-dlp with exactly one clean output path
+# per entry. Real yt-dlp does not behave that way for the two format
+# selectors this app actually uses:
+#
+#   * `bv*+ba` (every video job, see ydl.video_format_selector) makes
+#     YoutubeDL.process_info assign `f['filepath'] = Title.f<id>.<ext>` to
+#     each requested format, download them one at a time through
+#     `self.dl(...)` - so the progress hook sees `downloading` *and*
+#     `finished` for each stream - and only then run FFmpegMergerPP, which
+#     writes `Title.mkv` and returns `info['__files_to_merge']` as
+#     files-to-delete, so `_delete_downloaded_files` unlinks both streams.
+#     `requested_downloads[0]['filepath']` is the merged file
+#     (YoutubeDL.post_process sets `info['filepath'] = dl_filename`).
+#
+#   * audio jobs download `Title.webm`, then FFmpegExtractAudio rewrites
+#     `information['filepath']` to `Title.opus` and returns `[orig_path]`,
+#     so `Title.webm` is unlinked too.
+#
+# In both cases the hook has already allocated a store row per intermediate
+# stream, and those rows point at files that no longer exist by the time the
+# job finishes.
+# ---------------------------------------------------------------------------
+
+
+def _stream_events(path, size):
+    """The `downloading` + `finished` pair yt-dlp fires per stream file."""
+    return [
+        {
+            "status": "downloading",
+            "filename": str(path),
+            "downloaded_bytes": size // 2,
+            "total_bytes": size,
+        },
+        {"status": "finished", "filename": str(path), "total_bytes": size},
+    ]
+
+
+def test_merged_video_records_only_the_merged_file(store, tmp_path, monkeypatch):
+    """A `bv*+ba` download must produce exactly one item - the merged file -
+    not one row per intermediate stream. The intermediates are gone by the
+    time the job ends, so a row pointing at one 404s on download and feeds a
+    missing path to the transcode stage."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    video_stream = out / "Pastewka Theme.f137.mp4"
+    audio_stream = out / "Pastewka Theme.f251.webm"
+    merged = out / "Pastewka Theme.mkv"
+
+    class MergingYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            for stream, size in ((video_stream, 932), (audio_stream, 346)):
+                stream.write_bytes(b"x" * size)
+                for event in _stream_events(stream, size):
+                    self.fire(event)
+            # FFmpegMergerPP writes the merged file, then run_pp deletes the
+            # streams it returned as __files_to_merge.
+            merged.write_bytes(b"m" * 1278)
+            os.remove(video_stream)
+            os.remove(audio_stream)
+            return {
+                "title": "Pastewka Theme",
+                "requested_downloads": [{"filepath": str(merged)}],
+            }
+
+    monkeypatch.setattr(runner, "_ydl_factory", lambda opts: MergingYDL(opts, [], {}))
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+
+    job_id = store.create_job("https://example.com/v", {"type": "video"})
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    job = store.get_job(job_id)
+    assert job.stage == "done", job.error
+    assert len(job.items) == 1
+    item = job.items[0]
+    assert item.path == str(merged)
+    assert item.path.endswith(".mkv")
+    assert item.stage == "done"
+    assert item.progress == 100.0
+    assert item.size == 1278
+    # The merged file never receives a "downloading" event of its own - only
+    # its streams do - so it must not be mistaken for a pre-existing file.
+    assert item.error is None
+    assert all(os.path.isfile(i.path) for i in job.items if i.path)
+
+
+def test_extracted_audio_records_only_the_extracted_file(
+    store, tmp_path, monkeypatch
+):
+    """FFmpegExtractAudio replaces the downloaded container with a new file
+    and deletes the original. Only the extracted file may be recorded."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    downloaded = out / "Pastewka Theme.webm"
+    extracted = out / "Pastewka Theme.opus"
+
+    class ExtractingYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            downloaded.write_bytes(b"x" * 400)
+            for event in _stream_events(downloaded, 400):
+                self.fire(event)
+            extracted.write_bytes(b"o" * 380)
+            os.remove(downloaded)
+            return {
+                "title": "Pastewka Theme",
+                "requested_downloads": [{"filepath": str(extracted)}],
+            }
+
+    monkeypatch.setattr(
+        runner, "_ydl_factory", lambda opts: ExtractingYDL(opts, [], {})
+    )
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+
+    job_id = store.create_job("https://example.com/v", {"type": "audio"})
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    job = store.get_job(job_id)
+    assert job.stage == "done", job.error
+    assert len(job.items) == 1
+    item = job.items[0]
+    assert item.path == str(extracted)
+    assert item.stage == "done"
+    assert item.error is None
+    assert all(os.path.isfile(i.path) for i in job.items if i.path)
+
+
+def test_transcode_after_audio_extraction_uses_the_extracted_file(
+    store, tmp_path, monkeypatch
+):
+    """The re-encode reads `item.path`. With a row left over for the deleted
+    `.webm` the stage fed ffmpeg a path that no longer existed - the reported
+    "No such file or directory" for `theme.webm` when `theme.opus` was what
+    was actually on disk."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    downloaded = out / "theme.webm"
+    extracted = out / "theme.opus"
+    sources = []
+
+    class ExtractingYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            downloaded.write_bytes(b"x" * 400)
+            for event in _stream_events(downloaded, 400):
+                self.fire(event)
+            extracted.write_bytes(b"o" * 380)
+            os.remove(downloaded)
+            return {
+                "title": "theme",
+                "requested_downloads": [{"filepath": str(extracted)}],
+            }
+
+    def recording_transcode(src, dst, codec, cancel_event, on_progress):
+        sources.append(src)
+        assert os.path.isfile(src), f"transcode source does not exist: {src}"
+        _fake_transcode(src, dst, codec, cancel_event, on_progress)
+
+    monkeypatch.setattr(
+        runner, "_ydl_factory", lambda opts: ExtractingYDL(opts, [], {})
+    )
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+    monkeypatch.setattr(runner, "transcode_file", recording_transcode)
+
+    job_id = store.create_job(
+        "https://example.com/v", {"type": "audio", "codec": "flac", "format": "flac"}
+    )
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    job = store.get_job(job_id)
+    assert job.stage == "done", job.error
+    assert sources == [str(extracted)]
+    assert len(job.items) == 1
+    assert job.items[0].path == str(out / "theme.flac")
+    assert os.path.isfile(job.items[0].path)
+    # The extracted source was produced by this run, so it is replaced rather
+    # than preserved beside the encode.
+    assert job.items[0].error is None
+    assert not extracted.exists()
+
+
+def test_playlist_of_merged_videos_records_one_item_per_entry(
+    store, tmp_path, monkeypatch
+):
+    """N entries, each downloaded as two streams and merged, must yield
+    exactly N items - not 3N."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    titles = ("First", "Second", "Third")
+
+    class MergingPlaylistYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            entries = []
+            for title in titles:
+                video_stream = out / f"{title}.f137.mp4"
+                audio_stream = out / f"{title}.f251.webm"
+                for stream in (video_stream, audio_stream):
+                    stream.write_bytes(b"x" * 100)
+                    for event in _stream_events(stream, 100):
+                        self.fire(event)
+                merged = out / f"{title}.mkv"
+                merged.write_bytes(b"m" * 200)
+                os.remove(video_stream)
+                os.remove(audio_stream)
+                entries.append(
+                    {
+                        "title": title,
+                        "requested_downloads": [{"filepath": str(merged)}],
+                    }
+                )
+            return {"entries": entries}
+
+    monkeypatch.setattr(
+        runner, "_ydl_factory", lambda opts: MergingPlaylistYDL(opts, [], {})
+    )
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+
+    job_id = store.create_job("https://example.com/list", {"type": "video"})
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    job = store.get_job(job_id)
+    assert job.stage == "done", job.error
+    assert len(job.items) == 3
+    assert [i.title for i in job.items] == list(titles)
+    assert [i.path for i in job.items] == [str(out / f"{t}.mkv") for t in titles]
+    assert all(i.stage == "done" and i.error is None for i in job.items)
+    assert all(os.path.isfile(i.path) for i in job.items)
+
+
+def test_intermediate_rows_still_report_live_progress(store, tmp_path, monkeypatch):
+    """Removing the intermediate rows must not cost the live progress they
+    drive: the hook is the only thing that updates the UI during a download,
+    so it has to keep writing while the streams are in flight."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    video_stream = out / "Title.f137.mp4"
+    merged = out / "Title.mkv"
+    seen = []
+
+    class MergingYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            video_stream.write_bytes(b"x" * 100)
+            self.fire(
+                {
+                    "status": "downloading",
+                    "filename": str(video_stream),
+                    "downloaded_bytes": 40,
+                    "total_bytes": 100,
+                }
+            )
+            seen.append(
+                [(i.title, i.progress, i.stage) for i in store.get_job(job_id).items]
+            )
+            self.fire({"status": "finished", "filename": str(video_stream)})
+            merged.write_bytes(b"m" * 100)
+            os.remove(video_stream)
+            return {
+                "title": "Title",
+                "requested_downloads": [{"filepath": str(merged)}],
+            }
+
+    monkeypatch.setattr(runner, "_ydl_factory", lambda opts: MergingYDL(opts, [], {}))
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+
+    job_id = store.create_job("https://example.com/v", {"type": "video"})
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    assert seen == [[("Title.mp4", 40.0, "downloading")]]
+    job = store.get_job(job_id)
+    assert job.stage == "done", job.error
+    assert len(job.items) == 1
+    assert job.items[0].path == str(merged)

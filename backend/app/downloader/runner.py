@@ -127,6 +127,26 @@ def _display_name(path: Any) -> str:
     return _FORMAT_ID_RE.sub("", os.path.basename(str(path)))
 
 
+def _output_key(path: str) -> str:
+    """Identity of the *output* a file belongs to, ignoring which
+    intermediate it is.
+
+    yt-dlp derives every intermediate from the entry's own output template,
+    so all files belonging to one entry share a directory and a stem:
+    `Title.f137.mp4` and `Title.f251.webm` merge into `Title.mkv`, and
+    `Title.webm` is extracted to `Title.opus`. Stripping the `.f<id>` infix
+    and the extension therefore maps an entry's intermediates and its final
+    file onto the same key.
+
+    This is only used to answer "did this run actually fetch anything for
+    this output", never to allocate a row index - `_IndexAllocator` stays the
+    sole producer of those, keyed by exact realpath.
+    """
+    directory, name = os.path.split(os.path.realpath(path))
+    stem = os.path.splitext(_FORMAT_ID_RE.sub("", name))[0]
+    return os.path.join(directory, stem)
+
+
 def _entry_path(entry: dict[str, Any]) -> str | None:
     candidate = entry.get("filepath") or entry.get("_filename")
     if candidate and os.path.isfile(str(candidate)):
@@ -191,6 +211,13 @@ def run_job(
         # destination already existed (see overwrites=False in
         # build_ydl_opts and _ALREADY_EXISTS_MESSAGE below).
         downloaded_paths: set[str] = set()
+        # The same information at output granularity (see `_output_key`). A
+        # merged or extracted final file never receives a "downloading" event
+        # of its own - its *intermediates* do - so keying the pre-existing
+        # check on the exact path alone flagged every merged download as
+        # "already existed", which then made the transcode stage preserve the
+        # source and write its encode alongside instead of replacing it.
+        downloaded_outputs: set[str] = set()
         # ...but that inference only holds when a file downloader runs at all.
         # `skip_download` (thumbnail jobs) bypasses it entirely, so no progress
         # hook ever fires and "never saw a downloading event" stops carrying
@@ -203,6 +230,7 @@ def run_job(
                 job.id,
                 cancel_event,
                 downloaded_paths,
+                downloaded_outputs,
                 allocator,
                 track_pre_existing,
             )
@@ -233,10 +261,16 @@ def run_job(
         # saw a "finished" event for (no hook events at all in some test
         # doubles) get their row allocated here for the first time.
         recorded = 0
+        # Indices that describe a real entry. Everything else the hook
+        # allocated is an intermediate (a per-stream download that was merged
+        # away, or a container that audio extraction replaced) whose file no
+        # longer exists, and gets pruned below.
+        entry_indices: set[int] = set()
         for entry in entries:
             path = _entry_path(entry)
             if path is None:
                 index = allocator.new_index()
+                entry_indices.add(index)
                 title = str(entry.get("title") or f"Item {index + 1}")
                 store.upsert_item(
                     job.id,
@@ -248,6 +282,7 @@ def run_job(
                 continue
             assert_within_allowed_roots(path)
             index = allocator.for_path(path)
+            entry_indices.add(index)
             title = str(entry.get("title") or _display_name(path) or f"Item {index + 1}")
             item_fields: dict[str, Any] = dict(
                 title=title,
@@ -256,15 +291,26 @@ def run_job(
                 progress=100.0,
                 stage="done",
             )
-            if track_pre_existing and os.path.realpath(path) not in downloaded_paths:
-                # No "downloading" event was ever seen for this path, yet a
-                # file exists at the destination: yt-dlp's overwrites=False
-                # skipped it because it was already there. Record it as done
-                # (the file is present and usable) but don't claim it was
-                # freshly downloaded.
+            fetched = (
+                os.path.realpath(path) in downloaded_paths
+                or _output_key(path) in downloaded_outputs
+            )
+            if track_pre_existing and not fetched:
+                # No "downloading" event was ever seen for this file or for
+                # any intermediate of it, yet a file exists at the
+                # destination: yt-dlp's overwrites=False skipped it because it
+                # was already there. Record it as done (the file is present
+                # and usable) but don't claim it was freshly downloaded.
                 item_fields["error"] = _ALREADY_EXISTS_MESSAGE
             store.upsert_item(job.id, index, **item_fields)
             recorded += 1
+
+        # Only reachable once extract_info has returned, i.e. every entry
+        # succeeded and `entries` is authoritative about what this job
+        # produced. On the failure path extract_info raises and this never
+        # runs, so a mid-playlist failure still leaves its completed
+        # siblings' rows exactly as the hook wrote them.
+        store.prune_items(job.id, entry_indices)
 
         if recorded == 0:
             store.set_job_stage(job.id, "error", "No output files were produced")
@@ -287,6 +333,7 @@ def _make_hook(
     job_id: str,
     cancel_event: threading.Event,
     downloaded_paths: set[str],
+    downloaded_outputs: set[str],
     allocator: "_IndexAllocator",
     track_pre_existing: bool = True,
 ):
@@ -312,6 +359,7 @@ def _make_hook(
             total = data.get("total_bytes") or data.get("total_bytes_estimate") or 0
             progress = min((downloaded / total * 100.0) if total else 0.0, 100.0)
             downloaded_paths.add(os.path.realpath(str(filename)))
+            downloaded_outputs.add(_output_key(str(filename)))
             index = allocator.for_path(str(filename))
             store.upsert_item(
                 job_id,
@@ -339,7 +387,10 @@ def _make_hook(
                 progress=100.0,
                 stage="done",
             )
-            if track_pre_existing and os.path.realpath(path) not in downloaded_paths:
+            if track_pre_existing and not (
+                os.path.realpath(path) in downloaded_paths
+                or _output_key(path) in downloaded_outputs
+            ):
                 fields["error"] = _ALREADY_EXISTS_MESSAGE
             # Record durably now: if a later playlist entry fails,
             # extract_info raises before the post-loop below ever runs, and
