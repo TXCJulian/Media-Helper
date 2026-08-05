@@ -273,6 +273,31 @@ def test_events_stream_receives_deltas_after_the_snapshot(client):
     assert "options" not in payload["job"]
 
 
+def test_events_stream_announces_a_deleted_job(client):
+    """I2: without a deletion event the client keeps rendering a card for a
+    job the server no longer has, and a second Delete returns 404."""
+
+    async def snapshot_then_delete():
+        response = await routes_module().download_events()
+        iterator = response.body_iterator
+        await iterator.__anext__()  # snapshot
+        created = client.post(
+            "/download",
+            json={"urls": ["https://example.com/a"], "options": {"auto_start": False}},
+        )
+        job_id = created.json()["job_ids"][0]
+        assert client.delete(f"/download/jobs/{job_id}").status_code == 200
+        # Several "job" deltas precede it: the creation, and the cancel the
+        # delete route issues first. Only the last frame is under test.
+        frames = [await iterator.__anext__() for _ in range(3)]
+        await iterator.aclose()
+        return job_id, frames
+
+    job_id, frames = asyncio.run(snapshot_then_delete())
+    payloads = [sse_payload(frame) for frame in frames]
+    assert {"type": "job_deleted", "job_id": job_id} in payloads
+
+
 def test_idle_event_stream_borrows_no_anyio_worker_thread(client):
     """The whole point of the async rewrite: an idle stream holds no thread.
 
