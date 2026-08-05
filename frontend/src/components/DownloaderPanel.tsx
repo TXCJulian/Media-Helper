@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import PanelLayout from './PanelLayout'
 import DownloadJobCard from './downloader/DownloadJobCard'
 import DownloadOptions from './downloader/DownloadOptions'
+import FormSection from './ui/FormSection'
 import { useDownloadStream } from '@/hooks/useDownloadStream'
 import {
   cancelDownloadJob,
@@ -65,7 +66,6 @@ export default function DownloaderPanel({
   const [status, setStatus] = useState<DownloaderStatus | null>(null)
   const [directories, setDirectories] = useState<DirectoryEntry[]>([])
   const [isRefreshingDirs, setIsRefreshingDirs] = useState(false)
-  const [advancedOpen, setAdvancedOpen] = useState(false)
   const [localError, setLocalError] = useState('')
   const [form, setForm] = useState<DownloadForm>(() => ({ url: '', ...loadSettings() }))
 
@@ -127,40 +127,36 @@ export default function DownloaderPanel({
 
   return (
     <PanelLayout title="Downloader" onBack={onBack} maxWidth="920px">
-      <div className="space-y-6">
-        <div className="flex flex-col gap-3">
-          <textarea
-            value={form.url}
-            placeholder="Paste a URL — or several, one per line"
-            rows={urls.length > 1 ? Math.min(urls.length + 1, 8) : 1}
-            onChange={(e) => patchForm({ url: e.target.value })}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey && urls.length <= 1) {
-                e.preventDefault()
-                void submit()
-              }
-            }}
-            className="input-field input-cyan resize-y"
-          />
-          <div className="flex items-center gap-3">
+      <div>
+        <FormSection label="Add downloads">
+          <div className="space-y-3">
+            <textarea
+              value={form.url}
+              placeholder="Paste a link — or several, one per line"
+              rows={urls.length > 1 ? Math.min(urls.length + 1, 8) : 2}
+              onChange={(e) => patchForm({ url: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey && urls.length <= 1) {
+                  e.preventDefault()
+                  void submit()
+                }
+              }}
+              className="input-field input-cyan resize-y leading-relaxed"
+            />
             <button
               type="button"
               onClick={() => void submit()}
-              className="btn-submit btn-cyan h-[42px] !w-auto px-5 text-[0.85rem]"
+              className="btn-submit btn-cyan"
+              disabled={urls.length === 0}
             >
-              {urls.length > 1 ? `Download ${urls.length} URLs` : 'Download'}
+              {urls.length > 1 ? `Download ${urls.length} links` : 'Download'}
             </button>
-            {urls.length > 1 && (
-              <span className="text-[0.78rem] text-[var(--text-tertiary)]">
-                {urls.length} URLs detected
-              </span>
-            )}
           </div>
-        </div>
+        </FormSection>
 
         {(localError || error) && (
           <div
-            className="flex items-center justify-between rounded-lg border border-red-500/15 bg-red-500/[0.06] px-4 py-2.5"
+            className="mb-6 flex items-center justify-between rounded-lg border border-red-500/15 bg-red-500/[0.06] px-4 py-2.5"
             role="alert"
           >
             <p className="text-[0.8rem] text-red-400">{localError || error}</p>
@@ -185,89 +181,83 @@ export default function DownloaderPanel({
           onRefreshDirectories={() => void refreshDirectories()}
           isRefreshingDirectories={isRefreshingDirs}
           showBaseLabel={showBaseLabel}
-          advancedOpen={advancedOpen}
-          onToggleAdvanced={() => setAdvancedOpen((v) => !v)}
         />
 
-        <div className="flex flex-wrap items-center gap-3 rounded-[14px] border border-white/6 bg-white/[0.02] px-5 py-3">
-          <span className="text-[0.72rem] font-medium uppercase tracking-[0.1em] text-[var(--text-tertiary)]">
-            Cookies
-          </span>
-          <label className="cursor-pointer rounded-lg border border-[var(--glass-border)] bg-[var(--bg-glass)] px-3 py-1.5 text-[0.8rem] text-[var(--text-secondary)] transition-all hover:border-[var(--glass-border-hover)] hover:text-[var(--text-primary)]">
-            Upload cookies.txt
-            <input
-              type="file"
-              className="hidden"
-              accept=".txt"
-              onChange={(e) => {
-                const file = e.target.files?.[0]
-                if (file) {
-                  void guard(postCookies(file).then(refreshStatus), 'Failed to upload cookies')
+        <FormSection label="Cookies">
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="cursor-pointer rounded-lg border border-[var(--glass-border)] bg-[var(--bg-glass)] px-3 py-1.5 text-[0.8rem] text-[var(--text-secondary)] transition-all hover:border-[var(--glass-border-hover)] hover:text-[var(--text-primary)]">
+              Upload cookies.txt
+              <input
+                type="file"
+                className="hidden"
+                accept=".txt"
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) {
+                    void guard(postCookies(file).then(refreshStatus), 'Failed to upload cookies')
+                  }
+                  e.target.value = ''
+                }}
+              />
+            </label>
+            {status?.cookies_present && (
+              <button
+                type="button"
+                onClick={() =>
+                  void guard(deleteCookies().then(refreshStatus), 'Failed to delete cookies')
                 }
-                e.target.value = ''
-              }}
-            />
-          </label>
-          {status?.cookies_present && (
-            <button
-              type="button"
-              onClick={() =>
-                void guard(deleteCookies().then(refreshStatus), 'Failed to delete cookies')
-              }
-              className="rounded-lg border border-red-500/20 px-3 py-1.5 text-[0.8rem] text-red-400 transition-all hover:bg-red-500/10"
-            >
-              Remove
-            </button>
-          )}
-          <span className="text-[0.75rem] text-[var(--text-tertiary)]">
-            {status?.cookies_present ? 'cookies.txt loaded' : 'No cookies configured'}
-          </span>
-        </div>
-
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-[0.92rem] font-semibold">Active Downloads</h3>
-            <span className="text-[0.78rem] text-[var(--text-tertiary)]">
-              {active.length > 0 ? `${active.length} active` : 'idle'}
+                className="rounded-lg border border-red-500/20 px-3 py-1.5 text-[0.8rem] text-red-400 transition-all hover:bg-red-500/10"
+              >
+                Remove
+              </button>
+            )}
+            <span className="text-[0.75rem] text-[var(--text-tertiary)]">
+              {status?.cookies_present ? 'cookies.txt loaded' : 'No cookies configured'}
             </span>
           </div>
-          {active.length > 0 ? (
-            active.map((job) => (
-              <DownloadJobCard
-                key={job.job_id}
-                job={job}
-                onCancel={(id) => void guard(cancelDownloadJob(id), 'Failed to cancel')}
-                onDelete={(id) => void guard(deleteDownloadJob(id), 'Failed to delete')}
-                onStart={(id) => void guard(startDownloadJob(id), 'Failed to start')}
-                onRetry={(url) => void submit([url])}
-              />
-            ))
-          ) : (
-            <p className="py-3 text-center text-[0.8rem] text-[var(--text-tertiary)]">
-              No active downloads
-            </p>
-          )}
-        </div>
+        </FormSection>
 
-        <div className="space-y-3">
-          <h3 className="text-[0.92rem] font-semibold">History</h3>
-          {history.length > 0 ? (
-            history.map((job) => (
-              <DownloadJobCard
-                key={job.job_id}
-                job={job}
-                onCancel={(id) => void guard(cancelDownloadJob(id), 'Failed to cancel')}
-                onDelete={(id) => void guard(deleteDownloadJob(id), 'Failed to delete')}
-                onStart={(id) => void guard(startDownloadJob(id), 'Failed to start')}
-                onRetry={(url) => void submit([url])}
-              />
-            ))
-          ) : (
-            <p className="py-4 text-center text-[0.82rem] text-[var(--text-tertiary)]">
-              No recent downloads yet.
-            </p>
-          )}
-        </div>
+        <FormSection label={active.length > 0 ? `Active — ${active.length}` : 'Active'}>
+          <div className="space-y-3">
+            {active.length > 0 ? (
+              active.map((job) => (
+                <DownloadJobCard
+                  key={job.job_id}
+                  job={job}
+                  onCancel={(id) => void guard(cancelDownloadJob(id), 'Failed to cancel')}
+                  onDelete={(id) => void guard(deleteDownloadJob(id), 'Failed to delete')}
+                  onStart={(id) => void guard(startDownloadJob(id), 'Failed to start')}
+                  onRetry={(url) => void submit([url])}
+                />
+              ))
+            ) : (
+              <p className="rounded-[14px] border border-white/6 bg-white/[0.02] py-5 text-center text-[0.8rem] text-[var(--text-tertiary)]">
+                Nothing downloading right now.
+              </p>
+            )}
+          </div>
+        </FormSection>
+
+        <FormSection label="History">
+          <div className="space-y-3">
+            {history.length > 0 ? (
+              history.map((job) => (
+                <DownloadJobCard
+                  key={job.job_id}
+                  job={job}
+                  onCancel={(id) => void guard(cancelDownloadJob(id), 'Failed to cancel')}
+                  onDelete={(id) => void guard(deleteDownloadJob(id), 'Failed to delete')}
+                  onStart={(id) => void guard(startDownloadJob(id), 'Failed to start')}
+                  onRetry={(url) => void submit([url])}
+                />
+              ))
+            ) : (
+              <p className="rounded-[14px] border border-white/6 bg-white/[0.02] py-5 text-center text-[0.82rem] text-[var(--text-tertiary)]">
+                Finished downloads will be listed here.
+              </p>
+            )}
+          </div>
+        </FormSection>
 
         <div className="flex items-center justify-center">
           <div className="inline-flex items-center gap-3 rounded-full border border-white/6 bg-white/[0.03] px-5 py-2 text-[0.72rem] text-[var(--text-tertiary)]">

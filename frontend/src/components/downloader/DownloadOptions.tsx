@@ -1,4 +1,6 @@
 import DirectorySelect from '../ui/DirectorySelect'
+import FormSection from '../ui/FormSection'
+import SegmentedControl from '../ui/SegmentedControl'
 import StyledSelect from '../ui/StyledSelect'
 import type { DirectoryEntry, DownloadForm } from '@/types'
 
@@ -71,8 +73,6 @@ interface Props {
   onRefreshDirectories: () => void
   isRefreshingDirectories: boolean
   showBaseLabel?: boolean
-  advancedOpen: boolean
-  onToggleAdvanced: () => void
 }
 
 export default function DownloadOptions({
@@ -82,148 +82,146 @@ export default function DownloadOptions({
   onRefreshDirectories,
   isRefreshingDirectories,
   showBaseLabel,
-  advancedOpen,
-  onToggleAdvanced,
 }: Props) {
   const isThumbnail = form.type === 'thumbnail'
   const quality = form.type === 'audio' ? AUDIO_QUALITY : VIDEO_QUALITY
 
   return (
     <>
-      <div className={`grid gap-3 ${isThumbnail ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'}`}>
-        <StyledSelect
-          label="Type"
-          options={[
-            { label: 'Video', value: 'video' },
-            { label: 'Audio', value: 'audio' },
-            { label: 'Thumbnail', value: 'thumbnail' },
-          ]}
-          value={form.type}
-          onChange={(v) =>
-            onChange({
-              type: v as DownloadForm['type'],
-              codec: 'auto',
-              format: 'auto',
-              quality: 'best',
-            })
-          }
-        />
-        <StyledSelect
-          label="Format"
-          options={CONTAINERS[form.type] ?? []}
-          value={form.format}
-          onChange={(v) => onChange({ format: v })}
-        />
-        {!isThumbnail && (
-          <StyledSelect
-            label="Quality"
-            options={quality}
-            value={form.quality}
-            onChange={(v) => onChange({ quality: v })}
+      <FormSection label="Media">
+        <div className="space-y-4">
+          <SegmentedControl
+            color="cyan"
+            options={[
+              { label: 'Video', value: 'video' },
+              { label: 'Audio', value: 'audio' },
+              { label: 'Thumbnail', value: 'thumbnail' },
+            ]}
+            value={form.type}
+            onChange={(v) =>
+              onChange({
+                type: v as DownloadForm['type'],
+                codec: 'auto',
+                format: 'auto',
+                quality: 'best',
+              })
+            }
           />
-        )}
-      </div>
 
-      <div className="rounded-[14px] border border-white/6 bg-white/[0.02]">
-        <button
-          type="button"
-          onClick={onToggleAdvanced}
-          className="flex w-full items-center justify-between px-5 py-3"
-        >
-          <span className="text-[0.78rem] font-medium uppercase tracking-[0.1em] text-[var(--text-tertiary)]">
-            Advanced Options
-          </span>
-          <span className="text-[0.75rem] text-[var(--text-tertiary)]">
-            {advancedOpen ? '▴ collapse' : '▾ expand'}
-          </span>
-        </button>
-
-        {advancedOpen && (
-          <div className="border-t border-white/6 px-5 pb-5 pt-4">
+          <div className={`grid gap-3 ${isThumbnail ? 'sm:grid-cols-1' : 'sm:grid-cols-2'}`}>
+            <StyledSelect
+              color="cyan"
+              label="Format"
+              options={CONTAINERS[form.type] ?? []}
+              value={form.format}
+              onChange={(v) => onChange({ format: v })}
+            />
             {!isThumbnail && (
-              <div className="mb-5 rounded-[10px] border border-white/6 bg-white/[0.02] p-4">
-                <StyledSelect
-                  label="Re-encode to codec"
-                  options={RECODE[form.type] ?? []}
-                  value={form.codec}
-                  onChange={(v) => onChange({ codec: v })}
-                />
-                {form.codec !== 'auto' && (
-                  <p className="mt-2 text-[0.72rem] text-amber-400/80">
-                    Re-encoding runs after the download and can take much longer than the download
-                    itself. Leave this on “No re-encode” unless you need a specific codec.
-                  </p>
-                )}
-              </div>
-            )}
-
-            <div className="grid gap-5 md:grid-cols-2">
               <StyledSelect
-                label="Auto Start"
-                options={[
-                  { label: 'Yes', value: 'yes' },
-                  { label: 'No', value: 'no' },
-                ]}
-                value={form.auto_start ? 'yes' : 'no'}
-                onChange={(v) => onChange({ auto_start: v === 'yes' })}
-              />
-
-              <DirectorySelect
                 color="cyan"
-                directories={directories}
-                onRefresh={onRefreshDirectories}
-                isLoading={isRefreshingDirectories}
-                value={form.output_dir}
-                base={form.base}
-                onChange={(path, base) => onChange({ output_dir: path, base })}
-                showBaseLabel={showBaseLabel}
+                label="Quality"
+                options={quality}
+                value={form.quality}
+                onChange={(v) => onChange({ quality: v })}
               />
+            )}
+          </div>
+        </div>
+      </FormSection>
 
-              <div>
-                <label className="field-label">Subfolder</label>
-                <input
-                  type="text"
-                  value={form.sub_folder}
-                  placeholder="e.g. music/albums"
-                  onChange={(e) => onChange({ sub_folder: e.target.value })}
-                  className="input-field input-cyan"
-                />
-              </div>
+      <FormSection label="Destination">
+        <div className="space-y-4">
+          <DirectorySelect
+            color="cyan"
+            directories={directories}
+            onRefresh={onRefreshDirectories}
+            isLoading={isRefreshingDirectories}
+            value={form.output_dir}
+            base={form.base}
+            onChange={(path, base) => onChange({ output_dir: path, base })}
+            showBaseLabel={showBaseLabel}
+          />
 
-              <div>
-                <label className="field-label">Custom Name Prefix</label>
-                <input
-                  type="text"
-                  value={form.custom_prefix}
-                  onChange={(e) => onChange({ custom_prefix: e.target.value })}
-                  className="input-field input-cyan"
-                />
-              </div>
-
-              <div>
-                <label className="field-label">Custom Output Filename</label>
-                <input
-                  type="text"
-                  value={form.custom_filename}
-                  onChange={(e) => onChange({ custom_filename: e.target.value })}
-                  className="input-field input-cyan"
-                />
-              </div>
-
-              <div>
-                <label className="field-label">Playlist Item Limit</label>
-                <input
-                  type="number"
-                  min="0"
-                  value={form.item_limit}
-                  onChange={(e) => onChange({ item_limit: Number(e.target.value) || 0 })}
-                  className="input-field input-cyan"
-                />
-              </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="field-label">Subfolder</label>
+              <input
+                type="text"
+                value={form.sub_folder}
+                placeholder="e.g. music/albums"
+                onChange={(e) => onChange({ sub_folder: e.target.value })}
+                className="input-field input-cyan"
+              />
+            </div>
+            <div>
+              <label className="field-label">Playlist item limit</label>
+              <input
+                type="number"
+                min="0"
+                value={form.item_limit}
+                placeholder="0 for no limit"
+                onChange={(e) => onChange({ item_limit: Number(e.target.value) || 0 })}
+                className="input-field input-cyan"
+              />
             </div>
           </div>
-        )}
-      </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="field-label">Filename prefix</label>
+              <input
+                type="text"
+                value={form.custom_prefix}
+                placeholder="Added before the title"
+                onChange={(e) => onChange({ custom_prefix: e.target.value })}
+                className="input-field input-cyan"
+              />
+            </div>
+            <div>
+              <label className="field-label">Filename</label>
+              <input
+                type="text"
+                value={form.custom_filename}
+                placeholder="Defaults to the title"
+                onChange={(e) => onChange({ custom_filename: e.target.value })}
+                className="input-field input-cyan"
+              />
+            </div>
+          </div>
+        </div>
+      </FormSection>
+
+      <FormSection label="Queue">
+        <div className="space-y-4">
+          <SegmentedControl
+            color="cyan"
+            options={[
+              { label: 'Start now', value: 'yes' },
+              { label: 'Hold in queue', value: 'no' },
+            ]}
+            value={form.auto_start ? 'yes' : 'no'}
+            onChange={(v) => onChange({ auto_start: v === 'yes' })}
+          />
+
+          {!isThumbnail && (
+            <div className="sm:max-w-[50%]">
+              <StyledSelect
+                color="cyan"
+                label="Re-encode to codec"
+                options={RECODE[form.type] ?? []}
+                value={form.codec}
+                onChange={(v) => onChange({ codec: v })}
+              />
+              {form.codec !== 'auto' && (
+                <p className="mt-2 text-[0.72rem] leading-relaxed text-[var(--text-tertiary)]">
+                  Re-encoding runs after the download and usually takes longer than the download
+                  itself. Leave this on “No re-encode” unless you need a specific codec.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      </FormSection>
     </>
   )
 }

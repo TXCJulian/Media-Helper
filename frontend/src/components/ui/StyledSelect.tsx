@@ -5,17 +5,45 @@ interface Option {
   value: string
 }
 
+type SelectColor = 'blue' | 'indigo' | 'rose' | 'emerald' | 'amber' | 'cyan'
+
 interface StyledSelectProps {
   label: string
   options: Option[]
   value: string
   onChange: (value: string) => void
+  color?: SelectColor
 }
 
-const FOCUS_CLASS =
-  'border-[var(--accent-5)] shadow-[0_0_0_3px_var(--accent-5-glow),0_0_20px_rgba(245,158,11,0.08)]'
+const focusClasses: Record<SelectColor, string> = {
+  blue: 'border-[var(--accent)] shadow-[0_0_0_3px_var(--accent-glow),0_0_20px_rgba(59,130,246,0.08)]',
+  indigo:
+    'border-[var(--accent-2)] shadow-[0_0_0_3px_var(--accent-2-glow),0_0_20px_rgba(168,85,247,0.08)]',
+  rose: 'border-[var(--accent-3)] shadow-[0_0_0_3px_var(--accent-3-glow),0_0_20px_rgba(244,114,182,0.08)]',
+  emerald:
+    'border-[var(--accent-4)] shadow-[0_0_0_3px_var(--accent-4-glow),0_0_20px_rgba(52,211,153,0.08)]',
+  amber:
+    'border-[var(--accent-5)] shadow-[0_0_0_3px_var(--accent-5-glow),0_0_20px_rgba(245,158,11,0.08)]',
+  cyan: 'border-[var(--accent-6)] shadow-[0_0_0_3px_var(--accent-6-glow),0_0_20px_rgba(34,211,238,0.08)]',
+}
 
-export default function StyledSelect({ label, options, value, onChange }: StyledSelectProps) {
+const selectedTextClasses: Record<SelectColor, string> = {
+  blue: 'text-[var(--accent)]',
+  indigo: 'text-[var(--accent-2)]',
+  rose: 'text-[var(--accent-3)]',
+  emerald: 'text-[var(--accent-4)]',
+  amber: 'text-[var(--accent-5)]',
+  cyan: 'text-[var(--accent-6)]',
+}
+
+export default function StyledSelect({
+  label,
+  options,
+  value,
+  onChange,
+  color = 'blue',
+}: StyledSelectProps) {
+  const FOCUS_CLASS = focusClasses[color]
   const [isOpen, setIsOpen] = useState(false)
   const [focusedIndex, setFocusedIndex] = useState(-1)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -143,7 +171,9 @@ export default function StyledSelect({ label, options, value, onChange }: Styled
                   onClick={() => handleSelect(opt)}
                   onMouseEnter={() => setFocusedIndex(i)}
                   className={`cursor-pointer rounded-lg px-[0.75rem] py-[0.5rem] text-[0.84rem] transition-colors duration-100 ${
-                    isSelected ? 'font-medium text-[var(--accent-5)]' : 'text-[var(--text-primary)]'
+                    isSelected
+                      ? `font-medium ${selectedTextClasses[color]}`
+                      : 'text-[var(--text-primary)]'
                   } ${isFocused ? 'bg-[var(--bg-glass-hover)]' : ''}`}
                 >
                   {opt.label}

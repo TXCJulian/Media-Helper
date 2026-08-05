@@ -7,7 +7,7 @@ interface SegmentedControlProps {
    *  They remain clickable (auto-correction fixes the other field) but are
    *  visually dimmed so the user knows the pairing will trigger a change. */
   incompatible?: Set<string>
-  color?: 'blue' | 'indigo' | 'rose' | 'emerald' | 'amber'
+  color?: 'blue' | 'indigo' | 'rose' | 'emerald' | 'amber' | 'cyan'
 }
 
 const activeClasses = {
@@ -16,6 +16,7 @@ const activeClasses = {
   rose: 'bg-[var(--accent-3)] text-white shadow-[0_2px_10px_var(--accent-3-glow)]',
   emerald: 'bg-[var(--accent-4)] text-white shadow-[0_2px_10px_var(--accent-4-glow)]',
   amber: 'bg-[var(--accent-5)] text-white shadow-[0_2px_10px_var(--accent-5-glow)]',
+  cyan: 'bg-[var(--accent-6)] text-white shadow-[0_2px_10px_var(--accent-6-glow)]',
 }
 
 export default function SegmentedControl({
