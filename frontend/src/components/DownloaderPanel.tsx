@@ -127,10 +127,32 @@ export default function DownloaderPanel({
     setStatus(await fetchDownloaderStatus())
   }, [])
 
+  /**
+   * Unlike the other panels' directory pickers, an empty output_dir/base is a
+   * meaningful selection here — "use the server's default downloads folder" —
+   * and the user can deliberately clear it via DirectorySelect. So a fetch
+   * triggered by opening the panel or clearing the search must never
+   * overwrite that. Auto-selecting the first match is only applied while the
+   * user is actively filtering (non-empty search text); on initial load or
+   * once the search is cleared, the current selection — including "none" —
+   * is left alone.
+   */
   const refreshDirectories = useCallback(async (searchText?: string) => {
     setIsRefreshingDirs(true)
     try {
-      setDirectories((await fetchMediaDirectories(searchText)).directories)
+      const dirs = (await fetchMediaDirectories(searchText)).directories
+      setDirectories(dirs)
+      if (searchText) {
+        setForm((prev) => {
+          const stillPresent = dirs.some((d) => d.path === prev.output_dir && d.base === prev.base)
+          if (stillPresent) return prev
+          return {
+            ...prev,
+            output_dir: dirs.length > 0 ? dirs[0]!.path : '',
+            base: dirs.length > 0 ? dirs[0]!.base : '',
+          }
+        })
+      }
     } finally {
       setIsRefreshingDirs(false)
     }
