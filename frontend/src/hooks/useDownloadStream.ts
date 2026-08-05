@@ -13,11 +13,21 @@ interface JobEvent {
 }
 
 /**
+ * A job that no longer exists server-side — deleted by the user, or swept by
+ * the TTL purge. It carries only an id because there is no job left to send.
+ */
+interface JobDeletedEvent {
+  type: 'job_deleted'
+  job_id: string
+}
+
+/**
  * Fold one server event into job state.
  *
- * The server is the only writer: a snapshot replaces everything, and a job
- * event replaces exactly one entry. Returning the previous array unchanged
- * for unrecognised payloads keeps React from re-rendering on noise.
+ * The server is the only writer: a snapshot replaces everything, a job event
+ * replaces exactly one entry, and a deletion drops one. Returning the
+ * previous array unchanged for unrecognised payloads — and for a deletion of
+ * something we do not hold — keeps React from re-rendering on noise.
  */
 export function applyStreamEvent(jobs: DownloadJob[], raw: string): DownloadJob[] {
   let parsed: unknown
@@ -52,6 +62,15 @@ export function applyStreamEvent(jobs: DownloadJob[], raw: string): DownloadJob[
     const next = jobs.slice()
     next[index] = incoming
     return next
+  }
+
+  if (event.type === 'job_deleted') {
+    const deleted = parsed as Partial<JobDeletedEvent>
+    if (typeof deleted.job_id !== 'string') {
+      return jobs
+    }
+    const remaining = jobs.filter((j) => j.job_id !== deleted.job_id)
+    return remaining.length === jobs.length ? jobs : remaining
   }
 
   return jobs

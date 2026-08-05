@@ -87,7 +87,14 @@ def init_downloader() -> None:
         # back into the queue here would deadlock that worker permanently.
         broadcaster.publish({"type": "job", "job": job_to_payload(job)})
 
-    store = JobStore(DOWNLOADER_DB, on_change=publish)
+    def publish_deleted(job_id: str) -> None:
+        # Same constraint as `publish`, and the same reason it is safe: it
+        # only ever touches the broadcaster. Deletions originate on the
+        # request thread and on the TTL sweeper, neither of which holds
+        # DownloadQueue._lock, so this cannot re-enter the queue.
+        broadcaster.publish({"type": "job_deleted", "job_id": job_id})
+
+    store = JobStore(DOWNLOADER_DB, on_change=publish, on_delete=publish_deleted)
 
     def runner(store_arg: JobStore, job: Job, cancel_event) -> None:
         run_job(store_arg, job, cancel_event, cookie_path())

@@ -47,6 +47,26 @@ describe('applyStreamEvent', () => {
     expect(applyStreamEvent(before, JSON.stringify({ type: 'unknown' }))).toBe(before)
   })
 
+  it('removes a job the server says was deleted', () => {
+    const next = applyStreamEvent(
+      [job('a'), job('b')],
+      JSON.stringify({ type: 'job_deleted', job_id: 'a' }),
+    )
+    expect(next.map((j) => j.job_id)).toEqual(['b'])
+  })
+
+  it('ignores a deletion for a job it does not hold, without re-rendering', () => {
+    const before = [job('a')]
+    expect(applyStreamEvent(before, JSON.stringify({ type: 'job_deleted', job_id: 'z' }))).toBe(
+      before,
+    )
+  })
+
+  it('ignores a deletion with no job_id', () => {
+    const before = [job('a')]
+    expect(applyStreamEvent(before, JSON.stringify({ type: 'job_deleted' }))).toBe(before)
+  })
+
   it('a snapshot after reconnect does not duplicate jobs', () => {
     let state = applyStreamEvent([], JSON.stringify({ type: 'snapshot', jobs: [job('a')] }))
     state = applyStreamEvent(state, JSON.stringify({ type: 'snapshot', jobs: [job('a')] }))
