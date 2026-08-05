@@ -35,6 +35,19 @@ _LOGIN_HINTS = (
 # (only a "finished" hook event fires for such a file, never "downloading").
 _ALREADY_EXISTS_MESSAGE = "File already existed and was not re-downloaded."
 
+# Message recorded on an item whose source file was pre-existing (see above)
+# and which was then re-encoded. The re-encode is written alongside the
+# original rather than replacing it, because destroying a file this run did
+# not create would be data loss.
+_KEPT_SOURCE_MESSAGE = (
+    "The pre-existing original was kept; the re-encode was saved alongside it."
+)
+
+# The UI's Format control sends this sentinel for "let the source decide"; it
+# is both the default and the explicit "Auto" option. It is not a container
+# name, so it must be reduced to "" before it can reach a filename extension.
+_AUTO = "auto"
+
 
 class DownloadCancelled(RuntimeError):
     """Raised when a running download job is cancelled."""
@@ -124,6 +137,19 @@ def _entry_path(entry: dict[str, Any]) -> str | None:
         )
         if candidate and os.path.isfile(str(candidate)):
             return str(candidate)
+    # Thumbnail-only jobs run with `skip_download`, and in that mode yt-dlp
+    # sets `info_dict['filepath']` to the *media* temp filename it never
+    # writes (YoutubeDL.process_info), so the checks above find nothing. The
+    # file it did write is recorded per-thumbnail as
+    # `info['thumbnails'][n]['filepath']` by `YoutubeDL._write_thumbnails`;
+    # `FFmpegThumbnailsConvertorPP` rewrites that same key in place when a
+    # target format was requested. `_write_thumbnails` walks the list back to
+    # front and stops at the first one it writes, so scanning in reverse
+    # finds the written entry first.
+    for thumbnail in reversed(entry.get("thumbnails") or []):
+        candidate = (thumbnail or {}).get("filepath")
+        if candidate and os.path.isfile(str(candidate)):
+            return str(candidate)
     return None
 
 
@@ -165,8 +191,21 @@ def run_job(
         # destination already existed (see overwrites=False in
         # build_ydl_opts and _ALREADY_EXISTS_MESSAGE below).
         downloaded_paths: set[str] = set()
+        # ...but that inference only holds when a file downloader runs at all.
+        # `skip_download` (thumbnail jobs) bypasses it entirely, so no progress
+        # hook ever fires and "never saw a downloading event" stops carrying
+        # any information. Flagging every thumbnail as a skipped pre-existing
+        # file would be a plain lie, now visible to the user in the item row.
+        track_pre_existing = not opts.get("skip_download")
         opts["progress_hooks"].append(
-            _make_hook(store, job.id, cancel_event, downloaded_paths, allocator)
+            _make_hook(
+                store,
+                job.id,
+                cancel_event,
+                downloaded_paths,
+                allocator,
+                track_pre_existing,
+            )
         )
 
         # A failing entry (e.g. one unavailable track in a playlist) makes
@@ -217,7 +256,7 @@ def run_job(
                 progress=100.0,
                 stage="done",
             )
-            if os.path.realpath(path) not in downloaded_paths:
+            if track_pre_existing and os.path.realpath(path) not in downloaded_paths:
                 # No "downloading" event was ever seen for this path, yet a
                 # file exists at the destination: yt-dlp's overwrites=False
                 # skipped it because it was already there. Record it as done
@@ -249,6 +288,7 @@ def _make_hook(
     cancel_event: threading.Event,
     downloaded_paths: set[str],
     allocator: "_IndexAllocator",
+    track_pre_existing: bool = True,
 ):
     def hook(data: dict[str, Any]) -> None:
         if cancel_event.is_set():
@@ -299,7 +339,7 @@ def _make_hook(
                 progress=100.0,
                 stage="done",
             )
-            if os.path.realpath(path) not in downloaded_paths:
+            if track_pre_existing and os.path.realpath(path) not in downloaded_paths:
                 fields["error"] = _ALREADY_EXISTS_MESSAGE
             # Record durably now: if a later playlist entry fails,
             # extract_info raises before the post-loop below ever runs, and
@@ -309,35 +349,105 @@ def _make_hook(
     return hook
 
 
+def _remove_quietly(path: str) -> None:
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        logger.warning("Could not remove %s", path)
+
+
+def _finalise_transcode(
+    source: str, scratch: str, stem: str, extension: str, keep_source: bool
+) -> str:
+    """Move a finished encode from its scratch name to its real one.
+
+    Returns the path the output ended up at. Never overwrites an existing
+    file, and never removes `source` when `keep_source` is set.
+    """
+    if not keep_source:
+        # Freeing the source's name first is what lets a same-container
+        # re-encode land on the plain `Title.mp4` rather than being pushed to
+        # `Title (1).mp4` by a collision with the very file it replaces.
+        try:
+            os.remove(source)
+        except OSError:
+            logger.warning("Could not remove pre-transcode source %s", source)
+
+    destination = f"{stem}.{extension}"
+    if os.path.exists(source) and os.path.realpath(destination) == os.path.realpath(
+        source
+    ):
+        # Same container, and the source is still on disk - either kept
+        # deliberately (it pre-dated this run) or its removal failed. Either
+        # way it must not be clobbered, so the encode gets its own name.
+        destination = unique_path(f"{stem}.transcoded.{extension}")
+    else:
+        # Any other pre-existing file at this name belongs to somebody else.
+        destination = unique_path(destination)
+
+    assert_within_allowed_roots(destination)
+    os.replace(scratch, destination)
+    return destination
+
+
 def _run_transcode_stage(
     store: JobStore, job: Job, cancel_event: threading.Event
 ) -> None:
     codec = str(job.options.get("codec") or "").lower()
     container = str(job.options.get("format") or "").lower()
+    if container == _AUTO:
+        # Mirrors `needs_transcode`, which already collapses codec "auto" and
+        # "" to the same thing. Left as "auto" this becomes the destination's
+        # file extension, ffmpeg cannot infer a muxer from it, and every
+        # re-encode job fails - including the common case of picking a codec
+        # in Advanced without touching the Format control at all.
+        container = ""
     store.set_job_stage(job.id, "transcoding")
 
-    for item in store.get_job(job.id).items:
+    current = store.get_job(job.id)
+    if current is None:
+        # Deleted while the download stage was running; nothing to transcode
+        # and nowhere to record a result.
+        return
+
+    for item in current.items:
         if item.stage != "done" or not item.path:
             continue
 
-        extension = container or os.path.splitext(item.path)[1].lstrip(".")
-        stem = os.path.splitext(item.path)[0]
-        destination = unique_path(f"{stem}.{extension}")
-        if os.path.realpath(destination) == os.path.realpath(item.path):
-            destination = unique_path(f"{stem}.transcoded.{extension}")
-        assert_within_allowed_roots(destination)
+        source = item.path
+        # An item the download stage flagged as pre-existing was on disk
+        # before this run and was never fetched. Removing it after the encode
+        # would silently destroy a file the user already had - exactly what
+        # the spec's "an existing file is never silently destroyed" forbids.
+        keep_source = item.error == _ALREADY_EXISTS_MESSAGE
+        stem, source_ext = os.path.splitext(source)
+        extension = container or source_ext.lstrip(".")
+
+        # Encode to a scratch name first. Choosing the final name up front
+        # cannot work: the natural destination `{stem}.{extension}` *is* the
+        # source for a same-container re-encode, so `unique_path` would divert
+        # to `Title (1).ext` every single time, having collided with nothing
+        # but the file about to be replaced.
+        scratch = unique_path(f"{stem}.transcoding.{extension}")
+        assert_within_allowed_roots(scratch)
 
         store.upsert_item(job.id, item.index, stage="transcoding", progress=0.0)
 
         def report(percent: float, index: int = item.index) -> None:
             store.upsert_item(job.id, index, progress=percent)
 
-        transcode_file(item.path, destination, codec, cancel_event, report)
-
         try:
-            os.remove(item.path)
-        except OSError:
-            logger.warning("Could not remove pre-transcode source %s", item.path)
+            transcode_file(source, scratch, codec, cancel_event, report)
+            destination = _finalise_transcode(
+                source, scratch, stem, extension, keep_source
+            )
+        except Exception:
+            # `transcode_file` already unlinks its own output on failure and
+            # on cancellation; this also covers a failure in the rename step,
+            # so a scratch file never outlives the stage that created it.
+            _remove_quietly(scratch)
+            raise
 
         store.upsert_item(
             job.id,
@@ -346,8 +456,8 @@ def _run_transcode_stage(
             size=_file_size(destination),
             progress=100.0,
             stage="done",
-            # Clear any stale "already existed" note from the download
-            # stage: this run genuinely produced `destination` via ffmpeg,
-            # so that message would no longer describe the current file.
-            error=None,
+            # The download stage's "already existed" note no longer describes
+            # the current file, but the fact that the original was preserved
+            # beside it does, and the user needs to know it is still there.
+            error=_KEPT_SOURCE_MESSAGE if keep_source else None,
         )

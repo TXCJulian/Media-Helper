@@ -6,6 +6,7 @@ import pytest
 
 from app.downloader import runner
 from app.downloader.store import JobStore
+from app.downloader.transcode import TranscodeCancelled
 
 
 @pytest.fixture
@@ -175,7 +176,18 @@ def test_transcode_stage_runs_and_replaces_path(store, tmp_path, monkeypatch):
 
     _install_fake_ydl(
         monkeypatch,
-        events=[],
+        # A genuine fetch: without a "downloading" event this file reads as
+        # pre-existing, and a pre-existing source is deliberately preserved
+        # rather than replaced (see the data-loss test further down).
+        events=[
+            {
+                "status": "downloading",
+                "filename": str(source),
+                "downloaded_bytes": 50,
+                "total_bytes": 100,
+            },
+            {"status": "finished", "filename": str(source)},
+        ],
         info={"title": "Video", "requested_downloads": [{"filepath": str(source)}]},
     )
     monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
@@ -597,3 +609,259 @@ def test_finished_event_with_unresolvable_filename_does_not_allocate_stray_row(
     assert item.path == str(track_a)
     assert item.stage == "done"
     assert item.progress == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Cross-module contract fixes (final whole-branch review)
+# ---------------------------------------------------------------------------
+
+
+def _fake_transcode(src, dst, codec, cancel_event, on_progress):
+    """Stand-in for ffmpeg: writes a distinguishable output at `dst`."""
+    on_progress(50.0)
+    with open(dst, "wb") as f:
+        f.write(b"encoded")
+
+
+def _downloaded_events(path):
+    """Hook events for a file genuinely fetched this run."""
+    return [
+        {
+            "status": "downloading",
+            "filename": str(path),
+            "downloaded_bytes": 50,
+            "total_bytes": 100,
+        },
+        {"status": "finished", "filename": str(path)},
+    ]
+
+
+def test_auto_format_with_codec_falls_back_to_source_extension(
+    store, tmp_path, monkeypatch
+):
+    """C1: the UI's Format control defaults to the literal string "auto" and
+    its "Auto" option sends it too. That is a sentinel, not a muxer name: it
+    must be treated exactly as the empty string is, or the destination becomes
+    `Title.auto`, ffmpeg cannot infer a container, and every re-encode job
+    fails."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    source = out / "Video.mp4"
+    source.write_bytes(b"x" * 100)
+
+    _install_fake_ydl(
+        monkeypatch,
+        events=_downloaded_events(source),
+        info={"title": "Video", "requested_downloads": [{"filepath": str(source)}]},
+    )
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+    monkeypatch.setattr(runner, "transcode_file", _fake_transcode)
+
+    job_id = store.create_job(
+        "https://example.com/v", {"type": "video", "codec": "h264", "format": "auto"}
+    )
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    job = store.get_job(job_id)
+    assert job.stage == "done"
+    assert not job.items[0].path.endswith(".auto")
+    assert job.items[0].path.endswith(".mp4")
+    assert os.path.isfile(job.items[0].path)
+
+
+def test_thumbnail_job_records_the_written_thumbnail(store, tmp_path, monkeypatch):
+    """C2: `skip_download` makes yt-dlp set info['filepath'] to the *media*
+    temp filename, which is never written. The file it actually wrote is
+    recorded per-thumbnail as info['thumbnails'][n]['filepath'] (see
+    YoutubeDL._write_thumbnails). Without a thumbnails branch the runner
+    locates no output and fails a job whose .jpg is sitting on disk."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    thumb = out / "Video.jpg"
+    thumb.write_bytes(b"\xff\xd8jpeg")
+    never_written_media = out / "Video.mp4"
+
+    _install_fake_ydl(
+        monkeypatch,
+        # skip_download runs no file downloader, so no progress hook ever fires.
+        events=[],
+        info={
+            "title": "Video",
+            "filepath": str(never_written_media),
+            "thumbnails": [
+                {"id": "0", "url": "https://example.com/small.jpg"},
+                {
+                    "id": "1",
+                    "url": "https://example.com/big.jpg",
+                    "filepath": str(thumb),
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+
+    job_id = store.create_job("https://example.com/v", {"type": "thumbnail"})
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    job = store.get_job(job_id)
+    assert job.stage == "done", job.error
+    assert len(job.items) == 1
+    assert job.items[0].stage == "done"
+    assert job.items[0].path == str(thumb)
+    # No progress hook can fire under skip_download, so "no downloading event
+    # was seen" carries no information here and must not be reported to the
+    # user as a pre-existing file that was skipped.
+    assert job.items[0].error is None
+
+
+def test_transcode_does_not_delete_a_pre_existing_source_file(
+    store, tmp_path, monkeypatch
+):
+    """I1: re-submitting a URL whose file you already have, with a codec
+    selected, must not destroy the original. The runner itself flagged this
+    item as pre-existing-and-not-downloaded; the transcode stage has to
+    honour that flag instead of unconditionally removing the source."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    source = out / "Video.mp4"
+    source.write_bytes(b"the original the user already had")
+
+    _install_fake_ydl(
+        monkeypatch,
+        # Only a "finished" event: yt-dlp's overwrites=False skipped the
+        # download because the destination was already there.
+        events=[{"status": "finished", "filename": str(source)}],
+        info={"title": "Video", "requested_downloads": [{"filepath": str(source)}]},
+    )
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+    monkeypatch.setattr(runner, "transcode_file", _fake_transcode)
+
+    job_id = store.create_job(
+        "https://example.com/v", {"type": "video", "codec": "h265", "format": "mkv"}
+    )
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    job = store.get_job(job_id)
+    assert job.stage == "done"
+    assert source.exists(), "a pre-existing source must never be deleted"
+    assert source.read_bytes() == b"the original the user already had"
+    assert job.items[0].path.endswith(".mkv")
+    assert os.path.isfile(job.items[0].path)
+    assert job.items[0].error is not None
+    assert "kept" in job.items[0].error.lower()
+
+
+def test_same_container_transcode_keeps_the_plain_filename(
+    store, tmp_path, monkeypatch
+):
+    """I5: encoding straight to `{stem}.{ext}` while the source still occupies
+    that exact path makes unique_path divert to `Title (1).mp4` every time,
+    having collided with nothing but the file about to be removed."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    source = out / "Video.mp4"
+    source.write_bytes(b"x" * 100)
+
+    _install_fake_ydl(
+        monkeypatch,
+        events=_downloaded_events(source),
+        info={"title": "Video", "requested_downloads": [{"filepath": str(source)}]},
+    )
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+    monkeypatch.setattr(runner, "transcode_file", _fake_transcode)
+
+    job_id = store.create_job(
+        "https://example.com/v", {"type": "video", "codec": "h264", "format": "mp4"}
+    )
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    job = store.get_job(job_id)
+    assert job.stage == "done"
+    assert job.items[0].path == str(source)
+    assert not (out / "Video (1).mp4").exists()
+    assert source.read_bytes() == b"encoded"
+    # The scratch file the encode was written to must not be left behind.
+    assert sorted(p.name for p in out.iterdir()) == ["Video.mp4"]
+
+
+def test_transcode_never_overwrites_an_unrelated_existing_file(
+    store, tmp_path, monkeypatch
+):
+    """The `(n)` suffix still has to happen when the destination name is
+    genuinely taken by an unrelated file."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    source = out / "Video.webm"
+    source.write_bytes(b"x" * 100)
+    bystander = out / "Video.mp4"
+    bystander.write_bytes(b"somebody else's file")
+
+    _install_fake_ydl(
+        monkeypatch,
+        events=_downloaded_events(source),
+        info={"title": "Video", "requested_downloads": [{"filepath": str(source)}]},
+    )
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+    monkeypatch.setattr(runner, "transcode_file", _fake_transcode)
+
+    job_id = store.create_job(
+        "https://example.com/v", {"type": "video", "codec": "h264", "format": "mp4"}
+    )
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    job = store.get_job(job_id)
+    assert job.stage == "done"
+    assert bystander.read_bytes() == b"somebody else's file"
+    assert job.items[0].path == str(out / "Video (1).mp4")
+    assert not source.exists()
+
+
+def test_cancelled_transcode_leaves_no_scratch_file(store, tmp_path, monkeypatch):
+    """Cancellation always yields `cancelled`, and the half-written scratch
+    file the encode was going to must not survive it."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    source = out / "Video.mp4"
+    source.write_bytes(b"x" * 100)
+    cancel = threading.Event()
+
+    _install_fake_ydl(
+        monkeypatch,
+        events=_downloaded_events(source),
+        info={"title": "Video", "requested_downloads": [{"filepath": str(source)}]},
+    )
+    monkeypatch.setattr(runner, "resolve_output_root", lambda options: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+
+    def cancelling_transcode(src, dst, codec, cancel_event, on_progress):
+        with open(dst, "wb") as f:
+            f.write(b"partial")
+        cancel.set()
+        raise TranscodeCancelled("Cancelled by user")
+
+    monkeypatch.setattr(runner, "transcode_file", cancelling_transcode)
+
+    job_id = store.create_job(
+        "https://example.com/v", {"type": "video", "codec": "h264", "format": "mkv"}
+    )
+    runner.run_job(store, store.get_job(job_id), cancel)
+
+    job = store.get_job(job_id)
+    assert job.stage == "cancelled"
+    assert job.error == "Cancelled by user"
+    assert sorted(p.name for p in out.iterdir()) == ["Video.mp4"]
+
+
+def test_transcode_stage_tolerates_a_job_deleted_mid_flight(store):
+    """M1: `store.get_job` returns None for a job deleted while it ran, and
+    dereferencing `.items` on that raises AttributeError."""
+    job_id = store.create_job("https://example.com/v", {"codec": "h264"})
+    job = store.get_job(job_id)
+    store.delete_job(job_id)
+
+    runner._run_transcode_stage(store, job, threading.Event())
