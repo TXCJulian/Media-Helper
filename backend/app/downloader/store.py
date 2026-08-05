@@ -4,7 +4,7 @@ import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 STAGES = frozenset(
     {"queued", "downloading", "transcoding", "done", "cancelled", "error"}
@@ -254,6 +254,48 @@ class JobStore:
             job = self._read_job_locked(job_id)
         if job is not None and self._on_change is not None:
             self._on_change(job)
+
+    def prune_items(self, job_id: str, keep: Iterable[int]) -> int:
+        """Drop every item row of `job_id` whose index is not in `keep`.
+
+        Exists for the runner's post-download reconciliation: yt-dlp writes
+        intermediate files (per-stream downloads that are merged, or a
+        container that audio extraction replaces) and fires a progress hook
+        for each, so rows get allocated for paths that no longer exist once
+        the job finishes. Those rows have to go, and only the reconciliation
+        pass - which sees the real per-entry output - knows which they are.
+
+        Fires `on_change` with the surviving job exactly as `upsert_item`
+        does, so a subscriber that replaces its item list wholesale converges
+        without any new event type. Nothing is announced when nothing was
+        removed. Returns the number of rows deleted.
+        """
+        keep_indices = sorted({int(index) for index in keep})
+        job = None
+        with self._lock:
+            if keep_indices:
+                placeholders = ", ".join("?" * len(keep_indices))
+                cursor = self._conn.execute(
+                    f"DELETE FROM items WHERE job_id = ? "
+                    f"AND idx NOT IN ({placeholders})",
+                    (job_id, *keep_indices),
+                )
+            else:
+                cursor = self._conn.execute(
+                    "DELETE FROM items WHERE job_id = ?", (job_id,)
+                )
+            removed = cursor.rowcount
+            if removed:
+                self._conn.execute(
+                    "UPDATE jobs SET updated_at = datetime('now') WHERE id = ?",
+                    (job_id,),
+                )
+            self._conn.commit()
+            if removed:
+                job = self._read_job_locked(job_id)
+        if job is not None and self._on_change is not None:
+            self._on_change(job)
+        return max(removed, 0)
 
     def mark_enqueued(self, job_id: str) -> None:
         """Record that this job has been handed to the queue at least once.

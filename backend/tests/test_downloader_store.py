@@ -428,3 +428,49 @@ def test_on_change_captures_state_during_write_lock():
         "downloading callback should have error=None"
     assert callbacks_dict.get("transcoding") == "interrupted", \
         "transcoding callback should have error='interrupted'"
+
+
+def test_prune_items_keeps_only_the_named_indices(store):
+    job_id = store.create_job("https://example.com/v", {})
+    for index in range(4):
+        store.upsert_item(job_id, index, title=f"row {index}", stage="done")
+
+    assert store.prune_items(job_id, {1, 3}) == 2
+    assert [i.index for i in store.get_job(job_id).items] == [1, 3]
+    assert [i.title for i in store.get_job(job_id).items] == ["row 1", "row 3"]
+
+
+def test_prune_items_with_an_empty_keep_set_removes_every_row(store):
+    job_id = store.create_job("https://example.com/v", {})
+    store.upsert_item(job_id, 0, title="row 0")
+
+    assert store.prune_items(job_id, set()) == 1
+    assert store.get_job(job_id).items == []
+
+
+def test_prune_items_leaves_other_jobs_alone(store):
+    keep = store.create_job("https://example.com/a", {})
+    other = store.create_job("https://example.com/b", {})
+    store.upsert_item(keep, 0, title="mine")
+    store.upsert_item(other, 0, title="theirs")
+
+    store.prune_items(keep, set())
+    assert store.get_job(other).items[0].title == "theirs"
+
+
+def test_prune_items_announces_the_surviving_job_once():
+    """The pruned job has to reach subscribers, and a prune that removed
+    nothing must not add a redundant frame."""
+    seen = []
+    store = JobStore(":memory:", on_change=seen.append)
+    job_id = store.create_job("https://example.com/v", {})
+    store.upsert_item(job_id, 0, title="intermediate")
+    store.upsert_item(job_id, 1, title="real")
+    seen.clear()
+
+    assert store.prune_items(job_id, {1}) == 1
+    assert len(seen) == 1
+    assert [i.index for i in seen[0].items] == [1]
+
+    assert store.prune_items(job_id, {1}) == 0
+    assert len(seen) == 1
