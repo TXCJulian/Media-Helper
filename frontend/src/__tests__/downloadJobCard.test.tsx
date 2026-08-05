@@ -190,3 +190,52 @@ describe('DownloadJobCard item errors', () => {
     expect(container.querySelectorAll('[data-testid="item-error"]')).toHaveLength(0)
   })
 })
+
+describe('DownloadJobCard save link', () => {
+  const item = (overrides: Partial<DownloadJob['items'][number]>) => ({
+    index: 0,
+    title: 'A',
+    path: '/downloads/movies/My Video.mp4',
+    size: 1024,
+    progress: 100,
+    stage: 'done' as const,
+    error: null,
+    ...overrides,
+  })
+
+  it('shows a download-arrow link with the filename for a single-item job', () => {
+    render(
+      <DownloadJobCard
+        job={baseJob({ stage: 'done', items: [item({})] })}
+        onCancel={noop}
+        onDelete={noop}
+        onStart={noop}
+        onRetry={noop}
+      />,
+    )
+    const link = screen.getByRole('link', { name: /My Video\.mp4/ })
+    expect(link.textContent).toContain('↓')
+    expect(link.getAttribute('download')).not.toBeNull()
+  })
+
+  it('shows a generic download-arrow link per row in a multi-item job, without repeating the title', () => {
+    render(
+      <DownloadJobCard
+        job={baseJob({
+          stage: 'done',
+          items: [item({ index: 0, title: 'A' }), item({ index: 1, title: 'B' })],
+        })}
+        onCancel={noop}
+        onDelete={noop}
+        onStart={noop}
+        onRetry={noop}
+      />,
+    )
+    const links = screen.getAllByRole('link', { name: /Save/ })
+    expect(links).toHaveLength(2)
+    for (const link of links) {
+      expect(link.textContent).toContain('↓')
+      expect(link.getAttribute('download')).not.toBeNull()
+    }
+  })
+})

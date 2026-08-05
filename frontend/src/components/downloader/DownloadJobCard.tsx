@@ -12,6 +12,13 @@ const STAGE_LABELS: Record<DownloadStage, string> = {
 
 const PIPELINE: DownloadStage[] = ['downloading', 'transcoding', 'done']
 
+/** Last path segment, used as the display filename for a finished item's download link. */
+function basename(path: string | null): string | null {
+  if (!path) return null
+  const parts = path.split(/[/\\]/)
+  return parts[parts.length - 1] || null
+}
+
 function formatSize(bytes: number | null): string {
   if (bytes === null) return ''
   const units = ['B', 'KiB', 'MiB', 'GiB']
@@ -168,9 +175,9 @@ export default function DownloadJobCard({ job, onCancel, onDelete, onStart, onRe
                   <a
                     href={getDownloadItemFileUrl(job.job_id, item.index)}
                     download
-                    className="text-[var(--accent-6)]"
+                    className="shrink-0 font-mono text-[0.68rem] text-[var(--accent-6)]/70 underline decoration-[var(--accent-6)]/20 hover:decoration-[var(--accent-6)]/60"
                   >
-                    Save
+                    &darr; Save
                   </a>
                 )}
               </div>
@@ -188,9 +195,9 @@ export default function DownloadJobCard({ job, onCancel, onDelete, onStart, onRe
               <a
                 href={getDownloadItemFileUrl(job.job_id, 0)}
                 download
-                className="text-[var(--accent-6)]"
+                className="min-w-0 truncate font-mono text-[0.68rem] text-[var(--accent-6)]/70 underline decoration-[var(--accent-6)]/20 hover:decoration-[var(--accent-6)]/60"
               >
-                Save
+                &darr; {basename(job.items[0]!.path) || 'Save'}
               </a>
             </div>
           )}
