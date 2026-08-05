@@ -24,6 +24,27 @@ function formatSize(bytes: number | null): string {
   return `${unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`
 }
 
+/**
+ * A per-item message from the backend.
+ *
+ * `item.error` carries two different things: an actual failure on an item
+ * whose stage is `error`, and an advisory note on an item that succeeded —
+ * the pre-existing-file explanation, which is the entire mitigation for a
+ * known spec deviation and is useless if it is never shown. Only the first
+ * is styled as a failure.
+ */
+function ItemMessage({ stage, error }: { stage: DownloadStage; error: string }) {
+  const failed = stage === 'error'
+  return (
+    <p
+      data-testid="item-error"
+      className={`mt-1 text-[0.72rem] ${failed ? 'text-red-400' : 'text-amber-400/80'}`}
+    >
+      {error}
+    </p>
+  )
+}
+
 interface Props {
   job: DownloadJob
   onCancel: (jobId: string) => void
@@ -127,38 +148,48 @@ export default function DownloadJobCard({ job, onCancel, onDelete, onStart, onRe
       {job.items.length > 1 && (
         <ul className="mt-3 space-y-1.5 border-t border-white/6 pt-3">
           {job.items.map((item) => (
-            <li key={item.index} className="flex items-center gap-3 text-[0.75rem]">
-              <span className="min-w-0 flex-1 truncate text-[var(--text-secondary)]">
-                {item.title}
-              </span>
-              <span className="tabular-nums text-[var(--text-tertiary)]">
-                {item.stage === 'done' ? formatSize(item.size) : `${item.progress.toFixed(0)}%`}
-              </span>
-              {item.stage === 'done' && (
-                <a
-                  href={getDownloadItemFileUrl(job.job_id, item.index)}
-                  download
-                  className="text-[var(--accent-6)]"
-                >
-                  Save
-                </a>
-              )}
+            <li key={item.index} className="text-[0.75rem]">
+              <div className="flex items-center gap-3">
+                <span className="min-w-0 flex-1 truncate text-[var(--text-secondary)]">
+                  {item.title}
+                </span>
+                <span className="tabular-nums text-[var(--text-tertiary)]">
+                  {item.stage === 'done' ? formatSize(item.size) : `${item.progress.toFixed(0)}%`}
+                </span>
+                {item.stage === 'done' && (
+                  <a
+                    href={getDownloadItemFileUrl(job.job_id, item.index)}
+                    download
+                    className="text-[var(--accent-6)]"
+                  >
+                    Save
+                  </a>
+                )}
+              </div>
+              {item.error && <ItemMessage stage={item.stage} error={item.error} />}
             </li>
           ))}
         </ul>
       )}
 
-      {job.items.length === 1 && job.stage === 'done' && (
-        <div className="mt-2 flex items-center gap-3 text-[0.72rem] text-[var(--text-tertiary)]">
-          <span>{formatSize(job.items[0]!.size)}</span>
-          <a
-            href={getDownloadItemFileUrl(job.job_id, 0)}
-            download
-            className="text-[var(--accent-6)]"
-          >
-            Save
-          </a>
-        </div>
+      {job.items.length === 1 && (
+        <>
+          {job.stage === 'done' && (
+            <div className="mt-2 flex items-center gap-3 text-[0.72rem] text-[var(--text-tertiary)]">
+              <span>{formatSize(job.items[0]!.size)}</span>
+              <a
+                href={getDownloadItemFileUrl(job.job_id, 0)}
+                download
+                className="text-[var(--accent-6)]"
+              >
+                Save
+              </a>
+            </div>
+          )}
+          {job.items[0]!.error && (
+            <ItemMessage stage={job.items[0]!.stage} error={job.items[0]!.error} />
+          )}
+        </>
       )}
 
       {job.error && <p className="mt-2 text-[0.78rem] text-red-400">{job.error}</p>}
