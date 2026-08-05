@@ -23,7 +23,7 @@ from app.config import (
 from app.downloader.events import EventBroadcaster, job_to_payload
 from app.downloader.queue import DownloadQueue
 from app.downloader.runner import run_job
-from app.downloader.store import Job, JobStore
+from app.downloader.store import Job, JobStore, wants_auto_start
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -145,11 +145,9 @@ def create_downloads(request: CreateDownloadRequest) -> dict[str, list[str]]:
                 status_code=422, detail=f"Only http(s) URLs are supported: {url}"
             )
 
-    auto_start = str(request.options.get("auto_start", True)).lower() not in (
-        "false",
-        "0",
-        "no",
-    )
+    # Shared with the `enqueued` backfill, which has to reproduce this exact
+    # reading of options written by an earlier build.
+    auto_start = wants_auto_start(request.options)
 
     store, job_queue = get_store(), get_queue()
     job_ids = []

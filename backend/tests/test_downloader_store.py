@@ -167,6 +167,102 @@ def test_database_predating_the_enqueued_column_keeps_recovering(tmp_path):
         store.close()
 
 
+def _legacy_database(path, rows):
+    """Write a jobs table shaped the way it was before `enqueued` existed."""
+    legacy = sqlite3.connect(path)
+    legacy.executescript(
+        """
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY, url TEXT NOT NULL, options TEXT NOT NULL,
+            stage TEXT NOT NULL, error TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        """
+    )
+    legacy.executemany(
+        "INSERT INTO jobs (id, url, options, stage) VALUES (?, ?, ?, ?)",
+        [
+            (job_id, "https://example.com/v", options, stage)
+            for job_id, options, stage in rows
+        ],
+    )
+    legacy.commit()
+    legacy.close()
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        '{"auto_start": false}',  # JSON boolean, what the UI sends
+        '{"auto_start": "false"}',  # string form
+        '{"auto_start": "False"}',  # string form, other casing
+        '{"auto_start": 0}',  # numeric form
+        '{"auto_start": "0"}',
+        '{"auto_start": "no"}',
+    ],
+)
+def test_migration_does_not_mark_a_held_legacy_job_as_enqueued(tmp_path, options):
+    """A pre-upgrade database can hold jobs resting at `queued` because the
+    user never started them - `create_downloads` has always honoured
+    `auto_start` - so a blanket backfill would make the first boot after the
+    upgrade start exactly the jobs the column was added to protect."""
+    db = str(tmp_path / "legacy.db")
+    _legacy_database(db, [("held", options, "queued")])
+
+    store = JobStore(db)
+    try:
+        assert store.reset_active_to_queued() == []
+        assert store.get_job("held").stage == "queued"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        "{}",  # no auto_start key at all: auto-start is the default
+        '{"auto_start": true}',
+        '{"auto_start": "true"}',
+        '{"auto_start": 1}',
+        '{"auto_start": null}',  # not one of the disabling values
+        "not json at all",  # unparseable: fall back to the old behaviour
+    ],
+)
+def test_migration_still_marks_a_legacy_job_that_was_enqueued(tmp_path, options):
+    """The other half: a legacy row waiting in the FIFO at `queued` must still
+    come back, or the upgrade strands a queue full of live work."""
+    db = str(tmp_path / "legacy.db")
+    _legacy_database(db, [("waiting", options, "queued")])
+
+    store = JobStore(db)
+    try:
+        assert store.reset_active_to_queued() == ["waiting"]
+    finally:
+        store.close()
+
+
+def test_migration_is_idempotent_across_restarts(tmp_path):
+    """The backfill runs only when the column is absent, so reopening a
+    migrated database must not re-mark the held row."""
+    db = str(tmp_path / "legacy.db")
+    _legacy_database(
+        db,
+        [
+            ("held", '{"auto_start": false}', "queued"),
+            ("running", "{}", "downloading"),
+        ],
+    )
+
+    for _ in range(3):
+        store = JobStore(db)
+        try:
+            assert store.reset_active_to_queued() == ["running"]
+            assert store.get_job("held").stage == "queued"
+        finally:
+            store.close()
+
+
 def test_delete_job_notifies_and_reports_the_deleted_id():
     """I2: delete_job was the only mutator that fired no notification, so a
     deleted job's card stayed on screen until the page was reloaded."""

@@ -4,7 +4,7 @@ import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 STAGES = frozenset(
     {"queued", "downloading", "transcoding", "done", "cancelled", "error"}
@@ -41,6 +41,21 @@ CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC);
 """
 
 _ITEM_FIELDS = ("title", "path", "size", "progress", "stage", "error")
+
+# Values of `auto_start` that mean "do not start this job yet".
+_AUTO_START_DISABLED = frozenset({"false", "0", "no"})
+
+
+def wants_auto_start(options: Mapping[str, Any]) -> bool:
+    """Whether these job options ask for the job to start immediately.
+
+    `options` is whatever JSON the client sent, so `auto_start` can arrive as a
+    JSON boolean, a string, a number, or not at all. Everything is normalised
+    through `str().lower()` rather than trusted to be a bool, and an absent key
+    means auto-start. The creation route and the `enqueued` backfill must agree
+    exactly on this, which is why they share one implementation.
+    """
+    return str(options.get("auto_start", True)).lower() not in _AUTO_START_DISABLED
 
 
 @dataclass
@@ -101,11 +116,42 @@ class JobStore:
             self._conn.execute(
                 "ALTER TABLE jobs ADD COLUMN enqueued INTEGER NOT NULL DEFAULT 0"
             )
-            # Rows that predate the column came from a build that enqueued
-            # every job it created, so backfilling them as enqueued preserves
-            # the recovery behaviour they were written under. The column
-            # default stays 0 so rows created from here on start un-enqueued.
-            self._conn.execute("UPDATE jobs SET enqueued = 1")
+            self._backfill_enqueued()
+
+    def _backfill_enqueued(self) -> None:
+        """Mark the pre-column rows that had genuinely reached the queue.
+
+        A blanket `UPDATE jobs SET enqueued = 1` would re-create the very bug
+        this column exists to fix, for exactly the population a migration
+        serves: `create_downloads` has always honoured `auto_start`, so a
+        pre-upgrade database can hold jobs resting at `queued` because the user
+        deliberately never started them, and marking those enqueued makes the
+        next boot recover and start them.
+
+        Any stage past `queued` implies the job was enqueued - it could not
+        have reached `downloading` otherwise. A row still at `queued` is
+        ambiguous, so its stored options decide, using the same rule the
+        creation route applied when the row was written. Options that will not
+        parse fall back to enqueued, which is the pre-migration behaviour and
+        keeps a corrupt row from bricking startup.
+
+        The column default stays 0, so rows created from here on start
+        un-enqueued and rely on `mark_enqueued`.
+        """
+        marked: list[tuple[str]] = []
+        for row in self._conn.execute("SELECT id, stage, options FROM jobs"):
+            if row["stage"] != "queued":
+                marked.append((row["id"],))
+                continue
+            try:
+                options = json.loads(row["options"])
+            except (TypeError, ValueError):
+                options = {}
+            if not isinstance(options, dict):
+                options = {}
+            if wants_auto_start(options):
+                marked.append((row["id"],))
+        self._conn.executemany("UPDATE jobs SET enqueued = 1 WHERE id = ?", marked)
 
     def close(self) -> None:
         with self._lock:
