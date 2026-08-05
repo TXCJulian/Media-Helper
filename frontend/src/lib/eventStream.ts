@@ -3,7 +3,10 @@ import { parseSSEChunk } from './sse'
 
 interface EventStreamOptions {
   onStateChange?: (connected: boolean) => void
-  /** Base reconnect delay in ms; doubles up to 30s while the server is down. */
+  /** Base reconnect delay in ms; doubles up to 30s while the server is down.
+   *  The backoff only resets once a connection actually yields a frame — a
+   *  connection that is accepted and then closes without ever sending one
+   *  (e.g. a server mid-restart) counts as a failed attempt, not a success. */
   retryMs?: number
 }
 
@@ -57,12 +60,10 @@ export function openEventStream(
       return
     }
 
-    attempt = 0
-    setConnected(true)
-
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let receivedFrame = false
 
     try {
       for (;;) {
@@ -71,7 +72,20 @@ export function openEventStream(
         buffer += decoder.decode(value, { stream: true })
         const { events, rest } = parseSSEChunk(buffer)
         buffer = rest
-        for (const frame of events) onEvent(frame.data)
+        for (const frame of events) {
+          // Only a connection that actually yields a frame (the server sends
+          // a full snapshot immediately on connect) counts as "working" —
+          // reset backoff and report connected here, not merely on HTTP 200.
+          // Otherwise a server that accepts and immediately drops the
+          // connection (e.g. mid-restart) would reset `attempt` every time
+          // and retry at a flat rate instead of backing off.
+          if (!receivedFrame) {
+            receivedFrame = true
+            attempt = 0
+            setConnected(true)
+          }
+          onEvent(frame.data)
+        }
       }
     } catch {
       // Fall through to the reconnect path below.

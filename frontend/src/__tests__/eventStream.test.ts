@@ -93,4 +93,41 @@ describe('openEventStream', () => {
     await new Promise((r) => setTimeout(r, 50))
     expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(callsAfterClose + 1)
   })
+
+  it('backs off with increasing delay when connections never yield a frame', async () => {
+    vi.useFakeTimers()
+    try {
+      // Accepts every connection (response.ok) but the body ends immediately
+      // without ever sending a frame — e.g. a server mid-restart.
+      const fetchMock = vi.fn().mockResolvedValue(streamOf([]))
+      vi.stubGlobal('fetch', fetchMock)
+
+      const close = openEventStream('/download/events', () => {}, { retryMs: 100 })
+
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+
+      // Delay for 2nd attempt: 100ms (retryMs * 2**0)
+      await vi.advanceTimersByTimeAsync(99)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+
+      // Delay for 3rd attempt: 200ms (retryMs * 2**1) — NOT another flat 100ms.
+      await vi.advanceTimersByTimeAsync(199)
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+
+      // Delay for 4th attempt: 400ms (retryMs * 2**2)
+      await vi.advanceTimersByTimeAsync(399)
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(fetchMock).toHaveBeenCalledTimes(4)
+
+      close()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
