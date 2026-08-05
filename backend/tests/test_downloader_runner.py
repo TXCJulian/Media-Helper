@@ -1363,3 +1363,87 @@ def test_transcode_row_records_the_file_that_is_actually_on_disk(
         assert item.path and os.path.isfile(item.path)
     # The scratch name never survives the stage.
     assert not any(".transcoding." in p.name for p in out.iterdir())
+
+
+# ---------------------------------------------------------------------------
+# Rows must never promise a finished file that is not on disk
+# ---------------------------------------------------------------------------
+
+
+def test_failed_playlist_drops_rows_for_merged_away_intermediates(
+    store, tmp_path, monkeypatch
+):
+    """Reported as Save downloading `file.json`. The hook records each stream
+    download (`Title.f137.mp4`) at stage=done; ffmpeg then merges and deletes
+    them. `prune_items` clears those rows - but only after extract_info
+    returns, which a mid-playlist failure never does. The leftover done rows
+    each render a Save link that 404s, and the browser saves the JSON error
+    body."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+
+    class FailingMergeYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            video_stream = out / "First.f137.mp4"
+            audio_stream = out / "First.f251.webm"
+            for stream in (video_stream, audio_stream):
+                stream.write_bytes(b"x" * 100)
+                for event in _stream_events(stream, 100):
+                    self.fire(event)
+            (out / "First.mkv").write_bytes(b"m" * 200)
+            os.remove(video_stream)
+            os.remove(audio_stream)
+            raise RuntimeError("ERROR: entry 2 is unavailable")
+
+    monkeypatch.setattr(
+        runner, "_ydl_factory", lambda opts: FailingMergeYDL(opts, [], {})
+    )
+    monkeypatch.setattr(runner, "resolve_output_root", lambda o: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+
+    job_id = store.create_job("https://example.com/list", {"type": "video"})
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    job = store.get_job(job_id)
+    assert job.stage == "error"
+    assert "entry 2 is unavailable" in job.error
+    dangling = [
+        i
+        for i in job.items
+        if i.stage == "done" and i.path and not os.path.isfile(i.path)
+    ]
+    assert dangling == [], f"rows promise missing files: {[i.path for i in dangling]}"
+
+
+def test_failed_playlist_still_keeps_a_completed_sibling(store, tmp_path, monkeypatch):
+    """The vanished-row cleanup must not become a way to lose a real result:
+    a sibling whose file is present survives the failure untouched."""
+    out = tmp_path / "downloads"
+    out.mkdir()
+    done_track = out / "Track1.mp3"
+
+    class PartialYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            done_track.write_bytes(b"x" * 100)
+            for event in _stream_events(done_track, 100):
+                self.fire(event)
+            gone = out / "Track2.f251.webm"
+            gone.write_bytes(b"y" * 100)
+            for event in _stream_events(gone, 100):
+                self.fire(event)
+            os.remove(gone)
+            raise RuntimeError("ERROR: track 3 is unavailable")
+
+    monkeypatch.setattr(runner, "_ydl_factory", lambda opts: PartialYDL(opts, [], {}))
+    monkeypatch.setattr(runner, "resolve_output_root", lambda o: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+
+    job_id = store.create_job("https://example.com/list", {"type": "audio"})
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+
+    job = store.get_job(job_id)
+    assert job.stage == "error"
+    assert len(job.items) == 1
+    assert job.items[0].path == str(done_track)
+    assert job.items[0].stage == "done"
+    assert os.path.isfile(job.items[0].path)

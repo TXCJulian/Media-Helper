@@ -327,10 +327,47 @@ def run_job(
         store.set_job_stage(job.id, "done")
 
     except (DownloadCancelled, TranscodeCancelled):
+        _drop_vanished_items(store, job.id)
         store.set_job_stage(job.id, "cancelled", "Cancelled by user")
     except Exception as exc:
         logger.error("Download job %s failed: %s", job.id, exc, exc_info=True)
+        _drop_vanished_items(store, job.id)
         store.set_job_stage(job.id, "error", _friendly_error(exc))
+
+
+def _drop_vanished_items(store: JobStore, job_id: str) -> None:
+    """Drop rows that promise a finished file which is not on disk.
+
+    The happy path already removes intermediates: `prune_items` runs once
+    `extract_info` returns and keeps only the rows that correspond to real
+    entries. But when `extract_info` raises - a mid-playlist failure, or a
+    cancel - that pruning is deliberately skipped so completed siblings
+    survive, and the per-stream rows the progress hook wrote (`Title.f137.mp4`,
+    `Title.f251.webm`) are left behind at stage="done" pointing at files ffmpeg
+    merged away and deleted. The panel renders a Save link for every done row,
+    so those became a 404 whose JSON body the browser saved as `file.json`.
+
+    Only done rows whose file is missing are removed, which is exactly the set
+    that can produce that 404. A completed sibling still has its file, so it is
+    kept - that guarantee is what the failure path exists to provide. Rows in
+    any other stage are left untouched: they are not offered for download, and
+    an in-flight or errored row still tells the user what happened.
+    """
+    try:
+        job = store.get_job(job_id)
+        if job is None:
+            return
+        keep = {
+            item.index
+            for item in job.items
+            if item.stage != "done" or not item.path or os.path.isfile(item.path)
+        }
+        if len(keep) != len(job.items):
+            store.prune_items(job_id, keep)
+    except Exception:
+        # Best-effort cleanup on a path that is already reporting a failure;
+        # it must never displace the terminal stage the caller is about to set.
+        logger.warning("Could not prune vanished items for job %s", job_id, exc_info=True)
 
 
 def _make_hook(
