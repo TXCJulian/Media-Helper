@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import PanelLayout from './PanelLayout'
 import DownloadJobCard from './downloader/DownloadJobCard'
 import DownloadOptions from './downloader/DownloadOptions'
 import FormSection from './ui/FormSection'
+import { useDebounce } from '@/hooks/useDebounce'
 import { useDownloadStream } from '@/hooks/useDownloadStream'
 import {
   cancelDownloadJob,
@@ -32,10 +33,34 @@ const DEFAULT_FORM: Omit<DownloadForm, 'url'> = {
   item_limit: 0,
 }
 
+/**
+ * Fields that describe a durable preference and are worth remembering across
+ * page loads. Everything else describes a single, one-off download (a
+ * subfolder, a custom filename, a playlist limit) and must start empty every
+ * time — see PERSISTED_KEYS usage below for the explicit split.
+ */
+const PERSISTED_KEYS = [
+  'type',
+  'format',
+  'quality',
+  'codec',
+  'base',
+  'output_dir',
+  'auto_start',
+] as const satisfies readonly (keyof Omit<DownloadForm, 'url'>)[]
+
+type PersistedSettings = Pick<DownloadForm, (typeof PERSISTED_KEYS)[number]>
+
 function loadSettings(): Omit<DownloadForm, 'url'> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? { ...DEFAULT_FORM, ...JSON.parse(raw) } : DEFAULT_FORM
+    if (!raw) return DEFAULT_FORM
+    const parsed = JSON.parse(raw) as Partial<Record<string, unknown>>
+    const persisted: Partial<PersistedSettings> = {}
+    for (const key of PERSISTED_KEYS) {
+      if (key in parsed) (persisted as Record<string, unknown>)[key] = parsed[key]
+    }
+    return { ...DEFAULT_FORM, ...persisted }
   } catch {
     return DEFAULT_FORM
   }
@@ -68,25 +93,44 @@ export default function DownloaderPanel({
   const [isRefreshingDirs, setIsRefreshingDirs] = useState(false)
   const [localError, setLocalError] = useState('')
   const [form, setForm] = useState<DownloadForm>(() => ({ url: '', ...loadSettings() }))
+  const [search, setSearch] = useState('')
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   const urls = useMemo(() => parseUrls(form.url), [form.url])
+  const debouncedSearch = useDebounce(search, 500)
 
   useEffect(() => {
     const id = window.setTimeout(() => {
-      const { url: _ignored, ...settings } = form
+      const settings: PersistedSettings = {
+        type: form.type,
+        format: form.format,
+        quality: form.quality,
+        codec: form.codec,
+        base: form.base,
+        output_dir: form.output_dir,
+        auto_start: form.auto_start,
+      }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
     }, 300)
     return () => window.clearTimeout(id)
-  }, [form])
+  }, [
+    form.type,
+    form.format,
+    form.quality,
+    form.codec,
+    form.base,
+    form.output_dir,
+    form.auto_start,
+  ])
 
   const refreshStatus = useCallback(async () => {
     setStatus(await fetchDownloaderStatus())
   }, [])
 
-  const refreshDirectories = useCallback(async () => {
+  const refreshDirectories = useCallback(async (searchText?: string) => {
     setIsRefreshingDirs(true)
     try {
-      setDirectories((await fetchMediaDirectories()).directories)
+      setDirectories((await fetchMediaDirectories(searchText)).directories)
     } finally {
       setIsRefreshingDirs(false)
     }
@@ -96,6 +140,15 @@ export default function DownloaderPanel({
     void refreshStatus().catch(() => {})
     void refreshDirectories().catch(() => {})
   }, [refreshDirectories, refreshStatus])
+
+  // Re-fetch directories when the debounced search changes, but not on mount.
+  const prevSearch = useRef(debouncedSearch)
+  useEffect(() => {
+    if (prevSearch.current !== debouncedSearch) {
+      prevSearch.current = debouncedSearch
+      void refreshDirectories(debouncedSearch).catch(() => {})
+    }
+  }, [debouncedSearch, refreshDirectories])
 
   const patchForm = useCallback((patch: Partial<DownloadForm>) => {
     setForm((prev) => ({ ...prev, ...patch }))
@@ -132,7 +185,7 @@ export default function DownloaderPanel({
           <div className="space-y-3">
             <textarea
               value={form.url}
-              placeholder="Paste a link — or several, one per line"
+              placeholder="One link per line"
               rows={urls.length > 1 ? Math.min(urls.length + 1, 8) : 2}
               onChange={(e) => patchForm({ url: e.target.value })}
               onKeyDown={(e) => {
@@ -173,9 +226,11 @@ export default function DownloaderPanel({
           form={form}
           onChange={patchForm}
           directories={directories}
-          onRefreshDirectories={() => void refreshDirectories()}
+          onRefreshDirectories={() => void refreshDirectories(search)}
           isRefreshingDirectories={isRefreshingDirs}
           showBaseLabel={showBaseLabel}
+          search={search}
+          onSearchChange={setSearch}
         />
 
         <FormSection label="Cookies">
@@ -233,26 +288,39 @@ export default function DownloaderPanel({
           </div>
         </FormSection>
 
-        <FormSection label="History">
-          <div className="space-y-3">
-            {history.length > 0 ? (
-              history.map((job) => (
-                <DownloadJobCard
-                  key={job.job_id}
-                  job={job}
-                  onCancel={(id) => void guard(cancelDownloadJob(id), 'Failed to cancel')}
-                  onDelete={(id) => void guard(deleteDownloadJob(id), 'Failed to delete')}
-                  onStart={(id) => void guard(startDownloadJob(id), 'Failed to start')}
-                  onRetry={(url) => void submit([url])}
-                />
-              ))
-            ) : (
-              <p className="rounded-[14px] border border-white/6 bg-white/[0.02] py-5 text-center text-[0.82rem] text-[var(--text-tertiary)]">
-                Finished downloads will be listed here.
-              </p>
-            )}
-          </div>
-        </FormSection>
+        <div className="mb-6">
+          <button
+            type="button"
+            onClick={() => setHistoryOpen((o) => !o)}
+            className={`flex w-full items-center gap-2 border border-[var(--glass-border)] bg-[var(--glass-bg)] px-4 py-2.5 text-left text-[0.8rem] font-medium text-white/70 backdrop-blur-sm transition hover:border-cyan-400/30 hover:text-white/90 ${historyOpen ? 'rounded-t-xl' : 'rounded-xl'}`}
+          >
+            <span className={`inline-block transition-transform ${historyOpen ? 'rotate-90' : ''}`}>
+              &#9654;
+            </span>
+            History {history.length > 0 && `(${history.length})`}
+          </button>
+
+          {historyOpen && (
+            <div className="space-y-3 rounded-b-xl border border-t-0 border-[var(--glass-border)] bg-black/20 p-4">
+              {history.length > 0 ? (
+                history.map((job) => (
+                  <DownloadJobCard
+                    key={job.job_id}
+                    job={job}
+                    onCancel={(id) => void guard(cancelDownloadJob(id), 'Failed to cancel')}
+                    onDelete={(id) => void guard(deleteDownloadJob(id), 'Failed to delete')}
+                    onStart={(id) => void guard(startDownloadJob(id), 'Failed to start')}
+                    onRetry={(url) => void submit([url])}
+                  />
+                ))
+              ) : (
+                <p className="rounded-[14px] border border-white/6 bg-white/[0.02] py-5 text-center text-[0.82rem] text-[var(--text-tertiary)]">
+                  Finished downloads will be listed here.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
 
         <div className="flex items-center justify-center">
           <div className="inline-flex items-center gap-3 rounded-full border border-white/6 bg-white/[0.03] px-5 py-2 text-[0.72rem] text-[var(--text-tertiary)]">

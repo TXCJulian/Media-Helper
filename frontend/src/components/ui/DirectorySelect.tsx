@@ -11,6 +11,8 @@ interface DirectorySelectProps {
   disabled?: boolean
   color?: 'blue' | 'indigo' | 'rose' | 'emerald' | 'cyan'
   showBaseLabel?: boolean
+  /** When provided, shows a button that resets the selection back to "no directory". */
+  onClear?: () => void
 }
 
 const focusClasses = {
@@ -41,6 +43,7 @@ export default function DirectorySelect({
   disabled,
   color = 'blue',
   showBaseLabel,
+  onClear,
 }: DirectorySelectProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [focusedIndex, setFocusedIndex] = useState(-1)
@@ -219,6 +222,17 @@ export default function DirectorySelect({
       >
         {isLoading ? <span className="spinner-sm" /> : '↻'}
       </button>
+      {onClear && (
+        <button
+          type="button"
+          onClick={onClear}
+          disabled={disabled || isLoading || !value}
+          title="Clear directory"
+          className="flex h-[42px] w-[42px] shrink-0 cursor-pointer items-center justify-center rounded-[10px] border border-[var(--border)] bg-[var(--bg-input)] text-base text-[var(--text-secondary)] transition-all duration-200 hover:border-red-500/30 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          ×
+        </button>
+      )}
     </div>
   )
 }

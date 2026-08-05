@@ -74,6 +74,8 @@ interface Props {
   onRefreshDirectories: () => void
   isRefreshingDirectories: boolean
   showBaseLabel?: boolean
+  search: string
+  onSearchChange: (search: string) => void
 }
 
 export default function DownloadOptions({
@@ -83,6 +85,8 @@ export default function DownloadOptions({
   onRefreshDirectories,
   isRefreshingDirectories,
   showBaseLabel,
+  search,
+  onSearchChange,
 }: Props) {
   const [showAdvanced, setShowAdvanced] = useState(false)
   const isThumbnail = form.type === 'thumbnail'
@@ -132,16 +136,26 @@ export default function DownloadOptions({
       </FormSection>
 
       <FormSection label="Destination">
-        <DirectorySelect
-          color="cyan"
-          directories={directories}
-          onRefresh={onRefreshDirectories}
-          isLoading={isRefreshingDirectories}
-          value={form.output_dir}
-          base={form.base}
-          onChange={(path, base) => onChange({ output_dir: path, base })}
-          showBaseLabel={showBaseLabel}
-        />
+        <div className="space-y-3">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="Filter directories..."
+            className="input-field input-cyan"
+          />
+          <DirectorySelect
+            color="cyan"
+            directories={directories}
+            onRefresh={onRefreshDirectories}
+            isLoading={isRefreshingDirectories}
+            value={form.output_dir}
+            base={form.base}
+            onChange={(path, base) => onChange({ output_dir: path, base })}
+            onClear={() => onChange({ output_dir: '', base: '' })}
+            showBaseLabel={showBaseLabel}
+          />
+        </div>
       </FormSection>
 
       <FormSection label="Queue">

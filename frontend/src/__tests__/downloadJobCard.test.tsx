@@ -56,6 +56,51 @@ describe('DownloadJobCard stage strip', () => {
     expect(screen.getByText('Transcoding')).toBeTruthy()
   })
 
+  it('renders the trailing FAILED label in red for an error job', () => {
+    render(
+      <DownloadJobCard
+        job={baseJob({
+          stage: 'error',
+          error: 'Something broke',
+        })}
+        onCancel={noop}
+        onDelete={noop}
+        onStart={noop}
+        onRetry={noop}
+      />,
+    )
+    const failedLabel = screen.getByText('Failed')
+    expect(failedLabel.className).toContain('text-red-400')
+  })
+
+  it('renders the trailing CANCELLED label distinctly from the error red', () => {
+    render(
+      <DownloadJobCard
+        job={baseJob({ stage: 'cancelled' })}
+        onCancel={noop}
+        onDelete={noop}
+        onStart={noop}
+        onRetry={noop}
+      />,
+    )
+    const cancelledLabel = screen.getByText('Cancelled')
+    expect(cancelledLabel.className).not.toContain('text-red-400')
+  })
+
+  it('keeps the pipeline stage strip legible (not dimmed tertiary) for a failed job', () => {
+    render(
+      <DownloadJobCard
+        job={baseJob({ stage: 'error', error: 'Something broke' })}
+        onCancel={noop}
+        onDelete={noop}
+        onStart={noop}
+        onRetry={noop}
+      />,
+    )
+    const downloadingLabel = screen.getByText('Downloading')
+    expect(downloadingLabel.className).not.toContain('/40')
+  })
+
   it('does not duplicate the Done label for a completed job', () => {
     render(
       <DownloadJobCard

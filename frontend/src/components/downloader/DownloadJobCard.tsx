@@ -55,9 +55,13 @@ interface Props {
 
 export default function DownloadJobCard({ job, onCancel, onDelete, onStart, onRetry }: Props) {
   const isActive = ['queued', 'downloading', 'transcoding'].includes(job.stage)
+  const isTerminal = job.stage === 'error' || job.stage === 'cancelled'
   const stages = job.has_transcode ? PIPELINE : PIPELINE.filter((s) => s !== 'transcoding')
+  // `error`/`cancelled` aren't part of the pipeline, so stages.indexOf(job.stage)
+  // is always -1 for them. Treat every pipeline stage as reached so the strip
+  // stays legible instead of collapsing to 40%-opacity tertiary text.
   const reached = (stage: DownloadStage) =>
-    job.stage === 'done' || stages.indexOf(job.stage) >= stages.indexOf(stage)
+    job.stage === 'done' || isTerminal || stages.indexOf(job.stage) >= stages.indexOf(stage)
 
   const overall =
     job.items.length > 0
@@ -87,7 +91,11 @@ export default function DownloadJobCard({ job, onCancel, onDelete, onStart, onRe
               </span>
             ))}
             {!isActive && job.stage !== 'done' && (
-              <span className="text-[0.68rem] uppercase tracking-[0.1em] text-[var(--text-tertiary)]">
+              <span
+                className={`text-[0.68rem] uppercase tracking-[0.1em] ${
+                  job.stage === 'error' ? 'text-red-400' : 'text-[var(--text-secondary)]'
+                }`}
+              >
                 {STAGE_LABELS[job.stage]}
               </span>
             )}
