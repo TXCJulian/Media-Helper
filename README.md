@@ -396,20 +396,20 @@ docker compose -f deploy.yml down
 
 ```bash
 # Build and tag
-docker build -t bosscock/media-renamer:backend ./backend
-docker build -t bosscock/media-renamer:frontend ./frontend
+docker build -t txcjulian/media-helper:backend ./backend
+docker build -t txcjulian/media-helper:frontend ./frontend
 
 # Push
-docker push bosscock/media-renamer:backend
-docker push bosscock/media-renamer:frontend
+docker push txcjulian/media-helper:backend
+docker push txcjulian/media-helper:frontend
 ```
 
 For multi-arch builds (amd64 + arm64):
 
 ```bash
 docker buildx create --use
-docker buildx build --platform linux/amd64,linux/arm64 -t bosscock/media-renamer:backend ./backend --push
-docker buildx build --platform linux/amd64,linux/arm64 -t bosscock/media-renamer:frontend ./frontend --push
+docker buildx build --platform linux/amd64,linux/arm64 -t txcjulian/media-helper:backend ./backend --push
+docker buildx build --platform linux/amd64,linux/arm64 -t txcjulian/media-helper:frontend ./frontend --push
 ```
 
 ## Development
