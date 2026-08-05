@@ -130,7 +130,6 @@ export default function App() {
   const [cutterStarted, setCutterStarted] = useState(false)
   const [cutterState, setCutterState] = useState<CutterPersistedState>(INITIAL_CUTTER_STATE)
 
-  const [downloaderLog, setDownloaderLog] = useState<string[]>([])
   const [downloaderError, setDownloaderError] = useState('')
 
   const handleEpisodeLog = useCallback((log: string[]) => {
@@ -151,10 +150,6 @@ export default function App() {
   const handleCutterLog = useCallback((log: string[]) => {
     setCutterStarted(true)
     setCutterLog(log)
-  }, [])
-
-  const handleDownloaderLog = useCallback((log: string[]) => {
-    setDownloaderLog(log)
   }, [])
 
   const handleEpisodeError = useCallback((err: string) => setEpisodeError(err), [])
@@ -264,10 +259,8 @@ export default function App() {
   if (activeView === 'download') {
     return (
       <DownloaderPanel
-        onLog={handleDownloaderLog}
         onError={handleDownloaderError}
         onBack={goHome}
-        log={downloaderLog}
         error={downloaderError}
         showBaseLabel={basePaths.length > 1}
       />
