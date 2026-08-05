@@ -1369,20 +1369,15 @@ def cutter_create_job(
     }
 
 
-@app.get("/cutter/jobs")
-def cutter_list_jobs():
-    """List all active jobs."""
-    require_feature("cutter")
-    return {"jobs": list_jobs()}
+def _add_source_file_id(meta: dict) -> dict:
+    """Attach the signed file id the player needs to stream a job's source.
 
-
-@app.get("/cutter/jobs/{job_id}")
-def cutter_get_job(job_id: str):
-    """Get single job details."""
-    require_feature("cutter")
-    meta = load_job_metadata(job_id)
-    if not meta:
-        raise HTTPException(status_code=404, detail="Job not found")
+    Both the list and the single-job endpoint must do this: the panel reopens
+    a job straight from the list, and without this id it builds an empty
+    stream URL, so the browser receives a 404 body instead of media and
+    reports a format error for every file regardless of codec.
+    """
+    job_id = meta.get("job_id", "")
     if meta.get("source") == "server" and meta.get("original_path"):
         base_label = meta.get("base") or ""
         if not base_label:
@@ -1412,6 +1407,24 @@ def cutter_get_job(job_id: str):
             "upload", meta["original_name"], job_id=job_id, base=""
         )
     return meta
+
+
+@app.get("/cutter/jobs")
+def cutter_list_jobs():
+    """List all active jobs."""
+    require_feature("cutter")
+    return {"jobs": [_add_source_file_id(job) for job in list_jobs()]}
+
+
+@app.get("/cutter/jobs/{job_id}")
+def cutter_get_job(job_id: str):
+    """Get single job details."""
+    require_feature("cutter")
+    meta = load_job_metadata(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Job not found")
+    meta.setdefault("job_id", job_id)
+    return _add_source_file_id(meta)
 
 
 @app.delete("/cutter/jobs/{job_id}")

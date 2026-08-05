@@ -930,3 +930,50 @@ def test_upload_cookies_accepts_valid_netscape_format(client):
     assert response.status_code == 200
     with open(routes_mod.cookie_path(), "rb") as f:
         assert f.read() == content
+
+
+class TestCutterJobListEnrichment:
+    """A job reopened from the Jobs list must carry a usable source_file_id.
+
+    `/cutter/jobs/{id}` computes `source_file_id`; `/cutter/jobs` used to
+    return raw metadata without it. The panel reopens jobs from the *list*,
+    so `fileId` arrived empty, the player requested `/cutter/stream/` and got
+    a 404 JSON body, and the browser reported MEDIA_ELEMENT_ERROR 4 for every
+    file regardless of codec.
+    """
+
+    def _write_job(self, jobs_dir, job_id, base_label):
+        import json
+
+        job_dir = jobs_dir / job_id
+        job_dir.mkdir(parents=True)
+        meta = {
+            "job_id": job_id,
+            "source": "server",
+            "original_path": "TV Shows/Example.mkv",
+            "original_name": "Example.mkv",
+            "base": base_label,
+            "status": "ready",
+            "output_files": [],
+            "created_at": "2026-08-06T00:00:00+00:00",
+        }
+        (job_dir / "job.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    def test_listed_job_carries_the_same_source_file_id_as_the_single_job(
+        self, client, tmp_path, monkeypatch, base_label
+    ):
+        import app.cutter as cutter_mod
+        import app.main as main_mod
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"cutter"})
+        jobs_dir = tmp_path / "cutter-jobs"
+        job_id = "11111111-1111-1111-1111-111111111111"
+        self._write_job(jobs_dir, job_id, base_label)
+        monkeypatch.setattr(cutter_mod, "CUTTER_JOBS_DIR", str(jobs_dir))
+
+        single = main_mod.cutter_get_job(job_id)
+        listed = main_mod.cutter_list_jobs()["jobs"]
+
+        assert single.get("source_file_id"), "single-job endpoint should compute a file id"
+        assert len(listed) == 1
+        assert listed[0].get("source_file_id") == single["source_file_id"]
