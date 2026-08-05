@@ -38,7 +38,7 @@ function ItemMessage({ stage, error }: { stage: DownloadStage; error: string }) 
   return (
     <p
       data-testid="item-error"
-      className={`mt-1 text-[0.72rem] ${failed ? 'text-red-400' : 'text-amber-400/80'}`}
+      className={`mt-1 text-[0.72rem] ${failed ? 'text-red-400' : 'text-[var(--accent-6)]'}`}
     >
       {error}
     </p>

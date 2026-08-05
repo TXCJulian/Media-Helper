@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import DirectorySelect from '../ui/DirectorySelect'
 import FormSection from '../ui/FormSection'
 import SegmentedControl from '../ui/SegmentedControl'
@@ -83,6 +84,7 @@ export default function DownloadOptions({
   isRefreshingDirectories,
   showBaseLabel,
 }: Props) {
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const isThumbnail = form.type === 'thumbnail'
   const quality = form.type === 'audio' ? AUDIO_QUALITY : VIDEO_QUALITY
 
@@ -130,93 +132,108 @@ export default function DownloadOptions({
       </FormSection>
 
       <FormSection label="Destination">
-        <div className="space-y-4">
-          <DirectorySelect
-            color="cyan"
-            directories={directories}
-            onRefresh={onRefreshDirectories}
-            isLoading={isRefreshingDirectories}
-            value={form.output_dir}
-            base={form.base}
-            onChange={(path, base) => onChange({ output_dir: path, base })}
-            showBaseLabel={showBaseLabel}
-          />
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className="field-label">Subfolder</label>
-              <input
-                type="text"
-                value={form.sub_folder}
-                placeholder="e.g. music/albums"
-                onChange={(e) => onChange({ sub_folder: e.target.value })}
-                className="input-field input-cyan"
-              />
-            </div>
-            <div>
-              <label className="field-label">Playlist item limit</label>
-              <input
-                type="number"
-                min="0"
-                value={form.item_limit}
-                placeholder="0 for no limit"
-                onChange={(e) => onChange({ item_limit: Number(e.target.value) || 0 })}
-                className="input-field input-cyan"
-              />
-            </div>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className="field-label">Filename prefix</label>
-              <input
-                type="text"
-                value={form.custom_prefix}
-                placeholder="Added before the title"
-                onChange={(e) => onChange({ custom_prefix: e.target.value })}
-                className="input-field input-cyan"
-              />
-            </div>
-            <div>
-              <label className="field-label">Filename</label>
-              <input
-                type="text"
-                value={form.custom_filename}
-                placeholder="Defaults to the title"
-                onChange={(e) => onChange({ custom_filename: e.target.value })}
-                className="input-field input-cyan"
-              />
-            </div>
-          </div>
-        </div>
+        <DirectorySelect
+          color="cyan"
+          directories={directories}
+          onRefresh={onRefreshDirectories}
+          isLoading={isRefreshingDirectories}
+          value={form.output_dir}
+          base={form.base}
+          onChange={(path, base) => onChange({ output_dir: path, base })}
+          showBaseLabel={showBaseLabel}
+        />
       </FormSection>
 
       <FormSection label="Queue">
-        <div className="space-y-4">
-          <SegmentedControl
-            color="cyan"
-            options={[
-              { label: 'Start now', value: 'yes' },
-              { label: 'Hold in queue', value: 'no' },
-            ]}
-            value={form.auto_start ? 'yes' : 'no'}
-            onChange={(v) => onChange({ auto_start: v === 'yes' })}
-          />
+        <SegmentedControl
+          color="cyan"
+          options={[
+            { label: 'Start now', value: 'yes' },
+            { label: 'Hold in queue', value: 'no' },
+          ]}
+          value={form.auto_start ? 'yes' : 'no'}
+          onChange={(v) => onChange({ auto_start: v === 'yes' })}
+        />
 
-          {!isThumbnail && (
-            <div className="sm:max-w-[50%]">
-              <StyledSelect
-                color="cyan"
-                label="Re-encode to codec"
-                options={RECODE[form.type] ?? []}
-                value={form.codec}
-                onChange={(v) => onChange({ codec: v })}
-              />
-              {form.codec !== 'auto' && (
-                <p className="mt-2 text-[0.72rem] leading-relaxed text-[var(--text-tertiary)]">
-                  Re-encoding runs after the download and usually takes longer than the download
-                  itself. Leave this on “No re-encode” unless you need a specific codec.
-                </p>
+        <div className="mt-[0.85rem]">
+          <button
+            type="button"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className="flex cursor-pointer items-center gap-2 border-none bg-none p-0 font-[Geist,sans-serif] text-[0.75rem] text-[var(--text-tertiary)] transition-colors duration-200 hover:text-[var(--text-secondary)]"
+          >
+            <span
+              className={`text-[0.55rem] transition-transform duration-200 ${showAdvanced ? 'rotate-90' : ''}`}
+            >
+              ▶
+            </span>
+            Advanced Options
+          </button>
+
+          {showAdvanced && (
+            <div className="mt-3 space-y-4 rounded-[10px] border border-[var(--border)] bg-[rgba(0,0,0,0.2)] p-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="field-label">Subfolder</label>
+                  <input
+                    type="text"
+                    value={form.sub_folder}
+                    placeholder="e.g. music/albums"
+                    onChange={(e) => onChange({ sub_folder: e.target.value })}
+                    className="input-field input-cyan"
+                  />
+                </div>
+                <div>
+                  <label className="field-label">Playlist item limit</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={form.item_limit}
+                    placeholder="0 for no limit"
+                    onChange={(e) => onChange({ item_limit: Number(e.target.value) || 0 })}
+                    className="input-field input-cyan"
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="field-label">Filename prefix</label>
+                  <input
+                    type="text"
+                    value={form.custom_prefix}
+                    placeholder="Added before the title"
+                    onChange={(e) => onChange({ custom_prefix: e.target.value })}
+                    className="input-field input-cyan"
+                  />
+                </div>
+                <div>
+                  <label className="field-label">Filename</label>
+                  <input
+                    type="text"
+                    value={form.custom_filename}
+                    placeholder="Defaults to the title"
+                    onChange={(e) => onChange({ custom_filename: e.target.value })}
+                    className="input-field input-cyan"
+                  />
+                </div>
+              </div>
+
+              {!isThumbnail && (
+                <div className="sm:max-w-[50%]">
+                  <StyledSelect
+                    color="cyan"
+                    label="Re-encode to codec"
+                    options={RECODE[form.type] ?? []}
+                    value={form.codec}
+                    onChange={(v) => onChange({ codec: v })}
+                  />
+                  {form.codec !== 'auto' && (
+                    <p className="mt-[0.35rem] text-[0.68rem] leading-snug text-[var(--text-tertiary)]">
+                      Re-encoding runs after the download and usually takes longer than the download
+                      itself. Leave this on “No re-encode” unless you need a specific codec.
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           )}

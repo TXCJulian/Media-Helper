@@ -141,14 +141,9 @@ export default function DownloaderPanel({
                   void submit()
                 }
               }}
-              className="input-field input-cyan resize-y leading-relaxed"
+              className="input-field input-cyan min-h-[76px] resize-y leading-relaxed"
             />
-            <button
-              type="button"
-              onClick={() => void submit()}
-              className="btn-submit btn-cyan"
-              disabled={urls.length === 0}
-            >
+            <button type="button" onClick={() => void submit()} className="btn-submit btn-cyan">
               {urls.length > 1 ? `Download ${urls.length} links` : 'Download'}
             </button>
           </div>
