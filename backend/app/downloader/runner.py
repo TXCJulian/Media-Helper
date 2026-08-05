@@ -7,7 +7,12 @@ from typing import Any
 from yt_dlp import YoutubeDL
 
 from app.downloader.store import Job, JobStore
-from app.downloader.transcode import TranscodeCancelled, transcode_file
+from app.downloader.transcode import (
+    TranscodeCancelled,
+    assert_container_supports_codec,
+    container_for_codec,
+    transcode_file,
+)
 from app.downloader.ydl import (
     assert_within_allowed_roots,
     build_ydl_opts,
@@ -457,6 +462,11 @@ def _run_transcode_stage(
         # re-encode job fails - including the common case of picking a codec
         # in Advanced without touching the Format control at all.
         container = ""
+    # A contradictory pairing (say codec FLAC with container M4A) is a
+    # job-level property, not a per-item one, so it is settled here - before
+    # the stage is entered and before any file is touched - rather than
+    # discovered part-way through a playlist with some items already re-encoded.
+    assert_container_supports_codec(container, codec)
     store.set_job_stage(job.id, "transcoding")
 
     current = store.get_job(job.id)
@@ -475,8 +485,13 @@ def _run_transcode_stage(
         # would silently destroy a file the user already had - exactly what
         # the spec's "an existing file is never silently destroyed" forbids.
         keep_source = item.error == _ALREADY_EXISTS_MESSAGE
-        stem, source_ext = os.path.splitext(source)
-        extension = container or source_ext.lstrip(".")
+        stem, _source_ext = os.path.splitext(source)
+        # The extension must describe the *codec being encoded*, never the
+        # source file's. Falling back to the source extension is what muxed a
+        # FLAC stream into an Ogg container still named `.opus`: legal for
+        # ffmpeg, silent in every player. An explicit container survives
+        # because it was already checked against the codec above.
+        extension = container or container_for_codec(codec)
 
         # Encode to a scratch name first. Choosing the final name up front
         # cannot work: the natural destination `{stem}.{extension}` *is* the

@@ -279,3 +279,40 @@ def test_probe_duration_returns_zero_when_unknown():
     )
     with patch("subprocess.run", return_value=completed):
         assert transcode.probe_duration("/in.mp4") == 0.0
+
+
+def test_every_supported_codec_has_a_container():
+    """The UI offers exactly these codecs (RECODE in DownloadOptions.tsx). A
+    codec with no container entry would send `container_for_codec` down its
+    raise path at re-encode time, i.e. a job that fails after downloading."""
+    codecs = set(transcode.CODEC_TO_ENCODER) | set(transcode.AUDIO_CODEC_TO_ENCODER)
+    assert codecs == set(transcode.CODEC_TO_CONTAINER)
+    assert codecs == set(transcode.CODEC_COMPATIBLE_CONTAINERS)
+
+
+def test_default_container_is_always_an_accepted_one():
+    """Format=Auto must never pick a container that an explicit Format of the
+    same value would be rejected for."""
+    for codec, container in transcode.CODEC_TO_CONTAINER.items():
+        assert container in transcode.CODEC_COMPATIBLE_CONTAINERS[codec], codec
+        transcode.assert_container_supports_codec(container, codec)
+
+
+def test_container_for_codec_rejects_an_unknown_codec():
+    with pytest.raises(ValueError):
+        transcode.container_for_codec("notacodec")
+
+
+def test_empty_container_is_always_accepted():
+    """"" is the normalised form of the Format=Auto sentinel; it means "you
+    choose", so there is nothing to contradict."""
+    transcode.assert_container_supports_codec("", "flac")
+
+
+def test_flac_in_an_mp4_container_is_rejected_with_a_useful_message():
+    with pytest.raises(ValueError) as excinfo:
+        transcode.assert_container_supports_codec("m4a", "flac")
+    message = str(excinfo.value)
+    assert "m4a" in message and "flac" in message
+    # It has to say what to do instead, not just that it refused.
+    assert ".flac" in message

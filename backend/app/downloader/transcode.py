@@ -23,6 +23,89 @@ AUDIO_CODEC_TO_ENCODER = {
     "wav": "pcm_s16le",
 }
 
+# The container a re-encode lands in when the user left Format on "Auto".
+#
+# ffmpeg picks its muxer from the *output file extension*, so this map is what
+# makes the extension describe the codec inside. Deriving it from the source
+# file instead produced the reported silent file: encoding FLAC over a source
+# named `theme.opus` kept the `.opus` extension, ffmpeg inferred the Ogg muxer,
+# and FLAC-in-Ogg is legal enough that nothing errored - but a player opening a
+# `.opus` file expects Opus and plays silence.
+#
+# Notes on the less obvious entries:
+#   aac  -> m4a  A bare `.aac` file is a raw ADTS stream with no index; players
+#                handle it unevenly and cannot seek it reliably. MP4/M4A is the
+#                normal home for AAC.
+#   av1  -> mkv  AV1 has no single universal container, and the video branch
+#                copies the source audio track unchanged (`-c:a copy`). WebM
+#                would *reject* a copied AAC track outright, and AV1-in-MP4
+#                player support is still patchy; Matroska accepts every
+#                combination and plays everywhere we care about.
+#   opus -> opus `.opus` is the standard Ogg-Opus extension and ffmpeg maps it
+#                to the Ogg muxer, which is correct here - it was only wrong
+#                above because the *codec* was not Opus.
+CODEC_TO_CONTAINER = {
+    "mp3": "mp3",
+    "flac": "flac",
+    "aac": "m4a",
+    "opus": "opus",
+    "wav": "wav",
+    "h264": "mp4",
+    "h265": "mp4",
+    "vp9": "webm",
+    "av1": "mkv",
+}
+
+# Containers that can actually carry each codec, used to reject an explicit
+# Format choice that contradicts the chosen codec instead of muxing a file no
+# player will open. Supersets of CODEC_TO_CONTAINER's value for each codec.
+CODEC_COMPATIBLE_CONTAINERS = {
+    "mp3": frozenset({"mp3"}),
+    "flac": frozenset({"flac"}),
+    "aac": frozenset({"m4a", "mp4", "aac"}),
+    "opus": frozenset({"opus", "ogg", "webm"}),
+    "wav": frozenset({"wav"}),
+    "h264": frozenset({"mp4", "mkv", "mov"}),
+    "h265": frozenset({"mp4", "mkv", "mov"}),
+    "vp9": frozenset({"webm", "mkv"}),
+    "av1": frozenset({"mkv", "mp4", "webm"}),
+}
+
+
+def container_for_codec(codec: str) -> str:
+    """The file extension a re-encode to `codec` must use."""
+    key = str(codec or "").lower()
+    try:
+        return CODEC_TO_CONTAINER[key]
+    except KeyError:
+        raise ValueError(f"Unsupported transcode codec: {codec}") from None
+
+
+def assert_container_supports_codec(container: str, codec: str) -> None:
+    """Reject an explicit container that cannot carry `codec`.
+
+    An explicit Format choice is honoured whenever the pairing is playable,
+    because it is a deliberate decision. When it is not, this fails loudly
+    rather than falling back silently: a silent fallback would ignore what the
+    user asked for, and honouring it would recreate the very bug this map
+    exists to prevent - a file that muxes without complaint and plays as
+    silence or not at all. The pairing is contradictory either way, and the
+    check runs before any encoding starts, so nothing is half-written.
+    """
+    key = str(codec or "").lower()
+    name = str(container or "").lower()
+    if not name:
+        return
+    allowed = CODEC_COMPATIBLE_CONTAINERS.get(key)
+    if allowed is None:
+        raise ValueError(f"Unsupported transcode codec: {codec}")
+    if name not in allowed:
+        raise ValueError(
+            f"Container '{name}' cannot hold {key} audio/video. "
+            f"Choose Format 'Auto' (which uses .{CODEC_TO_CONTAINER[key]}) "
+            f"or one of: {', '.join(sorted(allowed))}."
+        )
+
 
 class TranscodeCancelled(RuntimeError):
     """Raised when the ffmpeg re-encode was cancelled by the user."""

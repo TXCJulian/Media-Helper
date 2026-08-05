@@ -6,7 +6,7 @@ import pytest
 
 from app.downloader import runner
 from app.downloader.store import JobStore
-from app.downloader.transcode import TranscodeCancelled
+from app.downloader.transcode import TranscodeCancelled, build_transcode_command
 
 
 @pytest.fixture
@@ -639,14 +639,14 @@ def _downloaded_events(path):
     ]
 
 
-def test_auto_format_with_codec_falls_back_to_source_extension(
+def test_auto_format_is_never_used_as_a_file_extension(
     store, tmp_path, monkeypatch
 ):
     """C1: the UI's Format control defaults to the literal string "auto" and
     its "Auto" option sends it too. That is a sentinel, not a muxer name: it
     must be treated exactly as the empty string is, or the destination becomes
     `Title.auto`, ffmpeg cannot infer a container, and every re-encode job
-    fails."""
+    fails. With Format=Auto the extension comes from the codec (h264 -> mp4)."""
     out = tmp_path / "downloads"
     out.mkdir()
     source = out / "Video.mp4"
@@ -1193,3 +1193,173 @@ def test_intermediate_rows_still_report_live_progress(store, tmp_path, monkeypat
     assert job.stage == "done", job.error
     assert len(job.items) == 1
     assert job.items[0].path == str(merged)
+
+
+# ---------------------------------------------------------------------------
+# The destination extension must describe the codec, not the source file
+# ---------------------------------------------------------------------------
+
+
+def _reencode_job(store, tmp_path, monkeypatch, source_name, options, recorder=None):
+    """Run a one-item job over `source_name` that re-encodes per `options`.
+
+    Returns (job, out_dir). `recorder` receives the real ffmpeg command line
+    that `transcode_file` would have run, so tests can assert on the output
+    path ffmpeg is actually handed.
+    """
+    out = tmp_path / "downloads"
+    out.mkdir()
+    source = out / source_name
+    source.write_bytes(b"x" * 100)
+
+    _install_fake_ydl(
+        monkeypatch,
+        events=_downloaded_events(source),
+        info={
+            "title": os.path.splitext(source_name)[0],
+            "requested_downloads": [{"filepath": str(source)}],
+        },
+    )
+    monkeypatch.setattr(runner, "resolve_output_root", lambda o: str(out))
+    monkeypatch.setattr(runner, "assert_within_allowed_roots", lambda path: None)
+
+    def recording_transcode(src, dst, codec, cancel_event, on_progress):
+        if recorder is not None:
+            recorder.append(build_transcode_command(src, dst, codec))
+        _fake_transcode(src, dst, codec, cancel_event, on_progress)
+
+    monkeypatch.setattr(runner, "transcode_file", recording_transcode)
+
+    job_id = store.create_job("https://example.com/v", options)
+    runner.run_job(store, store.get_job(job_id), threading.Event())
+    return store.get_job(job_id), out
+
+
+@pytest.mark.parametrize(
+    "media_type,source_name,codec,expected_ext",
+    [
+        # Audio arrives as `.opus` from a plain bestaudio fetch, so every one
+        # of these disagrees with the source extension except opus itself.
+        ("audio", "theme.opus", "mp3", "mp3"),
+        ("audio", "theme.opus", "flac", "flac"),
+        ("audio", "theme.opus", "aac", "m4a"),
+        ("audio", "theme.opus", "opus", "opus"),
+        ("audio", "theme.opus", "wav", "wav"),
+        ("video", "clip.mkv", "h264", "mp4"),
+        ("video", "clip.mkv", "h265", "mp4"),
+        ("video", "clip.mkv", "vp9", "webm"),
+        ("video", "clip.mkv", "av1", "mkv"),
+    ],
+)
+def test_auto_format_reencode_extension_comes_from_the_codec(
+    store, tmp_path, monkeypatch, media_type, source_name, codec, expected_ext
+):
+    """The reported silent-file bug: with Format=Auto the destination
+    extension fell back to the *source* file's, so encoding FLAC over
+    `theme.opus` wrote a FLAC stream into an Ogg container still called
+    `.opus`. ffmpeg picks its muxer from the extension and FLAC-in-Ogg is
+    legal, so nothing errored - but VLC opened it expecting Opus and played
+    silence. The extension has to come from the codec being encoded."""
+    commands = []
+    job, out = _reencode_job(
+        store,
+        tmp_path,
+        monkeypatch,
+        source_name,
+        {"type": media_type, "codec": codec, "format": "auto"},
+        recorder=commands,
+    )
+
+    assert job.stage == "done", job.error
+    # What ffmpeg was actually handed as its output path.
+    ffmpeg_output = commands[0][-1]
+    assert os.path.splitext(ffmpeg_output)[1] == "." + expected_ext
+    # ...and the file that ends up on disk and in the item row agrees with it.
+    assert job.items[0].path.endswith("." + expected_ext)
+    assert os.path.isfile(job.items[0].path)
+    assert len(job.items) == 1
+
+
+def test_flac_reencode_of_an_opus_source_is_not_left_in_an_ogg_container(
+    store, tmp_path, monkeypatch
+):
+    """The exact manual-test case, spelled out: Format=Auto + re-encode FLAC
+    over a `.opus` download must not keep the `.opus` name."""
+    job, out = _reencode_job(
+        store,
+        tmp_path,
+        monkeypatch,
+        "theme.opus",
+        {"type": "audio", "codec": "flac", "format": "auto"},
+    )
+
+    assert job.stage == "done", job.error
+    assert job.items[0].path == str(out / "theme.flac")
+    assert not job.items[0].path.endswith(".opus")
+    assert os.path.isfile(job.items[0].path)
+
+
+def test_explicit_container_is_still_honoured_over_the_codec_default(
+    store, tmp_path, monkeypatch
+):
+    """An explicit Format is a deliberate choice: H.265 defaults to .mp4, but
+    a user who asked for MKV gets MKV."""
+    commands = []
+    job, out = _reencode_job(
+        store,
+        tmp_path,
+        monkeypatch,
+        "clip.webm",
+        {"type": "video", "codec": "h265", "format": "mkv"},
+        recorder=commands,
+    )
+
+    assert job.stage == "done", job.error
+    assert os.path.splitext(commands[0][-1])[1] == ".mkv"
+    assert job.items[0].path == str(out / "clip.mkv")
+
+
+def test_explicit_container_that_cannot_hold_the_codec_fails_loudly(
+    store, tmp_path, monkeypatch
+):
+    """Codec FLAC with container M4A is contradictory. Honouring it would mux
+    another unplayable file, which is the whole bug; so the job fails with a
+    message naming both, before any encoding starts."""
+    commands = []
+    job, out = _reencode_job(
+        store,
+        tmp_path,
+        monkeypatch,
+        "theme.opus",
+        {"type": "audio", "codec": "flac", "format": "m4a"},
+        recorder=commands,
+    )
+
+    assert job.stage == "error"
+    assert "m4a" in job.error and "flac" in job.error
+    assert commands == [], "no encode should have been attempted"
+    # The download is untouched and no half-named output was left behind.
+    assert os.path.isfile(str(out / "theme.opus"))
+    assert sorted(p.name for p in out.iterdir()) == ["theme.opus"]
+
+
+def test_transcode_row_records_the_file_that_is_actually_on_disk(
+    store, tmp_path, monkeypatch
+):
+    """`_finalise_transcode` may divert the destination (unique_path, or the
+    `.transcoded.` name when the source must be kept). Whatever it returns is
+    what the item row has to point at - a row promising a path that is not
+    there is what makes Save download a JSON 404 body."""
+    job, out = _reencode_job(
+        store,
+        tmp_path,
+        monkeypatch,
+        "theme.opus",
+        {"type": "audio", "codec": "flac", "format": "auto"},
+    )
+
+    assert job.stage == "done", job.error
+    for item in job.items:
+        assert item.path and os.path.isfile(item.path)
+    # The scratch name never survives the stage.
+    assert not any(".transcoding." in p.name for p in out.iterdir())
