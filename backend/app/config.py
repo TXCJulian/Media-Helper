@@ -69,7 +69,11 @@ VAAPI_DEVICE = os.getenv("VAAPI_DEVICE", "/dev/dri/renderD128")
 # --- Downloader ---
 DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "/downloads")
 YT_DLP_COOKIES = os.getenv("YT_DLP_COOKIES", "")
-DOWNLOADER_JOBS_DIR = os.getenv("DOWNLOADER_JOBS_DIR", "/data/download-jobs")
+DOWNLOADER_DATA_DIR = os.getenv("DOWNLOADER_DATA_DIR", "/data/downloader")
+DOWNLOADER_DB = os.getenv(
+    "DOWNLOADER_DB", os.path.join(DOWNLOADER_DATA_DIR, "downloader.db")
+)
+DOWNLOADER_WORKERS = int(os.getenv("DOWNLOADER_WORKERS", "3"))
 DOWNLOADER_JOB_TTL = int(os.getenv("DOWNLOADER_JOB_TTL", "604800"))
 
 _VALID_FEATURES = {"episodes", "music", "lyrics", "cutter", "download"}

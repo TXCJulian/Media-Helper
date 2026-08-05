@@ -1,6 +1,6 @@
 services:
   renamer-backend:
-    image: bosscock/media-renamer:backend
+    image: txcjulian/media-helper:backend
     container_name: media-renamer_backend
     command: []
     environment:
@@ -20,10 +20,12 @@ services:
       #- CUTTER_JOBS_DIR=/ #directory where cutter job data is stored, defaults to /data/cutter-jobs (should be a volume mount for persistence and file access)
       #- CUTTER_JOB_TTL=VALID_JOB_TTL_HERE #time in seconds after which cutter jobs are automatically deleted, defaults to 86400 (24 hours)
       #- CUTTER_MAX_DIRECT_REMUX_BYTES=VALID_MAX_DIRECT_REMUX_BYTES_HERE #maximum file size in bytes for direct remuxing in cutter module, defaults to 1073741824 (1 GB)
-      #- DOWNLOADER_JOBS_DIR=/ #directory where download job data is stored, defaults to /data/download-jobs (should be a volume mount for persistence)
-      #- DOWNLOADER_JOB_TTL=604800 #time in seconds after which download jobs are automatically deleted, defaults to 604800 (7 days)
-      #- DOWNLOADS_DIR=/ #root directory where downloaded files are saved, defaults to /downloads
-      #- YT_DLP_COOKIES=/ #path to the global cookies.txt file, defaults to /data/download-jobs/cookies.txt
+      #- DOWNLOADER_DATA_DIR=/ #directory for the job database, cookie file and scratch space, defaults to /data/downloader (should be a volume mount for persistence)
+      #- DOWNLOADER_DB=/ #path to the SQLite job store, defaults to <DOWNLOADER_DATA_DIR>/downloader.db
+      #- DOWNLOADER_WORKERS=3 #number of concurrent download workers, defaults to 3
+      #- DOWNLOADER_JOB_TTL=604800 #time in seconds after which finished download jobs are purged, defaults to 604800 (7 days)
+      #- DOWNLOADS_DIR=/ #fallback root directory for downloaded files, defaults to /downloads
+      #- YT_DLP_COOKIES=/ #path to the global cookies.txt file, defaults to <DOWNLOADER_DATA_DIR>/cookies.txt
       #- HWACCEL=off  # Uncomment to disable GPU-accelerated video encoding
       #- VAAPI_DEVICE=/dev/dri/renderD128  # Uncomment to override VAAPI device path defaults to /dev/dri/renderD128
     # --- GPU passthrough (uncomment ONE section matching your hardware) ---
@@ -43,12 +45,12 @@ services:
       - /path/to/your/media:/media:rw
       - /path/to/your/downloads:/downloads:rw
       - cutter-jobs:/data/cutter-jobs
-      - download-jobs:/data/download-jobs
+      - downloader-data:/data/downloader
     networks:
       - renamer-network
 
   renamer-frontend:
-    image: bosscock/media-renamer:frontend
+    image: txcjulian/media-helper:frontend
     container_name: media-renamer_frontend
     command: []
     depends_on:
@@ -93,5 +95,5 @@ networks:
 
 volumes:
   cutter-jobs:
-  download-jobs:
+  downloader-data:
   transcriber-models:

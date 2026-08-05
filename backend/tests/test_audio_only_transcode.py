@@ -84,12 +84,13 @@ class TestTranscodeAudioTrackFromSource:
         assert "2" in call_args
 
     @patch("app.cutter.probe_file")
+    @patch("app.cutter.os.makedirs")
     @patch("app.cutter.os.path.isfile", return_value=True)
     @patch("app.cutter.os.path.getmtime", return_value=1000.0)
     @patch("app.cutter._begin_job_operation")
     @patch("app.cutter._end_job_operation")
     def test_returns_cached_file_if_exists(
-        self, mock_end, mock_begin, mock_getmtime, mock_isfile, mock_probe,
+        self, mock_end, mock_begin, mock_getmtime, mock_isfile, mock_makedirs, mock_probe,
     ):
         mock_probe.return_value = {
             "duration": 60.0,

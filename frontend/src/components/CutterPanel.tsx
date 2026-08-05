@@ -25,6 +25,7 @@ import {
   createJob,
   postRefresh,
   saveToSource,
+  fetchCutterStatus,
 } from '@/lib/api'
 import {
   getBrowserCompatibilityMessage,
@@ -38,6 +39,7 @@ import type {
   CutterPersistedState,
   CutterSourceState,
   CutterPreviewStatus,
+  CutterStatus,
   DirectoriesResponse,
   AudioTrackConfig,
   ProbeResult,
@@ -151,6 +153,24 @@ export default function CutterPanel({
   const [previewStatus, setPreviewStatus] = useState<CutterPreviewStatus | null>(null)
   const [transcodeMode, setTranscodeMode] = useState<'off' | 'audio_only' | 'full'>('off')
   const [previewAudioStreamIndex, setPreviewAudioStreamIndex] = useState<number | null>(null)
+  const [status, setStatus] = useState<CutterStatus | null>(null)
+  // The ffmpeg build is fixed for the server's lifetime, so this is fetched
+  // once. A failure is not worth an error banner — the footer just stays quiet.
+  const [statusFailed, setStatusFailed] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    fetchCutterStatus()
+      .then((data) => {
+        if (!cancelled) setStatus(data)
+      })
+      .catch(() => {
+        if (!cancelled) setStatusFailed(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const debouncedSearch = useDebounce(search, 500)
   const abortSSERef = useRef<(() => void) | null>(null)
@@ -1064,8 +1084,33 @@ export default function CutterPanel({
         onOpenJob={handleOpenJob}
         showBaseLabel={showBaseLabel}
       />
+
+      <div className="mt-6 flex items-center justify-center">
+        <div className="inline-flex items-center gap-3 rounded-full border border-white/6 bg-white/[0.03] px-5 py-2 text-[0.72rem] text-[var(--text-tertiary)]">
+          <span>ffmpeg {ffmpegVersionLabel(status, statusFailed)}</span>
+          {status?.ffmpeg_available && status.ffmpeg_build && (
+            <>
+              <span className="text-white/10">·</span>
+              <span>
+                {status.ffmpeg_build === 'jellyfin' ? 'Jellyfin build' : 'Standard build'}
+              </span>
+            </>
+          )}
+        </div>
+      </div>
     </PanelLayout>
   )
+}
+
+/**
+ * Text for the ffmpeg footer pill. Every branch says something true: an
+ * unreachable or ffmpeg-less backend is reported, never rendered as a version.
+ */
+function ffmpegVersionLabel(status: CutterStatus | null, failed: boolean): string {
+  if (failed) return 'unavailable'
+  if (!status) return '...'
+  if (!status.ffmpeg_available) return 'not found'
+  return status.ffmpeg_version || 'unknown version'
 }
 
 function formatFileSize(bytes: number): string {

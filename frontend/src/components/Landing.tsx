@@ -39,7 +39,7 @@ const cards: {
     title: 'Downloader',
     desc: 'Download video and audio with yt-dlp.',
     colorClass: 'card-download',
-    iconClass: 'bg-[var(--accent-5-glow)] text-[var(--accent-5)]',
+    iconClass: 'bg-[var(--accent-6-glow)] text-[var(--accent-6)]',
   },
   {
     id: 'lyrics',
@@ -128,7 +128,7 @@ export default function Landing({
                     card.id === 'episodes'
                       ? 'radial-gradient(ellipse at 30% 80%, var(--accent-glow) 0%, transparent 65%)'
                       : card.id === 'download'
-                        ? 'radial-gradient(ellipse at 30% 80%, var(--accent-5-glow) 0%, transparent 65%)'
+                        ? 'radial-gradient(ellipse at 30% 80%, var(--accent-6-glow) 0%, transparent 65%)'
                         : card.id === 'music'
                           ? 'radial-gradient(ellipse at 30% 80%, var(--accent-2-glow) 0%, transparent 65%)'
                           : card.id === 'cutter'

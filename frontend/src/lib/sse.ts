@@ -9,6 +9,39 @@ interface SSECallbacks {
   onClose?: () => void
 }
 
+export interface SSEFrame {
+  type: string
+  data: string
+}
+
+/** Split a buffer into complete SSE frames, returning the unparsed remainder. */
+export function parseSSEChunk(buffer: string): { events: SSEFrame[]; rest: string } {
+  const parts = buffer.split('\n\n')
+  const rest = parts.pop() ?? ''
+  const events: SSEFrame[] = []
+
+  for (const part of parts) {
+    if (!part.trim()) continue
+
+    let type = 'message'
+    const dataLines: string[] = []
+
+    for (const line of part.split('\n')) {
+      if (line.startsWith(':')) continue
+      if (line.startsWith('event: ')) {
+        type = line.slice(7)
+      } else if (line.startsWith('data: ')) {
+        dataLines.push(line.slice(6))
+      }
+    }
+
+    const data = dataLines.join('\n')
+    if (data) events.push({ type, data })
+  }
+
+  return { events, rest }
+}
+
 export function connectSSE(
   path: string,
   params: Record<string, string>,
@@ -69,30 +102,11 @@ export function connectSSE(
 
         buffer += decoder.decode(value, { stream: true })
 
-        // Parse SSE events from buffer
-        const parts = buffer.split('\n\n')
-        // Keep the last incomplete part in buffer
-        buffer = parts.pop() ?? ''
+        const { events, rest } = parseSSEChunk(buffer)
+        buffer = rest
 
-        for (const part of parts) {
-          if (!part.trim()) continue
-
-          let eventType = 'message'
-          const dataLines: string[] = []
-
-          for (const line of part.split('\n')) {
-            if (line.startsWith('event: ')) {
-              eventType = line.slice(7)
-            } else if (line.startsWith('data: ')) {
-              dataLines.push(line.slice(6))
-            }
-          }
-
-          const data = dataLines.join('\n')
-
-          if (!data) continue
-
-          switch (eventType) {
+        for (const { type, data } of events) {
+          switch (type) {
             case 'progress':
               callbacks.onProgress(data)
               break

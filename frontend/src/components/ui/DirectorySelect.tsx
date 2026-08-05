@@ -9,8 +9,10 @@ interface DirectorySelectProps {
   onRefresh: () => void
   isLoading: boolean
   disabled?: boolean
-  color?: 'blue' | 'indigo' | 'rose' | 'emerald' | 'amber'
+  color?: 'blue' | 'indigo' | 'rose' | 'emerald' | 'cyan'
   showBaseLabel?: boolean
+  /** When provided, shows a button that resets the selection back to "no directory". */
+  onClear?: () => void
 }
 
 const focusClasses = {
@@ -20,8 +22,7 @@ const focusClasses = {
   rose: 'border-[var(--accent-3)] shadow-[0_0_0_3px_var(--accent-3-glow),0_0_20px_rgba(244,114,182,0.08)]',
   emerald:
     'border-[var(--accent-4)] shadow-[0_0_0_3px_var(--accent-4-glow),0_0_20px_rgba(52,211,153,0.08)]',
-  amber:
-    'border-[var(--accent-5)] shadow-[0_0_0_3px_var(--accent-5-glow),0_0_20px_rgba(245,158,11,0.08)]',
+  cyan: 'border-[var(--accent-6)] shadow-[0_0_0_3px_var(--accent-6-glow),0_0_20px_rgba(34,211,238,0.08)]',
 }
 
 const selectedTextClasses = {
@@ -29,7 +30,7 @@ const selectedTextClasses = {
   indigo: 'text-[var(--accent-2)]',
   rose: 'text-[var(--accent-3)]',
   emerald: 'text-[var(--accent-4)]',
-  amber: 'text-[var(--accent-5)]',
+  cyan: 'text-[var(--accent-6)]',
 }
 
 export default function DirectorySelect({
@@ -42,6 +43,7 @@ export default function DirectorySelect({
   disabled,
   color = 'blue',
   showBaseLabel,
+  onClear,
 }: DirectorySelectProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [focusedIndex, setFocusedIndex] = useState(-1)
@@ -220,6 +222,17 @@ export default function DirectorySelect({
       >
         {isLoading ? <span className="spinner-sm" /> : '↻'}
       </button>
+      {onClear && (
+        <button
+          type="button"
+          onClick={onClear}
+          disabled={disabled || isLoading || !value}
+          title="Clear directory"
+          className="flex h-[42px] w-[42px] shrink-0 cursor-pointer items-center justify-center rounded-[10px] border border-[var(--border)] bg-[var(--bg-input)] text-base text-[var(--text-secondary)] transition-all duration-200 hover:border-red-500/30 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          ×
+        </button>
+      )}
     </div>
   )
 }

@@ -1,9 +1,10 @@
-from fastapi import FastAPI, Query, Form, Request, HTTPException, File, UploadFile
+from fastapi import FastAPI, Query, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from starlette.types import ASGIApp, Receive, Scope, Send
 from contextlib import asynccontextmanager
+from email.utils import formatdate
 import asyncio
 import json
 import mimetypes
@@ -32,8 +33,6 @@ from app.config import (
     ENABLED_FEATURES,
     ENABLED_FEATURES_SET,
     AUTH_ENABLED,
-    DOWNLOADER_JOBS_DIR,
-    DOWNLOADS_DIR,
 )
 from app.auth import (
     verify_login,
@@ -62,17 +61,14 @@ from app.transcribe_lyrics import (
     VALID_WHISPER_MODELS,
     DEFAULT_WHISPER_MODEL,
 )
-from app.download import (
-    create_job as create_downloader_job,
-    load_job_metadata as load_downloader_job_metadata,
-    list_jobs as list_downloader_jobs,
-    delete_job as delete_downloader_job,
-    cleanup_old_jobs as cleanup_old_downloader_jobs,
-    get_cookie_path as get_downloader_cookie_path,
-    get_status_payload as get_downloader_status_payload,
-    DownloadManager,
+from app.downloader.routes import (
+    router as downloader_router,
+    init_downloader,
+    shutdown_downloader,
+    get_store as get_downloader_store,
 )
 from app.cutter import (
+    get_ffmpeg_info,
     probe_file,
     generate_waveform,
     generate_thumbnail_strip,
@@ -164,11 +160,13 @@ async def _cleanup_cutter_jobs():
 
 
 async def _cleanup_downloader_jobs():
-    """Periodically delete expired download jobs."""
+    """Periodically purge expired download jobs."""
+    from app.config import DOWNLOADER_JOB_TTL
+
     while True:
         await asyncio.sleep(600)  # every 10 minutes
         try:
-            cleanup_old_downloader_jobs()
+            get_downloader_store().purge_expired(DOWNLOADER_JOB_TTL)
         except Exception:
             logger.exception("Error during download job cleanup")
 
@@ -215,29 +213,51 @@ async def lifespan(app: FastAPI):
             threading.Thread(target=_ensure_detected, daemon=True).start()
         cleanup_task = asyncio.create_task(_cleanup_cutter_jobs())
 
-    # Start download cleanup task only if download feature is enabled
+    # Start the downloader worker pool only if the download feature is enabled
+    downloader_started = False
     downloader_cleanup_task = None
     if "download" in ENABLED_FEATURES_SET:
-        for d in (DOWNLOADER_JOBS_DIR, DOWNLOADS_DIR):
-            try:
-                os.makedirs(d, exist_ok=True)
-            except OSError as e:
-                logger.error(
-                    "Cannot create directory %s: %s — download feature may fail", d, e
-                )
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
             logger.error(
-                "Downloader feature requires ffmpeg and ffprobe on PATH; download jobs may fail."
+                "Downloader requires ffmpeg and ffprobe on PATH; jobs will fail."
             )
-        downloader_cleanup_task = asyncio.create_task(_cleanup_downloader_jobs())
+        try:
+            init_downloader()
+        except Exception:
+            # A downloader that cannot reach its data directory is a broken
+            # downloader, not a dead application. An unwritable /downloads bind
+            # mount or an unopenable SQLite file must not stop episodes, music
+            # and cutter from serving — and an exception escaping here would
+            # also skip the shutdown below, orphaning the watchdog observers
+            # and the cutter cleanup task. Broad on purpose: sqlite3.Error is
+            # not an OSError.
+            logger.exception(
+                "Downloader failed to start; the feature will be unavailable"
+            )
+            try:
+                # Release anything the failed init had already built.
+                shutdown_downloader()
+            except Exception:
+                logger.exception("Downloader cleanup after a failed start failed")
+        else:
+            downloader_started = True
+            downloader_cleanup_task = asyncio.create_task(_cleanup_downloader_jobs())
 
-    yield
+    try:
+        yield
+    finally:
+        # Shutdown. In a finally block so worker threads and the SQLite
+        # connection are released even if the application errors out.
+        if cleanup_task is not None:
+            cleanup_task.cancel()
+        if downloader_cleanup_task is not None:
+            downloader_cleanup_task.cancel()
+        if downloader_started:
+            shutdown_downloader()
+        _stop_observers()
 
-    # Shutdown
-    if cleanup_task is not None:
-        cleanup_task.cancel()
-    if downloader_cleanup_task is not None:
-        downloader_cleanup_task.cancel()
+
+def _stop_observers():
     for obs in _observers:
         obs.stop()
     for obs in _observers:
@@ -247,6 +267,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Conditional registration is the gate: with the feature off the downloader
+# routes do not exist at all, which is stronger than a per-route feature check.
+if "download" in ENABLED_FEATURES_SET:
+    app.include_router(downloader_router)
 
 _AUTH_EXEMPT_EXACT = {"/health", "/openapi.json"}
 _AUTH_EXEMPT_PREFIXES = ("/auth/", "/docs", "/redoc")
@@ -804,6 +829,19 @@ _MEDIA_CONTENT_TYPES = {
 }
 
 
+@app.get("/cutter/status")
+def cutter_status() -> dict:
+    """Report the ffmpeg build backing the cutter (mirrors /download/status)."""
+    require_feature("cutter")
+    info = get_ffmpeg_info()
+    return {
+        "ffmpeg_available": info["available"],
+        "ffmpeg_version": info["version"],
+        "ffmpeg_build": info["build"],
+        "ffmpeg_path": info["path"],
+    }
+
+
 @app.get("/cutter/files")
 def list_cutter_files(
     directory: str = Query(..., max_length=500),
@@ -1077,14 +1115,29 @@ def cutter_stream(
             raise HTTPException(status_code=500, detail=str(e))
 
     # Serve raw file with HTTP Range support
-    file_size = os.path.getsize(resolved)
+    stat_result = os.stat(resolved)
+    file_size = stat_result.st_size
     ext = os.path.splitext(resolved)[1].lower()
     content_type = _MEDIA_CONTENT_TYPES.get(
         ext,
         mimetypes.guess_type(resolved)[0] or "application/octet-stream",
     )
 
+    # Without validators a browser cannot reuse a single byte it has already
+    # fetched, so every re-buffer and every scrub re-reads the whole range from
+    # disk -- expensive when the source lives on a network share. A preview file
+    # is immutable for a given (mtime, size), so it is safe to let the browser
+    # cache ranges and revalidate cheaply.
+    etag = f'"{int(stat_result.st_mtime)}-{file_size}"'
+    cache_headers = {
+        "ETag": etag,
+        "Last-Modified": formatdate(stat_result.st_mtime, usegmt=True),
+        "Cache-Control": "private, max-age=3600",
+    }
+
     range_header = request.headers.get("range")
+    if not range_header and request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=cache_headers)
     if range_header:
         # Parse Range: bytes=X-Y
         _range_re = re.match(r"bytes=(\d*)-(\d*)", range_header.strip())
@@ -1122,6 +1175,7 @@ def cutter_stream(
                 "Content-Range": f"bytes {start}-{end}/{file_size}",
                 "Content-Length": str(content_length),
                 "Accept-Ranges": "bytes",
+                **cache_headers,
             },
         )
 
@@ -1140,6 +1194,7 @@ def cutter_stream(
         headers={
             "Content-Length": str(file_size),
             "Accept-Ranges": "bytes",
+            **cache_headers,
         },
     )
 
@@ -1332,20 +1387,15 @@ def cutter_create_job(
     }
 
 
-@app.get("/cutter/jobs")
-def cutter_list_jobs():
-    """List all active jobs."""
-    require_feature("cutter")
-    return {"jobs": list_jobs()}
+def _add_source_file_id(meta: dict) -> dict:
+    """Attach the signed file id the player needs to stream a job's source.
 
-
-@app.get("/cutter/jobs/{job_id}")
-def cutter_get_job(job_id: str):
-    """Get single job details."""
-    require_feature("cutter")
-    meta = load_job_metadata(job_id)
-    if not meta:
-        raise HTTPException(status_code=404, detail="Job not found")
+    Both the list and the single-job endpoint must do this: the panel reopens
+    a job straight from the list, and without this id it builds an empty
+    stream URL, so the browser receives a 404 body instead of media and
+    reports a format error for every file regardless of codec.
+    """
+    job_id = meta.get("job_id", "")
     if meta.get("source") == "server" and meta.get("original_path"):
         base_label = meta.get("base") or ""
         if not base_label:
@@ -1375,6 +1425,24 @@ def cutter_get_job(job_id: str):
             "upload", meta["original_name"], job_id=job_id, base=""
         )
     return meta
+
+
+@app.get("/cutter/jobs")
+def cutter_list_jobs():
+    """List all active jobs."""
+    require_feature("cutter")
+    return {"jobs": [_add_source_file_id(job) for job in list_jobs()]}
+
+
+@app.get("/cutter/jobs/{job_id}")
+def cutter_get_job(job_id: str):
+    """Get single job details."""
+    require_feature("cutter")
+    meta = load_job_metadata(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Job not found")
+    meta.setdefault("job_id", job_id)
+    return _add_source_file_id(meta)
 
 
 @app.delete("/cutter/jobs/{job_id}")
@@ -1766,248 +1834,3 @@ def cutter_cut(
             "X-Accel-Buffering": "no",
         },
     )
-
-
-# ── Downloader Endpoints ───────────────────────────────────────────────
-
-
-@app.get("/download/status")
-def download_status():
-    require_feature("download")
-    return get_downloader_status_payload()
-
-
-_DOWNLOAD_JOB_ID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-)
-_DOWNLOAD_INTERNAL_FIELDS = {"output_path", "options", "schema_version"}
-
-
-def _validate_download_job_id(job_id: str) -> None:
-    if not _DOWNLOAD_JOB_ID_RE.match(job_id):
-        raise HTTPException(status_code=422, detail=f"Invalid job_id format: {job_id}")
-
-
-def _sanitize_job_meta(meta: dict) -> dict:
-    return {k: v for k, v in meta.items() if k not in _DOWNLOAD_INTERNAL_FIELDS}
-
-
-@app.get("/download/jobs")
-def download_list_jobs_route():
-    require_feature("download")
-    return {"jobs": [_sanitize_job_meta(j) for j in list_downloader_jobs()]}
-
-
-@app.get("/download/jobs/{job_id}")
-def download_get_job_route(job_id: str):
-    require_feature("download")
-    _validate_download_job_id(job_id)
-    meta = load_downloader_job_metadata(job_id)
-    if not meta:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return _sanitize_job_meta(meta)
-
-
-@app.get("/download/jobs/{job_id}/file")
-def download_file_route(job_id: str):
-    """Download the output file for a completed download job."""
-    require_feature("download")
-    _validate_download_job_id(job_id)
-    from fastapi.responses import FileResponse
-
-    meta = load_downloader_job_metadata(job_id)
-    if not meta:
-        raise HTTPException(status_code=404, detail="Job not found")
-    if meta.get("status") != "done":
-        raise HTTPException(status_code=400, detail="Download not complete")
-    output_path = meta.get("output_path")
-    if not output_path:
-        raise HTTPException(status_code=404, detail="Output file not found")
-
-    resolved = os.path.realpath(output_path)
-    allowed_roots = [os.path.realpath(DOWNLOADS_DIR)] + [
-        os.path.realpath(p) for p in BASE_PATHS
-    ]
-    if not any(
-        resolved.startswith(root + os.sep) or resolved == root for root in allowed_roots
-    ):
-        raise HTTPException(status_code=403, detail="Output file path not allowed")
-
-    if not os.path.isfile(resolved):
-        raise HTTPException(status_code=404, detail="Output file not found")
-    return FileResponse(
-        resolved,
-        filename=os.path.basename(resolved),
-        media_type="application/octet-stream",
-    )
-
-
-@app.delete("/download/jobs/{job_id}")
-def download_delete_job_route(job_id: str):
-    require_feature("download")
-    _validate_download_job_id(job_id)
-    try:
-        delete_downloader_job(job_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    return {"status": "deleted"}
-
-
-_download_semaphore = threading.Semaphore(5)
-
-
-def _download_sse_response(job_id: str, url: str, options: dict) -> StreamingResponse:
-    """Start a download job in a background thread and return an SSE stream."""
-    if not _download_semaphore.acquire(blocking=False):
-        raise HTTPException(
-            status_code=429, detail="Too many concurrent downloads, try again later"
-        )
-    msg_queue: queue.Queue = queue.Queue(maxsize=100)
-
-    def run_download():
-        try:
-            manager = DownloadManager(job_id, url, options)
-            manager.run(msg_queue)
-        except Exception as e:
-            logger.exception("Download thread failed")
-            meta = load_downloader_job_metadata(job_id) or {}
-            error_payload = {
-                "job_id": job_id,
-                "url": url,
-                "status": "error",
-                "progress": 0.0,
-                "speed": None,
-                "eta": None,
-                "filename": meta.get("filename"),
-                "error": str(e),
-                "created_at": meta.get("created_at"),
-                "size": None,
-            }
-            try:
-                msg_queue.put_nowait(("error_msg", error_payload))
-                msg_queue.put_nowait(("done", error_payload))
-            except Exception:
-                pass  # Queue full / client gone — state is persisted in metadata
-        finally:
-            _download_semaphore.release()
-
-    thread = threading.Thread(target=run_download, daemon=True)
-    thread.start()
-
-    def event_generator():
-        try:
-            while True:
-                try:
-                    event_type, payload = msg_queue.get(timeout=30)
-                    yield f"event: {event_type}\ndata: {json.dumps(payload)}\n\n"
-                    if event_type == "done":
-                        break
-                except queue.Empty:
-                    yield 'event: progress\ndata: {"status": "heartbeat"}\n\n'
-        finally:
-            pass
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-@app.post("/download/start")
-def download_start(
-    url: str = Form(..., max_length=1000),
-    options_json: str = Form("{}", alias="options", max_length=5000),
-):
-    require_feature("download")
-    from urllib.parse import urlparse
-
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(
-            status_code=422, detail="Only http and https URLs are allowed"
-        )
-
-    try:
-        options = json.loads(options_json)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=422, detail="Invalid options JSON")
-    if not isinstance(options, dict):
-        raise HTTPException(status_code=422, detail="Options must be a JSON object")
-
-    job_id = create_downloader_job(url, options)
-
-    auto_start = str(options.get("auto_start", True)).lower() not in (
-        "false",
-        "0",
-        "no",
-    )
-    if not auto_start:
-        meta = load_downloader_job_metadata(job_id)
-        return _sanitize_job_meta({"job_id": job_id, **(meta or {})})
-
-    return _download_sse_response(job_id, url, options)
-
-
-@app.post("/download/jobs/{job_id}/start")
-def download_start_job(job_id: str):
-    """Start a previously queued download job."""
-    require_feature("download")
-    _validate_download_job_id(job_id)
-    meta = load_downloader_job_metadata(job_id)
-    if not meta:
-        raise HTTPException(status_code=404, detail="Job not found")
-    if meta.get("status") != "queued":
-        raise HTTPException(status_code=409, detail="Job is not in queued state")
-
-    url = meta.get("url", "")
-    options = meta.get("options", {})
-    return _download_sse_response(job_id, url, options)
-
-
-@app.post("/download/cookies")
-async def download_upload_cookies(file: UploadFile = File(...)):
-    require_feature("download")
-    cookie_path = get_downloader_cookie_path()
-
-    max_size = 1024 * 1024  # 1 MB
-    content = await file.read(max_size + 1)
-    if not content:
-        raise HTTPException(status_code=400, detail="No cookie data received")
-    if len(content) > max_size:
-        raise HTTPException(status_code=400, detail="Cookie file too large (max 1 MB)")
-
-    dir_name = os.path.dirname(cookie_path)
-    if dir_name:
-        os.makedirs(dir_name, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    fd = os.open(cookie_path, flags, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(content)
-    try:
-        os.chmod(cookie_path, 0o600)
-    except OSError:
-        pass
-    return {"status": "ok"}
-
-
-@app.delete("/download/cookies")
-def download_delete_cookies():
-    require_feature("download")
-    cookie_path = get_downloader_cookie_path()
-    if os.path.isfile(cookie_path):
-        try:
-            os.remove(cookie_path)
-        except OSError as e:
-            raise HTTPException(
-                status_code=500, detail=f"Failed to delete cookies: {e}"
-            )
-    return {"status": "ok"}

@@ -159,6 +159,67 @@ def _safe_getmtime(filepath: str) -> float:
         raise RuntimeError(f"Cannot access file {filepath}: {e}") from e
 
 
+_FFMPEG_VERSION_RE = re.compile(r"^ffmpeg version (\S+)", re.IGNORECASE)
+
+
+def _parse_ffmpeg_version(banner: str) -> str:
+    """Pull the version token out of the first line of ``ffmpeg -version``.
+
+    Jellyfin's build reports e.g. ``ffmpeg version 7.1.1-Jellyfin`` while a
+    distro build reports ``ffmpeg version 5.1.6-0+deb12u1``.
+    """
+    for line in banner.splitlines():
+        match = _FFMPEG_VERSION_RE.match(line.strip())
+        if match:
+            return match.group(1)
+    return ""
+
+
+@functools.lru_cache(maxsize=1)
+def get_ffmpeg_info() -> dict:
+    """Describe the ffmpeg binary on PATH: version and which build it is.
+
+    Cached for the process lifetime — the binary cannot change under a running
+    container, and shelling out per request would be wasteful. Never raises:
+    a missing or unrunnable ffmpeg is reported as ``available: False``.
+
+    The build is identified from the version banner (Jellyfin stamps
+    ``-Jellyfin`` into its version string) with the resolved binary path as a
+    second signal, because the image symlinks
+    ``/usr/lib/jellyfin-ffmpeg/ffmpeg`` onto PATH on amd64 only and falls back
+    to the distro package on other architectures.
+    """
+    path = shutil.which("ffmpeg")
+    if path is None:
+        return {"available": False, "version": "", "build": "", "path": ""}
+
+    try:
+        resolved = os.path.realpath(path)
+    except OSError:
+        resolved = path
+
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        banner = result.stdout or result.stderr or ""
+    except (OSError, subprocess.SubprocessError):
+        logger.warning("Could not run 'ffmpeg -version'", exc_info=True)
+        banner = ""
+
+    version = _parse_ffmpeg_version(banner)
+    is_jellyfin = "jellyfin" in version.lower() or "jellyfin-ffmpeg" in resolved.lower()
+    return {
+        "available": True,
+        "version": version,
+        "build": "jellyfin" if is_jellyfin else "standard",
+        "path": resolved,
+    }
+
+
 def _extract_window(filepath: str, position: float, window_secs: float = 5.0) -> bytes:
     """Extract a short audio window from a file using fast seek."""
     cmd = [

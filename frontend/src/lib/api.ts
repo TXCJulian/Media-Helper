@@ -1,5 +1,5 @@
-import { connectSSE } from '@/lib/sse'
 import { API_BASE, assertAuthenticated } from '@/lib/http'
+import { openEventStream } from '@/lib/eventStream'
 
 export { API_BASE, assertAuthenticated }
 
@@ -20,6 +20,7 @@ export async function fetchJson<T>(
   path: string,
   params?: Record<string, string>,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  init?: RequestInit,
 ): Promise<T> {
   const url = new URL(path, API_BASE)
   if (params) {
@@ -27,7 +28,11 @@ export async function fetchJson<T>(
       if (v) url.searchParams.set(k, v)
     }
   }
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), credentials: 'include' })
+  const res = await fetch(url.toString(), {
+    signal: AbortSignal.timeout(timeoutMs),
+    credentials: 'include',
+    ...init,
+  })
   assertAuthenticated(res)
   if (!res.ok) {
     throw new Error(await extractErrorMessage(res))
@@ -306,6 +311,10 @@ export async function fetchAuthStatus(): Promise<{
   return fetchJson('/auth/status')
 }
 
+export async function fetchCutterStatus(): Promise<import('@/types').CutterStatus> {
+  return fetchJson('/cutter/status')
+}
+
 export async function fetchDownloaderStatus(): Promise<import('@/types').DownloaderStatus> {
   return fetchJson('/download/status')
 }
@@ -314,45 +323,48 @@ export async function fetchDownloadJobs(): Promise<{ jobs: import('@/types').Dow
   return fetchJson('/download/jobs')
 }
 
-export function postDownload(
-  form: import('@/types').DownloadForm,
-  callbacks: {
-    onProgress: (data: string) => void
-    onError: (data: string) => void
-    onDone: (data: string) => void
-  },
-): () => void {
-  const { url, ...options } = form
-  const params: Record<string, string> = {
-    url,
-    options: JSON.stringify(options),
-  }
-  return connectSSE('/download/start', params, callbacks)
-}
-
-export async function createDownloadJob(
-  form: import('@/types').DownloadForm,
-): Promise<import('@/types').DownloadJob> {
-  const { url, ...options } = form
-  return postForm('/download/start', {
-    url,
-    options: JSON.stringify({ ...options, auto_start: false }),
+export async function createDownloads(
+  urls: string[],
+  options: Omit<import('@/types').DownloadForm, 'url'> | Record<string, unknown>,
+): Promise<{ job_ids: string[] }> {
+  return fetchJson('/download', undefined, DEFAULT_TIMEOUT_MS, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ urls, options }),
   })
 }
 
-export function startDownloadJob(
-  jobId: string,
-  callbacks: {
-    onProgress: (data: string) => void
-    onError: (data: string) => void
-    onDone: (data: string) => void
-  },
-): () => void {
-  return connectSSE(`/download/jobs/${encodeURIComponent(jobId)}/start`, {}, callbacks)
+export async function startDownloadJob(jobId: string): Promise<{ status: string }> {
+  return fetchJson(
+    `/download/jobs/${encodeURIComponent(jobId)}/start`,
+    undefined,
+    DEFAULT_TIMEOUT_MS,
+    {
+      method: 'POST',
+    },
+  )
 }
 
-export function getDownloaderFileUrl(jobId: string): string {
-  return `/download/jobs/${encodeURIComponent(jobId)}/file`
+export async function cancelDownloadJob(jobId: string): Promise<{ status: string }> {
+  return fetchJson(
+    `/download/jobs/${encodeURIComponent(jobId)}/cancel`,
+    undefined,
+    DEFAULT_TIMEOUT_MS,
+    {
+      method: 'POST',
+    },
+  )
+}
+
+export function openDownloadStream(
+  onEvent: (data: string) => void,
+  onStateChange?: (connected: boolean) => void,
+): () => void {
+  return openEventStream('/download/events', onEvent, { onStateChange })
+}
+
+export function getDownloadItemFileUrl(jobId: string, index: number): string {
+  return `/download/jobs/${encodeURIComponent(jobId)}/items/${index}/file`
 }
 
 export async function deleteDownloadJob(jobId: string): Promise<void> {

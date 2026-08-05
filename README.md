@@ -245,10 +245,12 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `CUTTER_JOBS_DIR` | Directory for cutter job data | `/data/cutter-jobs` |
 | `CUTTER_JOB_TTL` | Job expiry in seconds | `86400` |
 | `CUTTER_MAX_DIRECT_REMUX_BYTES` | Max file size for direct remux preview | `1073741824` (1 GB) |
-| `DOWNLOADS_DIR` | Root directory for downloaded files | `/downloads` |
-| `DOWNLOADER_JOBS_DIR` | Directory for download job metadata | `/data/download-jobs` |
-| `DOWNLOADER_JOB_TTL` | Download job expiry in seconds | `604800` (7 days) |
-| `YT_DLP_COOKIES` | Path to cookies.txt for yt-dlp (optional) | `$DOWNLOADER_JOBS_DIR/cookies.txt` |
+| `DOWNLOADS_DIR` | Fallback download output root (used when no base/output directory is chosen) | `/downloads` |
+| `DOWNLOADER_DATA_DIR` | Directory for the downloader's SQLite job store, cookie file and scratch space | `/data/downloader` |
+| `DOWNLOADER_DB` | Path to the SQLite job store | `$DOWNLOADER_DATA_DIR/downloader.db` |
+| `DOWNLOADER_WORKERS` | Number of concurrent download workers | `3` |
+| `DOWNLOADER_JOB_TTL` | Download job history retention in seconds | `604800` (7 days) |
+| `YT_DLP_COOKIES` | Path to cookies.txt for yt-dlp (optional) | `$DOWNLOADER_DATA_DIR/cookies.txt` |
 | `HWACCEL` | Cutter hardware acceleration mode (`off` disables; otherwise auto-detect) | auto-detect |
 | `VAAPI_DEVICE` | VAAPI render node path (used for VAAPI backend) | `/dev/dri/renderD128` |
 | `AUTH_USERNAME` | Login username (optional - auth disabled if unset) | - |
@@ -360,6 +362,24 @@ The application expects the following structure in your media directory:
 | `POST` | `/cutter/jobs/{job_id}/save/{filename}` | Save output back to source directory |
 | `POST` | `/cutter/cut` | Cut a media file (SSE stream, form: `path`, `source`, `job_id`, `in_point`, `out_point`, `codec`, `audio_codec`, `container`, `stream_copy`, `keep_quality`, `audio_tracks`) |
 
+### Downloader Endpoints
+
+| Method | Endpoint | Description |
+| ------ | -------- | ----------- |
+| `GET` | `/download/status` | yt-dlp version, cookie presence, downloads dir, queue depth, worker count |
+| `POST` | `/download` | Create jobs (JSON body: `urls: string[]`, `options: object`) → `{job_ids: string[]}`. One request per bulk submission - all URLs become jobs, none is rejected for exceeding the worker cap |
+| `GET` | `/download/jobs` | List all jobs |
+| `GET` | `/download/jobs/{job_id}` | Get job status/progress, including per-item detail |
+| `POST` | `/download/jobs/{job_id}/start` | Start a queued job that wasn't auto-started |
+| `POST` | `/download/jobs/{job_id}/cancel` | Cancel an active job (download or re-encode stage) |
+| `DELETE` | `/download/jobs/{job_id}` | Cancel (if active) and delete a job |
+| `GET` | `/download/jobs/{job_id}/items/{index}/file` | Download a completed item's output file |
+| `GET` | `/download/events` | SSE stream: a full snapshot on connect, then incremental job updates |
+| `POST` | `/download/cookies` | Upload a `cookies.txt` for yt-dlp (max 1 MB) |
+| `DELETE` | `/download/cookies` | Remove the stored cookie file |
+
+Jobs beyond `DOWNLOADER_WORKERS` wait in the queue rather than being rejected. A job holds one or more output items, so playlist URLs report progress per item. When a codec is explicitly selected, re-encoding runs as a separate, cancellable stage after the download completes. Queued and in-progress jobs are persisted to SQLite and resume automatically after a backend restart.
+
 ## Deployment
 
 ### Local Development
@@ -396,20 +416,20 @@ docker compose -f deploy.yml down
 
 ```bash
 # Build and tag
-docker build -t bosscock/media-renamer:backend ./backend
-docker build -t bosscock/media-renamer:frontend ./frontend
+docker build -t txcjulian/media-helper:backend ./backend
+docker build -t txcjulian/media-helper:frontend ./frontend
 
 # Push
-docker push bosscock/media-renamer:backend
-docker push bosscock/media-renamer:frontend
+docker push txcjulian/media-helper:backend
+docker push txcjulian/media-helper:frontend
 ```
 
 For multi-arch builds (amd64 + arm64):
 
 ```bash
 docker buildx create --use
-docker buildx build --platform linux/amd64,linux/arm64 -t bosscock/media-renamer:backend ./backend --push
-docker buildx build --platform linux/amd64,linux/arm64 -t bosscock/media-renamer:frontend ./frontend --push
+docker buildx build --platform linux/amd64,linux/arm64 -t txcjulian/media-helper:backend ./backend --push
+docker buildx build --platform linux/amd64,linux/arm64 -t txcjulian/media-helper:frontend ./frontend --push
 ```
 
 ## Development
@@ -428,7 +448,15 @@ Media-Helper/
 │   │   ├── cutter.py                   # Media cutting (ffmpeg, jobs, preview)
 │   │   ├── hwaccel.py                  # GPU encoder detection + ffmpeg arg mapping
 │   │   ├── get_dirs.py                 # Directory listing (cached)
-│   │   └── fs_utils.py                 # Filesystem utilities (fsync)
+│   │   ├── fs_utils.py                 # Filesystem utilities (fsync)
+│   │   └── downloader/                 # Queue-backed yt-dlp downloads
+│   │       ├── routes.py               # FastAPI routes
+│   │       ├── store.py                # SQLite-backed job store
+│   │       ├── queue.py                # Worker pool + startup recovery
+│   │       ├── runner.py               # Per-job download/transcode orchestration
+│   │       ├── ydl.py                  # yt-dlp option building
+│   │       ├── transcode.py            # Cancellable ffmpeg re-encode stage
+│   │       └── events.py               # SSE event broadcaster
 │   ├── tests/                          # pytest test suite (incl. hwaccel + audio-only transcode)
 │   ├── Dockerfile
 │   └── requirements.txt
@@ -441,6 +469,10 @@ Media-Helper/
 │   │   │   ├── MusicPanel.tsx          # Music renaming panel
 │   │   │   ├── LyricsPanel.tsx         # Lyrics transcription panel
 │   │   │   ├── CutterPanel.tsx         # Media cutting panel
+│   │   │   ├── DownloaderPanel.tsx     # Downloader panel
+│   │   │   ├── downloader/             # Downloader sub-components
+│   │   │   │   ├── DownloadOptions.tsx
+│   │   │   │   └── DownloadJobCard.tsx
 │   │   │   ├── cutter/                 # Cutter sub-components
 │   │   │   │   ├── MediaPlayer.tsx
 │   │   │   │   ├── TrimControls.tsx

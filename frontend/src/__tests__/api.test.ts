@@ -8,15 +8,8 @@ vi.mock('@/lib/sse', () => ({
   connectSSE: mockConnectSSE,
 }))
 
-const {
-  fetchJson,
-  fetchMediaDirectories,
-  fetchPreviewStatus,
-  postCookies,
-  postDownload,
-  postForm,
-  postRefresh,
-} = await import('@/lib/api')
+const { fetchJson, fetchMediaDirectories, fetchPreviewStatus, postCookies, postForm, postRefresh } =
+  await import('@/lib/api')
 
 function jsonResponse(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -130,42 +123,6 @@ describe('fetchPreviewStatus', () => {
 })
 
 describe('downloader APIs', () => {
-  it('serializes options as JSON for download start', () => {
-    const callbacks = {
-      onProgress: vi.fn(),
-      onError: vi.fn(),
-      onDone: vi.fn(),
-    }
-    const form = {
-      url: 'https://example.com/watch?v=demo',
-      type: 'video' as const,
-      codec: 'h264',
-      format: 'mp4',
-      quality: '720p',
-      output_dir: 'Movies',
-      base: 'media',
-      auto_start: true,
-      sub_folder: 'Clips',
-      custom_prefix: 'YT-',
-      custom_filename: '',
-      item_limit: 2,
-      split_chapters: true,
-    }
-
-    const { url, ...options } = form
-    const abort = postDownload(form, callbacks)
-
-    expect(mockConnectSSE).toHaveBeenCalledWith(
-      '/download/start',
-      {
-        url,
-        options: JSON.stringify(options),
-      },
-      callbacks,
-    )
-    expect(typeof abort).toBe('function')
-  })
-
   it('uploads cookies as multipart form data', async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ status: 'ok' }))
     const file = new File(['cookie-data'], 'cookies.txt', { type: 'text/plain' })
