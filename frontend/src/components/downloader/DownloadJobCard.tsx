@@ -1,3 +1,6 @@
+import IconButton from '@/components/ui/IconButton'
+import StatusPill from '@/components/ui/StatusPill'
+import { PlayIcon, RetryIcon, StopIcon, TrashIcon } from '@/components/ui/icons'
 import { getDownloadItemFileUrl } from '@/lib/api'
 import type { DownloadJob, DownloadStage } from '@/types'
 
@@ -11,6 +14,17 @@ const STAGE_LABELS: Record<DownloadStage, string> = {
 }
 
 const PIPELINE: DownloadStage[] = ['downloading', 'transcoding', 'done']
+
+/**
+ * Colours for the terminal-state pills, borrowed from the cutter's job tags.
+ * Only outcomes get a pill; the in-progress stages stay a plain strip because
+ * the strip conveys pipeline position, which a single pill cannot.
+ */
+const TERMINAL_PILL: Partial<Record<DownloadStage, string>> = {
+  done: 'bg-cyan-400/15 text-cyan-300',
+  cancelled: 'bg-white/10 text-white/50',
+  error: 'bg-red-400/15 text-red-300',
+}
 
 /** Last path segment, used as the display filename for a finished item's download link. */
 function basename(path: string | null): string | null {
@@ -82,67 +96,66 @@ export default function DownloadJobCard({ job, onCancel, onDelete, onStart, onRe
           <p className="truncate text-[0.88rem] font-medium text-[var(--text-primary)]">
             {job.items[0]?.title || job.url}
           </p>
-          <div className="mt-1 flex items-center gap-2">
-            {stages.map((stage) => (
-              <span
-                key={stage}
-                className={`text-[0.68rem] uppercase tracking-[0.1em] ${
-                  job.stage === stage
-                    ? 'text-[var(--accent-6)]'
-                    : reached(stage)
-                      ? 'text-[var(--text-secondary)]'
-                      : 'text-[var(--text-tertiary)]/40'
-                }`}
-              >
-                {STAGE_LABELS[stage]}
-              </span>
-            ))}
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            {stages.map((stage) =>
+              // 'Done' is the one pipeline entry that is also an outcome, so
+              // once it is reached it becomes the pill instead of being
+              // repeated as one.
+              stage === 'done' && job.stage === 'done' ? (
+                <StatusPill key={stage} className={TERMINAL_PILL.done}>
+                  {STAGE_LABELS.done}
+                </StatusPill>
+              ) : (
+                <span
+                  key={stage}
+                  className={`text-[0.68rem] uppercase tracking-[0.1em] ${
+                    job.stage === stage
+                      ? 'text-[var(--accent-6)]'
+                      : reached(stage)
+                        ? 'text-[var(--text-secondary)]'
+                        : 'text-[var(--text-tertiary)]/40'
+                  }`}
+                >
+                  {STAGE_LABELS[stage]}
+                </span>
+              ),
+            )}
             {!isActive && job.stage !== 'done' && (
-              <span
-                className={`text-[0.68rem] uppercase tracking-[0.1em] ${
-                  job.stage === 'error' ? 'text-red-400' : 'text-[var(--text-secondary)]'
-                }`}
-              >
+              <StatusPill className={TERMINAL_PILL[job.stage]} title={job.error ?? undefined}>
                 {STAGE_LABELS[job.stage]}
-              </span>
+              </StatusPill>
             )}
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1">
           {job.stage === 'queued' && (
-            <button
-              type="button"
+            <IconButton
+              label="Start download"
               onClick={() => onStart(job.job_id)}
-              className="rounded-lg border border-[var(--accent-6)]/30 px-3 py-1 text-[0.72rem] font-medium text-[var(--accent-6)] transition-all hover:bg-[var(--accent-6)]/10"
+              tone="accent"
+              accentClass="hover:bg-cyan-500/10 hover:text-[var(--accent-6)]"
             >
-              Start
-            </button>
+              <PlayIcon size={14} />
+            </IconButton>
           )}
           {isActive && (
-            <button
-              type="button"
-              onClick={() => onCancel(job.job_id)}
-              className="rounded-lg border border-white/8 px-3 py-1 text-[0.72rem] text-[var(--text-secondary)] transition-all hover:border-red-500/30 hover:text-red-400"
-            >
-              Cancel
-            </button>
+            <IconButton label="Cancel download" onClick={() => onCancel(job.job_id)} tone="danger">
+              <StopIcon />
+            </IconButton>
           )}
           {(job.stage === 'error' || job.stage === 'cancelled') && (
-            <button
-              type="button"
+            <IconButton
+              label="Retry download"
               onClick={() => onRetry(job.url)}
-              className="rounded-lg border border-[var(--accent-6)]/30 px-3 py-1 text-[0.72rem] text-[var(--accent-6)] transition-all hover:bg-[var(--accent-6)]/10"
+              tone="accent"
+              accentClass="hover:bg-cyan-500/10 hover:text-[var(--accent-6)]"
             >
-              Retry
-            </button>
+              <RetryIcon />
+            </IconButton>
           )}
-          <button
-            type="button"
-            onClick={() => onDelete(job.job_id)}
-            className="rounded-lg border border-white/8 px-3 py-1 text-[0.72rem] text-[var(--text-secondary)] transition-all hover:border-red-500/30 hover:text-red-400"
-          >
-            Delete
-          </button>
+          <IconButton label="Delete job" onClick={() => onDelete(job.job_id)} tone="danger">
+            <TrashIcon />
+          </IconButton>
         </div>
       </div>
 

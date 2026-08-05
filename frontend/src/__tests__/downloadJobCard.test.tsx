@@ -56,7 +56,7 @@ describe('DownloadJobCard stage strip', () => {
     expect(screen.getByText('Transcoding')).toBeTruthy()
   })
 
-  it('renders the trailing FAILED label in red for an error job', () => {
+  it('renders the trailing FAILED state as a red status pill', () => {
     render(
       <DownloadJobCard
         job={baseJob({
@@ -70,10 +70,13 @@ describe('DownloadJobCard stage strip', () => {
       />,
     )
     const failedLabel = screen.getByText('Failed')
-    expect(failedLabel.className).toContain('text-red-400')
+    // A pill, not the old bare text strip: rounded chip + red tag colours.
+    expect(failedLabel.className).toContain('rounded')
+    expect(failedLabel.className).toContain('bg-red-400/15')
+    expect(failedLabel.className).toContain('text-red-300')
   })
 
-  it('renders the trailing CANCELLED label distinctly from the error red', () => {
+  it('renders the trailing CANCELLED pill distinctly from the error red', () => {
     render(
       <DownloadJobCard
         job={baseJob({ stage: 'cancelled' })}
@@ -84,7 +87,36 @@ describe('DownloadJobCard stage strip', () => {
       />,
     )
     const cancelledLabel = screen.getByText('Cancelled')
-    expect(cancelledLabel.className).not.toContain('text-red-400')
+    expect(cancelledLabel.className).toContain('rounded')
+    expect(cancelledLabel.className).not.toContain('text-red')
+  })
+
+  it('renders the completed state as a pill in the downloader accent', () => {
+    render(
+      <DownloadJobCard
+        job={baseJob({
+          stage: 'done',
+          items: [
+            {
+              index: 0,
+              title: 'A',
+              path: '/a',
+              size: 1024,
+              progress: 100,
+              stage: 'done',
+              error: null,
+            },
+          ],
+        })}
+        onCancel={noop}
+        onDelete={noop}
+        onStart={noop}
+        onRetry={noop}
+      />,
+    )
+    const doneLabel = screen.getByText('Done')
+    expect(doneLabel.className).toContain('rounded')
+    expect(doneLabel.className).toContain('text-cyan-300')
   })
 
   it('keeps the pipeline stage strip legible (not dimmed tertiary) for a failed job', () => {
@@ -125,6 +157,64 @@ describe('DownloadJobCard stage strip', () => {
       />,
     )
     expect(screen.getAllByText('Done')).toHaveLength(1)
+  })
+})
+
+describe('DownloadJobCard actions', () => {
+  it('exposes every action as a labelled icon button', () => {
+    const onCancel = vi.fn()
+    const onDelete = vi.fn()
+    const onStart = vi.fn()
+    render(
+      <DownloadJobCard
+        job={baseJob({ stage: 'queued' })}
+        onCancel={onCancel}
+        onDelete={onDelete}
+        onStart={onStart}
+        onRetry={noop}
+      />,
+    )
+    const start = screen.getByRole('button', { name: 'Start download' })
+    const del = screen.getByRole('button', { name: 'Delete job' })
+    // Icon-only controls must still carry a tooltip, not just a11y metadata.
+    expect(start.getAttribute('title')).toBe('Start download')
+    expect(del.getAttribute('title')).toBe('Delete job')
+    expect(start.textContent).toBe('')
+
+    start.click()
+    expect(onStart).toHaveBeenCalledWith('job-1')
+    del.click()
+    expect(onDelete).toHaveBeenCalledWith('job-1')
+  })
+
+  it('offers cancel while running and retry once failed', () => {
+    const onCancel = vi.fn()
+    const onRetry = vi.fn()
+    const { unmount } = render(
+      <DownloadJobCard
+        job={baseJob({ stage: 'downloading' })}
+        onCancel={onCancel}
+        onDelete={noop}
+        onStart={noop}
+        onRetry={onRetry}
+      />,
+    )
+    screen.getByRole('button', { name: 'Cancel download' }).click()
+    expect(onCancel).toHaveBeenCalledWith('job-1')
+    expect(screen.queryByRole('button', { name: 'Retry download' })).toBeNull()
+    unmount()
+
+    render(
+      <DownloadJobCard
+        job={baseJob({ stage: 'error', error: 'boom' })}
+        onCancel={onCancel}
+        onDelete={noop}
+        onStart={noop}
+        onRetry={onRetry}
+      />,
+    )
+    screen.getByRole('button', { name: 'Retry download' }).click()
+    expect(onRetry).toHaveBeenCalledWith('https://example.com/v')
   })
 })
 
