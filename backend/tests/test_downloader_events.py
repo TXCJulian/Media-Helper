@@ -4,11 +4,11 @@ from app.downloader.events import EventBroadcaster, job_to_payload
 from app.downloader.store import Item, Job
 
 
-def _job() -> Job:
+def _job(options: dict | None = None) -> Job:
     return Job(
         id="abc",
         url="https://example.com/v",
-        options={"type": "video"},
+        options=options if options is not None else {"type": "video"},
         stage="downloading",
         error=None,
         created_at="2026-08-04 10:00:00",
@@ -22,6 +22,18 @@ def test_job_to_payload_shape():
     assert payload["job_id"] == "abc"
     assert payload["stage"] == "downloading"
     assert payload["items"][0]["progress"] == 12.5
+    assert "options" not in payload
+
+
+def test_job_to_payload_has_transcode_true_for_reencode_job():
+    payload = job_to_payload(_job({"type": "video", "codec": "h265"}))
+    assert payload["has_transcode"] is True
+    assert "options" not in payload
+
+
+def test_job_to_payload_has_transcode_false_for_no_reencode_job():
+    payload = job_to_payload(_job({"type": "video", "codec": "auto"}))
+    assert payload["has_transcode"] is False
     assert "options" not in payload
 
 

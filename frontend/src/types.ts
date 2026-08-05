@@ -211,6 +211,7 @@ export interface DownloadJob {
   created_at: string
   updated_at: string
   items: DownloadItem[]
+  has_transcode: boolean
 }
 
 export interface DownloadForm {

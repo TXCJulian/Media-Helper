@@ -26,23 +26,15 @@ function formatSize(bytes: number | null): string {
 
 interface Props {
   job: DownloadJob
-  showTranscodeStage: boolean
   onCancel: (jobId: string) => void
   onDelete: (jobId: string) => void
   onStart: (jobId: string) => void
   onRetry: (url: string) => void
 }
 
-export default function DownloadJobCard({
-  job,
-  showTranscodeStage,
-  onCancel,
-  onDelete,
-  onStart,
-  onRetry,
-}: Props) {
+export default function DownloadJobCard({ job, onCancel, onDelete, onStart, onRetry }: Props) {
   const isActive = ['queued', 'downloading', 'transcoding'].includes(job.stage)
-  const stages = showTranscodeStage ? PIPELINE : PIPELINE.filter((s) => s !== 'transcoding')
+  const stages = job.has_transcode ? PIPELINE : PIPELINE.filter((s) => s !== 'transcoding')
   const reached = (stage: DownloadStage) =>
     job.stage === 'done' || stages.indexOf(job.stage) >= stages.indexOf(stage)
 
@@ -73,7 +65,7 @@ export default function DownloadJobCard({
                 {STAGE_LABELS[stage]}
               </span>
             ))}
-            {!isActive && (
+            {!isActive && job.stage !== 'done' && (
               <span className="text-[0.68rem] uppercase tracking-[0.1em] text-[var(--text-tertiary)]">
                 {STAGE_LABELS[job.stage]}
               </span>

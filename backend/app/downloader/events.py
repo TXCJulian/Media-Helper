@@ -4,10 +4,16 @@ from dataclasses import asdict
 from typing import Any
 
 from app.downloader.store import Job
+from app.downloader.ydl import needs_transcode
 
 
 def job_to_payload(job: Job) -> dict[str, Any]:
-    """Serialise a job for the wire. Options stay server-side."""
+    """Serialise a job for the wire. Options stay server-side.
+
+    ``has_transcode`` is derived from the job's stored options so the
+    client can render its stage strip without ever seeing ``options``
+    itself.
+    """
     return {
         "job_id": job.id,
         "url": job.url,
@@ -16,6 +22,7 @@ def job_to_payload(job: Job) -> dict[str, Any]:
         "created_at": job.created_at,
         "updated_at": job.updated_at,
         "items": [asdict(item) for item in job.items],
+        "has_transcode": needs_transcode(job.options),
     }
 
 

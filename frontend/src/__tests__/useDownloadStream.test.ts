@@ -11,6 +11,7 @@ function job(id: string, stage: DownloadJob['stage'] = 'queued'): DownloadJob {
     created_at: '2026-08-04 10:00:00',
     updated_at: '2026-08-04 10:00:00',
     items: [],
+    has_transcode: false,
   }
 }
 

@@ -236,7 +236,6 @@ export default function DownloaderPanel({
               <DownloadJobCard
                 key={job.job_id}
                 job={job}
-                showTranscodeStage={form.codec !== 'auto'}
                 onCancel={(id) => void guard(cancelDownloadJob(id), 'Failed to cancel')}
                 onDelete={(id) => void guard(deleteDownloadJob(id), 'Failed to delete')}
                 onStart={(id) => void guard(startDownloadJob(id), 'Failed to start')}
@@ -257,7 +256,6 @@ export default function DownloaderPanel({
               <DownloadJobCard
                 key={job.job_id}
                 job={job}
-                showTranscodeStage={false}
                 onCancel={(id) => void guard(cancelDownloadJob(id), 'Failed to cancel')}
                 onDelete={(id) => void guard(deleteDownloadJob(id), 'Failed to delete')}
                 onStart={(id) => void guard(startDownloadJob(id), 'Failed to start')}
