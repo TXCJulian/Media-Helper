@@ -67,6 +67,7 @@ from app.downloader.routes import (
     get_store as get_downloader_store,
 )
 from app.cutter import (
+    get_ffmpeg_info,
     probe_file,
     generate_waveform,
     generate_thumbnail_strip,
@@ -825,6 +826,19 @@ _MEDIA_CONTENT_TYPES = {
     ".ac3": "audio/ac3",
     ".dts": "audio/vnd.dts",
 }
+
+
+@app.get("/cutter/status")
+def cutter_status() -> dict:
+    """Report the ffmpeg build backing the cutter (mirrors /download/status)."""
+    require_feature("cutter")
+    info = get_ffmpeg_info()
+    return {
+        "ffmpeg_available": info["available"],
+        "ffmpeg_version": info["version"],
+        "ffmpeg_build": info["build"],
+        "ffmpeg_path": info["path"],
+    }
 
 
 @app.get("/cutter/files")

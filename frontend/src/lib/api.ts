@@ -311,6 +311,10 @@ export async function fetchAuthStatus(): Promise<{
   return fetchJson('/auth/status')
 }
 
+export async function fetchCutterStatus(): Promise<import('@/types').CutterStatus> {
+  return fetchJson('/cutter/status')
+}
+
 export async function fetchDownloaderStatus(): Promise<import('@/types').DownloaderStatus> {
   return fetchJson('/download/status')
 }

@@ -229,6 +229,14 @@ export interface DownloadForm {
   item_limit: number
 }
 
+export interface CutterStatus {
+  ffmpeg_available: boolean
+  ffmpeg_version: string
+  /** 'jellyfin' | 'standard', or '' when ffmpeg is unavailable. */
+  ffmpeg_build: string
+  ffmpeg_path: string
+}
+
 export interface DownloaderStatus {
   yt_dlp_version: string
   cookies_present: boolean

@@ -534,6 +534,119 @@ class TestCutterDeleteJob:
         assert "still busy" in resp.json()["detail"]
 
 
+class TestCutterStatusEndpoint:
+    """/cutter/status reports the ffmpeg build the cutter will actually use."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_ffmpeg_cache(self):
+        """The probe is cached for the process, so no fake may outlive a test."""
+        import app.cutter as cutter_mod
+
+        cutter_mod.get_ffmpeg_info.cache_clear()
+        yield
+        cutter_mod.get_ffmpeg_info.cache_clear()
+
+    @staticmethod
+    def _patch_ffmpeg(monkeypatch, *, which, banner, on_run=None):
+        """Point the ffmpeg probe at a fake binary and banner.
+
+        Patched on app.cutter's own namespace rather than the shutil/subprocess
+        modules so nothing else running in-process sees the fakes.
+        """
+        import subprocess as subprocess_mod
+        import types
+        import app.cutter as cutter_mod
+
+        class FakeCompleted:
+            stdout = banner
+            stderr = ""
+
+        def fake_run(*args, **kwargs):
+            if on_run is not None:
+                on_run(args)
+            return FakeCompleted()
+
+        monkeypatch.setattr(
+            cutter_mod, "shutil", types.SimpleNamespace(which=lambda name: which)
+        )
+        monkeypatch.setattr(
+            cutter_mod,
+            "subprocess",
+            types.SimpleNamespace(
+                run=fake_run, SubprocessError=subprocess_mod.SubprocessError
+            ),
+        )
+
+    def test_reports_jellyfin_build(self, client, monkeypatch):
+        self._patch_ffmpeg(
+            monkeypatch,
+            which="/usr/local/bin/ffmpeg",
+            banner=(
+                "ffmpeg version 7.1.1-Jellyfin Copyright (c) 2000-2025 the FFmpeg developers\n"
+                "built with gcc 12\n"
+            ),
+        )
+
+        resp = client.get("/cutter/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ffmpeg_available"] is True
+        assert data["ffmpeg_version"] == "7.1.1-Jellyfin"
+        assert data["ffmpeg_build"] == "jellyfin"
+
+    def test_reports_plain_build(self, client, monkeypatch):
+        self._patch_ffmpeg(
+            monkeypatch,
+            which="/usr/bin/ffmpeg",
+            banner=(
+                "ffmpeg version 5.1.6-0+deb12u1 Copyright (c) 2000-2024 the FFmpeg developers\n"
+            ),
+        )
+
+        resp = client.get("/cutter/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ffmpeg_available"] is True
+        assert data["ffmpeg_version"] == "5.1.6-0+deb12u1"
+        assert data["ffmpeg_build"] == "standard"
+
+    def test_reports_missing_ffmpeg_without_raising(self, client, monkeypatch):
+        self._patch_ffmpeg(monkeypatch, which=None, banner="")
+
+        resp = client.get("/cutter/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ffmpeg_available"] is False
+        assert data["ffmpeg_version"] == ""
+        assert data["ffmpeg_build"] == ""
+
+    def test_result_is_cached_across_requests(self, client, monkeypatch):
+        calls = []
+        self._patch_ffmpeg(
+            monkeypatch,
+            which="/usr/local/bin/ffmpeg",
+            banner="ffmpeg version 7.1.1-Jellyfin Copyright (c) 2000-2025\n",
+            on_run=calls.append,
+        )
+
+        client.get("/cutter/status")
+        client.get("/cutter/status")
+
+        assert len(calls) == 1
+
+    def test_absent_when_cutter_feature_disabled(self, client, monkeypatch):
+        import app.main as main_mod
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"episodes"})
+
+        resp = client.get("/cutter/status")
+
+        assert resp.status_code == 404
+
+
 class TestCutterValidation:
     def test_cutter_cut_rejects_out_point_before_in_point(self, client, tmp_path, monkeypatch):
         import app.main as main_mod
