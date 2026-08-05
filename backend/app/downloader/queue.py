@@ -73,7 +73,16 @@ class DownloadQueue:
         # queue -> store lock nesting. Every route that starts a job goes
         # through here, so this is the one place recovery's "was it ever
         # started" flag has to be set.
-        self._store.mark_enqueued(job_id)
+        #
+        # A failure here must not abort the enqueue. Of the two ways this can
+        # end up inconsistent, "queued but not marked" is much the safer: the
+        # job still runs, which is what was asked for, and the only cost is
+        # that a crash mid-run leaves it un-recovered at `queued`, visible and
+        # startable by hand. "Marked but not queued" would silently never run.
+        try:
+            self._store.mark_enqueued(job_id)
+        except Exception:
+            logger.exception("Could not mark job %s as enqueued", job_id)
         with self._lock:
             self._cancelled_while_queued.discard(job_id)
             self._pending.add(job_id)

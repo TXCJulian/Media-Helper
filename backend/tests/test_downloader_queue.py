@@ -1,3 +1,4 @@
+import sqlite3
 import threading
 import time
 
@@ -504,6 +505,37 @@ def test_duplicate_enqueue_cannot_steal_a_running_jobs_cancel_event(store):
         assert q.cancel(job_id) is True
         assert observed.wait(timeout=5), "the running runner never saw the cancel"
         assert runs == [job_id], "the duplicate must not have run"
+    finally:
+        q.stop()
+
+
+def test_enqueue_still_runs_the_job_if_the_enqueued_flag_cannot_be_written(
+    store, monkeypatch
+):
+    """`mark_enqueued` put a SQLite write at the top of `enqueue`, which
+    previously could not fail. A failure there must not swallow the job: of
+    the two inconsistent outcomes, running unmarked beats being marked and
+    never running."""
+    done = threading.Event()
+    seen: list[str] = []
+
+    def runner(store_, job, cancel_event):
+        seen.append(job.id)
+        store_.set_job_stage(job.id, "done")
+        done.set()
+
+    def broken_mark(job_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "mark_enqueued", broken_mark)
+
+    job_id = store.create_job("https://example.com/v", {})
+    q = DownloadQueue(store, runner, workers=1)
+    q.start()
+    try:
+        q.enqueue(job_id)
+        assert done.wait(timeout=5), "the job was lost when the flag write failed"
+        assert seen == [job_id]
     finally:
         q.stop()
 
