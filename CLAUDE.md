@@ -52,6 +52,7 @@ docker compose -f deploy.yml up -d      # Production (pre-built images)
 - **`app/hwaccel.py`** — GPU encoder auto-detection (NVIDIA NVENC, Intel QSV, AMD AMF, VAAPI). Transparently substitutes GPU for CPU encoders with graceful CPU fallback. Configurable via `HWACCEL` env var.
 - **`app/transcribe_lyrics.py`** — SSE proxy to external `lyric-transcriber` service. Upload → poll job → download results → save `.lrc`/`.txt` alongside audio. 30-minute polling timeout.
 - **`app/fs_utils.py`** — `fsync()` directory flushing (important for network shares) and collision-safe path generation.
+- **`app/downloader/`** — queue-backed yt-dlp downloads. `store.py` is a SQLite-backed `JobStore` (the only writer of job state); `queue.py` (`DownloadQueue`) drains it with a worker pool sized by `DOWNLOADER_WORKERS` and recovers queued/active jobs on startup; `runner.py` runs a job through download + optional transcode, updating per-item progress; `ydl.py` builds yt-dlp options (format/codec/quality selection, playlist item limits, output path containment) from the request; `transcode.py` is the separate, cancellable ffmpeg re-encode stage; `events.py` (`EventBroadcaster`) fans out job-change events to `GET /download/events` (SSE) subscribers; `routes.py` wires it all into the FastAPI router.
 
 ### Frontend (React 19, TypeScript, Vite, Tailwind CSS 4)
 
@@ -69,7 +70,7 @@ State management is simple prop drilling from App.tsx - no external state librar
 
 - **Nginx** (`frontend/nginx-app.conf`) - Reverse proxy routes `/rename/`, `/directories/`, `/config`, `/health`, `/transcribe/`, `/cutter/`, `/download/` to backend. SSE routes have buffering disabled and 1800s timeout. 50 GB upload limit.
 - **Docker Compose** - Bridge network `renamer-network`. Backend uses Jellyfin's pre-built ffmpeg7 (amd64) or standard ffmpeg (ARM). Volumes: media (`/media:rw`), `cutter-jobs` (persistent job state).
-- **`deploy.yml`** - Production variant pulling pre-built images from Docker Hub (`bosscock/media-renamer:backend`/`:frontend`).
+- **`deploy.yml`** - Production variant pulling pre-built images from Docker Hub (`txcjulian/media-helper:backend`/`:frontend`).
 
 ## Tests
 
@@ -98,6 +99,12 @@ Backend reads from `backend/dependencies/.env` (see `.env.example`):
 - `CUTTER_JOB_TTL` - Job expiry in seconds (default 86400 / 24h)
 - `CUTTER_MAX_DIRECT_REMUX_BYTES` - Max file size for direct remux
 - `VALID_CUTTER_EXT` - Allowed file extensions for cutter
+- `DOWNLOADS_DIR` - Fallback download output root (default `/downloads`)
+- `DOWNLOADER_DATA_DIR` - Cookie file + scratch space directory (default `/data/downloader`)
+- `DOWNLOADER_DB` - SQLite job store path (default `<DOWNLOADER_DATA_DIR>/downloader.db`)
+- `DOWNLOADER_WORKERS` - Concurrent download worker cap (default `3`)
+- `DOWNLOADER_JOB_TTL` - Download job history retention in seconds (default `604800` / 7d)
+- `YT_DLP_COOKIES` - Cookie file path override (default `<DOWNLOADER_DATA_DIR>/cookies.txt`)
 
 ## Key Patterns
 
@@ -108,6 +115,7 @@ Backend reads from `backend/dependencies/.env` (see `.env.example`):
 - **Feature guards**: Each module can be independently disabled. Backend returns 404 for disabled features; frontend hides disabled panels.
 - **GPU fallback**: Hardware acceleration auto-detects available encoders at startup; blacklists failing encoders and retries with CPU.
 - **Cutter job lifecycle**: Upload → probe → optional preview → cut with progress SSE → download. Jobs auto-expire after TTL.
+- **Downloader job lifecycle**: `POST /download` accepts a JSON array of URLs in one request and creates one job per URL, each holding N items (playlists report per-item progress); jobs run through a `DOWNLOADER_WORKERS`-sized pool, persist to SQLite so queued/active jobs resume after a restart, and stream state to the client over `GET /download/events` (SSE). An optional ffmpeg re-encode runs as a separate cancellable stage after the download completes.
 
 ## Styling
 
@@ -116,5 +124,6 @@ Dark theme with glassmorphism. Three accent colors by module:
 - Episodes: blue (`--accent`)
 - Music: indigo (`--accent-2`)
 - Lyrics: rose (`--accent-3`)
+- Downloader: cyan (`--accent-6`)
 
 Self-hosted fonts: Geist (UI) and JetBrains Mono (log output) in `frontend/public/fonts/`.

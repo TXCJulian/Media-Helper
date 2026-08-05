@@ -3,7 +3,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    image: bosscock/media-renamer:backend
+    image: txcjulian/media-helper:backend
     container_name: media-renamer_backend
     restart: unless-stopped
     environment:
@@ -19,10 +19,11 @@ services:
       - ENABLED_FEATURES=${ENABLED_FEATURES:-episodes,music,lyrics,cutter,download}
       - CUTTER_JOBS_DIR=/data/cutter-jobs
       - CUTTER_JOB_TTL=${CUTTER_JOB_TTL:-86400}
-      - DOWNLOADER_JOBS_DIR=/data/download-jobs
+      - DOWNLOADER_DATA_DIR=/data/downloader
+      - DOWNLOADER_WORKERS=${DOWNLOADER_WORKERS:-3}
       - DOWNLOADER_JOB_TTL=${DOWNLOADER_JOB_TTL:-604800}
       - DOWNLOADS_DIR=${DOWNLOADS_DIR:-/downloads}
-      - YT_DLP_COOKIES=${YT_DLP_COOKIES:-/data/download-jobs/cookies.txt}
+      - YT_DLP_COOKIES=${YT_DLP_COOKIES:-/data/downloader/cookies.txt}
       #- HWACCEL=off  # Uncomment to disable GPU-accelerated video encoding
       #- VAAPI_DEVICE=/dev/dri/renderD128  # Uncomment to override VAAPI device path
       - PUID=${PUID:-1000}
@@ -47,7 +48,7 @@ services:
       - /path/to/your/media:/media:rw
       - /path/to/your/downloads:/downloads:rw
       - cutter-jobs:/data/cutter-jobs
-      - download-jobs:/data/download-jobs
+      - downloader-data:/data/downloader
     networks:
       - renamer-network
 
@@ -55,7 +56,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    image: bosscock/media-renamer:frontend
+    image: txcjulian/media-helper:frontend
     container_name: media-renamer_frontend
     restart: unless-stopped
     ports:
@@ -97,5 +98,5 @@ networks:
 
 volumes:
   cutter-jobs:
-  download-jobs:
+  downloader-data:
   transcriber-models:
