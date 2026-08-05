@@ -196,6 +196,48 @@ def test_purge_expired_notifies_for_every_job_it_removes():
     assert deleted == [old]
 
 
+def test_purge_expired_never_deletes_a_job_without_announcing_it():
+    """A row crossing the TTL boundary between collecting the ids and deleting
+    them was removed with no notification - the stuck-card symptom this
+    notification exists to remove - because each statement evaluated
+    `datetime('now', ?)` on its own. One statement cannot straddle the
+    boundary, so the outcome is now all-or-nothing either way."""
+    deleted = []
+    store = JobStore(":memory:", on_delete=deleted.append)
+    job_id = store.create_job("https://example.com/v", {})
+    store.set_job_stage(job_id, "done")
+
+    real_conn = store._conn
+    drifted = []
+
+    class _BoundaryCrossingConnection:
+        """Ages the row past the TTL once, in whatever gap the code leaves."""
+
+        def __getattr__(self, name):
+            return getattr(real_conn, name)
+
+        def execute(self, sql, params=()):
+            cursor = real_conn.execute(sql, params)
+            if "FROM jobs" in sql and sql.lstrip().startswith("SELECT") and not drifted:
+                drifted.append(True)
+                real_conn.execute(
+                    "UPDATE jobs SET created_at = datetime('now', '-10 days') "
+                    "WHERE id = ?",
+                    (job_id,),
+                )
+            return cursor
+
+    store._conn = _BoundaryCrossingConnection()
+    removed = store.purge_expired(ttl_seconds=86400)
+    store._conn = real_conn
+
+    gone = store.get_job(job_id) is None
+    assert deleted == ([job_id] if gone else []), (
+        "a purged job must always be announced"
+    )
+    assert removed == (1 if gone else 0)
+
+
 def test_purge_expired_keeps_recent_and_active(store):
     old_done = store.create_job("https://example.com/old", {})
     store.set_job_stage(old_done, "done")

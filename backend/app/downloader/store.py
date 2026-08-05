@@ -259,17 +259,24 @@ class JobStore:
         return [jid for jid in job_ids]
 
     def purge_expired(self, ttl_seconds: int) -> int:
+        """Drop jobs older than the TTL, announcing every one that goes.
+
+        One statement, not a SELECT followed by a matching DELETE: each would
+        evaluate `datetime('now', ?)` on its own, and `now` has one-second
+        granularity, so a row crossing the boundary in between was deleted
+        without ever being announced - the stuck-card symptom this
+        notification exists to remove - and under-counted on the way out.
+        `RETURNING` needs SQLite 3.35+; the runtime is well past that.
+        """
         placeholders = ", ".join("?" * len(ACTIVE_STAGES))
         params = (*sorted(ACTIVE_STAGES), f"-{int(ttl_seconds)} seconds")
-        condition = (
-            f"stage NOT IN ({placeholders}) AND created_at < datetime('now', ?)"
-        )
         with self._lock:
             rows = self._conn.execute(
-                f"SELECT id FROM jobs WHERE {condition}", params
+                f"DELETE FROM jobs WHERE stage NOT IN ({placeholders}) "
+                f"AND created_at < datetime('now', ?) RETURNING id",
+                params,
             ).fetchall()
             job_ids = [row["id"] for row in rows if row["id"]]
-            self._conn.execute(f"DELETE FROM jobs WHERE {condition}", params)
             self._conn.commit()
         for job_id in job_ids:
             self._notify_deleted(job_id)
