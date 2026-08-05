@@ -18,6 +18,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     options     TEXT NOT NULL,
     stage       TEXT NOT NULL,
     error       TEXT,
+    -- Set the first time the job is handed to the queue. `queued` alone
+    -- cannot distinguish a job waiting in the FIFO from one created with
+    -- auto_start=false that the user has never started, and recovery must
+    -- resume the former without silently starting the latter.
+    enqueued    INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -65,7 +70,10 @@ class JobStore:
     """SQLite-backed job persistence. The only writer of downloader state."""
 
     def __init__(
-        self, db_path: str, on_change: Callable[[Job], None] | None = None
+        self,
+        db_path: str,
+        on_change: Callable[[Job], None] | None = None,
+        on_delete: Callable[[str], None] | None = None,
     ) -> None:
         if db_path != ":memory:":
             os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
@@ -74,13 +82,45 @@ class JobStore:
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
         self._lock = threading.Lock()
         self._on_change = on_change
+        self._on_delete = on_delete
+
+    def _migrate(self) -> None:
+        """Bring a database written by an older build up to `_SCHEMA`.
+
+        `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so a new
+        column has to be added explicitly.
+        """
+        columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")
+        }
+        if "enqueued" not in columns:
+            self._conn.execute(
+                "ALTER TABLE jobs ADD COLUMN enqueued INTEGER NOT NULL DEFAULT 0"
+            )
+            # Rows that predate the column came from a build that enqueued
+            # every job it created, so backfilling them as enqueued preserves
+            # the recovery behaviour they were written under. The column
+            # default stays 0 so rows created from here on start un-enqueued.
+            self._conn.execute("UPDATE jobs SET enqueued = 1")
 
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    def _notify_deleted(self, job_id: str) -> None:
+        """Announce a removed job. Call with self._lock released.
+
+        Like `_on_change`, this only ever reaches the event broadcaster.
+        `delete_job` runs on the request thread and `purge_expired` on the TTL
+        sweeper, neither of which holds `DownloadQueue._lock`, so the
+        queue -> store lock order is not at risk here.
+        """
+        if self._on_delete is not None:
+            self._on_delete(job_id)
 
     def _read_job_locked(self, job_id: str) -> Job | None:
         """Read job while already holding self._lock. Do not call without holding lock."""
@@ -169,24 +209,50 @@ class JobStore:
         if job is not None and self._on_change is not None:
             self._on_change(job)
 
+    def mark_enqueued(self, job_id: str) -> None:
+        """Record that this job has been handed to the queue at least once.
+
+        Fires no `on_change`: this is queue bookkeeping, not user-visible job
+        state, and it is written from `DownloadQueue.enqueue`.
+        """
+        with self._lock:
+            self._conn.execute(
+                "UPDATE jobs SET enqueued = 1 WHERE id = ?", (job_id,)
+            )
+            self._conn.commit()
+
     def delete_job(self, job_id: str) -> bool:
         with self._lock:
             cursor = self._conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
             self._conn.commit()
-            return cursor.rowcount > 0
+            deleted = cursor.rowcount > 0
+        if deleted:
+            self._notify_deleted(job_id)
+        return deleted
 
     def reset_active_to_queued(self) -> list[str]:
-        """After a restart, return interrupted jobs to the queue."""
+        """After a restart, return interrupted jobs to the queue.
+
+        Only jobs that actually reached the queue are resumed. A job created
+        with auto_start=false rests at `queued` and is indistinguishable by
+        stage from one that was waiting in the FIFO when the process died, so
+        without the `enqueued` flag recovery would start work the user never
+        asked to start. `queued` cannot simply be dropped from the selection
+        either: the shutdown path writes an interrupted *running* job straight
+        back to `queued`, and that one must resume.
+        """
         placeholders = ", ".join("?" * len(ACTIVE_STAGES))
         active = sorted(ACTIVE_STAGES)
         with self._lock:
             rows = self._conn.execute(
-                f"SELECT id FROM jobs WHERE stage IN ({placeholders})", active
+                f"SELECT id FROM jobs WHERE stage IN ({placeholders}) "
+                f"AND enqueued = 1",
+                active,
             ).fetchall()
             job_ids = [row["id"] for row in rows if row["id"]]
             self._conn.execute(
                 f"UPDATE jobs SET stage = 'queued', error = NULL "
-                f"WHERE stage IN ({placeholders})",
+                f"WHERE stage IN ({placeholders}) AND enqueued = 1",
                 active,
             )
             self._conn.commit()
@@ -194,14 +260,20 @@ class JobStore:
 
     def purge_expired(self, ttl_seconds: int) -> int:
         placeholders = ", ".join("?" * len(ACTIVE_STAGES))
+        params = (*sorted(ACTIVE_STAGES), f"-{int(ttl_seconds)} seconds")
+        condition = (
+            f"stage NOT IN ({placeholders}) AND created_at < datetime('now', ?)"
+        )
         with self._lock:
-            cursor = self._conn.execute(
-                f"DELETE FROM jobs WHERE stage NOT IN ({placeholders}) "
-                f"AND created_at < datetime('now', ?)",
-                (*sorted(ACTIVE_STAGES), f"-{int(ttl_seconds)} seconds"),
-            )
+            rows = self._conn.execute(
+                f"SELECT id FROM jobs WHERE {condition}", params
+            ).fetchall()
+            job_ids = [row["id"] for row in rows if row["id"]]
+            self._conn.execute(f"DELETE FROM jobs WHERE {condition}", params)
             self._conn.commit()
-            return cursor.rowcount
+        for job_id in job_ids:
+            self._notify_deleted(job_id)
+        return len(job_ids)
 
 
 def _to_job(row: sqlite3.Row, item_rows: list[sqlite3.Row]) -> Job:

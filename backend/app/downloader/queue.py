@@ -68,6 +68,12 @@ class DownloadQueue:
         self._threads.clear()
 
     def enqueue(self, job_id: str) -> None:
+        # Deliberately outside self._lock: nothing below depends on the flag,
+        # and this keeps the single store write on the enqueue path off the
+        # queue -> store lock nesting. Every route that starts a job goes
+        # through here, so this is the one place recovery's "was it ever
+        # started" flag has to be set.
+        self._store.mark_enqueued(job_id)
         with self._lock:
             self._cancelled_while_queued.discard(job_id)
             self._pending.add(job_id)

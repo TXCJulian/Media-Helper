@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from app.downloader.store import Item, Job, JobStore
@@ -71,6 +73,10 @@ def test_reset_active_to_queued_recovers_after_restart(store):
     a = store.create_job("https://example.com/a", {})
     b = store.create_job("https://example.com/b", {})
     c = store.create_job("https://example.com/c", {})
+    # Every one of these reached the queue; a job cannot get to `downloading`
+    # or `transcoding` without having been enqueued first.
+    for job_id in (a, b, c):
+        store.mark_enqueued(job_id)
     store.set_job_stage(a, "downloading")
     store.set_job_stage(b, "transcoding")
     store.set_job_stage(c, "done")
@@ -81,6 +87,113 @@ def test_reset_active_to_queued_recovers_after_restart(store):
     assert store.get_job(a).stage == "queued"
     assert store.get_job(b).stage == "queued"
     assert store.get_job(c).stage == "done"
+
+
+def test_never_enqueued_job_is_not_recovered_after_restart(store):
+    """I4: a job created with auto_start=false rests at `queued` with nothing
+    in the schema distinguishing it from one waiting in the FIFO, so recovery
+    used to start it at the next boot without the user pressing Start."""
+    held = store.create_job("https://example.com/held", {"auto_start": False})
+    started = store.create_job("https://example.com/started", {})
+    store.mark_enqueued(started)
+
+    recovered = store.reset_active_to_queued()
+
+    assert recovered == [started]
+    assert store.get_job(held).stage == "queued"
+
+
+def test_a_job_interrupted_while_still_queued_is_still_recovered(store):
+    """The shutdown path writes an interrupted running job straight back to
+    `queued`, and that job must resume. Excluding `queued` wholesale would
+    have stranded it, which is why recovery keys off having been enqueued
+    rather than off the stage alone."""
+    job_id = store.create_job("https://example.com/v", {})
+    store.mark_enqueued(job_id)
+    store.set_job_stage(job_id, "downloading")
+    store.set_job_stage(job_id, "queued")  # what queue.stop() leaves behind
+
+    assert store.reset_active_to_queued() == [job_id]
+
+
+def test_enqueued_flag_survives_reopening_the_database(tmp_path):
+    db = str(tmp_path / "d.db")
+    store = JobStore(db)
+    held = store.create_job("https://example.com/held", {"auto_start": False})
+    started = store.create_job("https://example.com/started", {})
+    store.mark_enqueued(started)
+    store.close()
+
+    reopened = JobStore(db)
+    try:
+        assert reopened.reset_active_to_queued() == [started]
+        assert reopened.get_job(held).stage == "queued"
+    finally:
+        reopened.close()
+
+
+def test_database_predating_the_enqueued_column_keeps_recovering(tmp_path):
+    """Rows written before this column existed came from a build that
+    enqueued every job it created, so the migration must backfill them as
+    enqueued rather than silently stranding a queue full of live work."""
+    db = str(tmp_path / "legacy.db")
+    legacy = sqlite3.connect(db)
+    legacy.executescript(
+        """
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY, url TEXT NOT NULL, options TEXT NOT NULL,
+            stage TEXT NOT NULL, error TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO jobs (id, url, options, stage)
+        VALUES ('legacy-1', 'https://example.com/v', '{}', 'downloading');
+        """
+    )
+    legacy.commit()
+    legacy.close()
+
+    store = JobStore(db)
+    try:
+        assert store.reset_active_to_queued() == ["legacy-1"]
+        # The migration's backfill must not leak into rows created afterwards:
+        # the ALTER's column default has to stay 0, or every new job would be
+        # recovered regardless of auto_start. (`legacy-1` still comes back on
+        # a second call - it is queued and enqueued, so resuming it is right.)
+        fresh = store.create_job("https://example.com/new", {"auto_start": False})
+        assert fresh not in store.reset_active_to_queued()
+        assert store.get_job(fresh).stage == "queued"
+    finally:
+        store.close()
+
+
+def test_delete_job_notifies_and_reports_the_deleted_id():
+    """I2: delete_job was the only mutator that fired no notification, so a
+    deleted job's card stayed on screen until the page was reloaded."""
+    deleted = []
+    store = JobStore(":memory:", on_delete=deleted.append)
+    job_id = store.create_job("https://example.com/v", {})
+
+    assert store.delete_job(job_id) is True
+    assert deleted == [job_id]
+
+    # A delete that removed nothing must not announce one.
+    assert store.delete_job(job_id) is False
+    assert deleted == [job_id]
+
+
+def test_purge_expired_notifies_for_every_job_it_removes():
+    deleted = []
+    store = JobStore(":memory:", on_delete=deleted.append)
+    old = store.create_job("https://example.com/old", {})
+    store.set_job_stage(old, "done")
+    store._conn.execute(
+        "UPDATE jobs SET created_at = datetime('now', '-10 days') WHERE id = ?", (old,)
+    )
+    store._conn.commit()
+
+    assert store.purge_expired(ttl_seconds=86400) == 1
+    assert deleted == [old]
 
 
 def test_purge_expired_keeps_recent_and_active(store):

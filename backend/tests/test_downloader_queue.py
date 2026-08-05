@@ -518,6 +518,8 @@ def test_recover_requeues_interrupted_jobs(store):
         done.set()
 
     orphan = store.create_job("https://example.com/orphan", {})
+    # A job cannot reach `downloading` without having gone through the queue.
+    store.mark_enqueued(orphan)
     store.set_job_stage(orphan, "downloading")
 
     q = DownloadQueue(store, runner, workers=1)
@@ -528,3 +530,48 @@ def test_recover_requeues_interrupted_jobs(store):
         assert seen == [orphan]
     finally:
         q.stop()
+
+
+def test_recover_does_not_start_a_job_the_user_never_started(store):
+    """I4: a job created with auto_start=false rests at `queued`, and `queued`
+    is an active stage, so the next boot's recover() used to run it without
+    the user ever pressing Start."""
+    seen: list[str] = []
+
+    held = store.create_job("https://example.com/held", {"auto_start": False})
+
+    q = DownloadQueue(store, lambda s, j, c: seen.append(j.id), workers=1)
+    q.start()
+    try:
+        q.recover()
+        time.sleep(0.3)
+        assert seen == [], "a job the user never started must not auto-start"
+        assert store.get_job(held).stage == "queued"
+    finally:
+        q.stop()
+
+
+def test_a_held_job_still_runs_once_it_is_started(store):
+    """The flip side: pressing Start must both run the job now and make it
+    recoverable if the process dies mid-flight."""
+    done = threading.Event()
+    seen: list[str] = []
+
+    def runner(store_, job, cancel_event):
+        seen.append(job.id)
+        store_.set_job_stage(job.id, "done")
+        done.set()
+
+    held = store.create_job("https://example.com/held", {"auto_start": False})
+
+    q = DownloadQueue(store, runner, workers=1)
+    q.start()
+    try:
+        q.enqueue(held)
+        assert done.wait(timeout=5)
+        assert seen == [held]
+    finally:
+        q.stop()
+
+    store.set_job_stage(held, "downloading")  # as if interrupted mid-run
+    assert store.reset_active_to_queued() == [held]
