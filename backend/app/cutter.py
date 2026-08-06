@@ -198,6 +198,10 @@ def get_ffmpeg_info() -> dict:
     except OSError:
         resolved = path
 
+    # Being on PATH is not the same as being runnable: a truncated download, a
+    # missing shared library or a wrong-architecture binary all resolve fine and
+    # then fail to execute. Reporting those as available would put a build label
+    # and an empty version in front of the user for an ffmpeg that cannot run.
     try:
         result = subprocess.run(
             ["ffmpeg", "-version"],
@@ -205,11 +209,18 @@ def get_ffmpeg_info() -> dict:
             text=True,
             timeout=10,
         )
-        banner = result.stdout or result.stderr or ""
     except (OSError, subprocess.SubprocessError):
         logger.warning("Could not run 'ffmpeg -version'", exc_info=True)
-        banner = ""
+        return {"available": False, "version": "", "build": "", "path": resolved}
 
+    if result.returncode != 0:
+        logger.warning(
+            "'ffmpeg -version' exited with %s; treating ffmpeg as unavailable",
+            result.returncode,
+        )
+        return {"available": False, "version": "", "build": "", "path": resolved}
+
+    banner = result.stdout or result.stderr or ""
     version = _parse_ffmpeg_version(banner)
     is_jellyfin = "jellyfin" in version.lower() or "jellyfin-ffmpeg" in resolved.lower()
     return {

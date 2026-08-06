@@ -547,7 +547,9 @@ class TestCutterStatusEndpoint:
         cutter_mod.get_ffmpeg_info.cache_clear()
 
     @staticmethod
-    def _patch_ffmpeg(monkeypatch, *, which, banner, on_run=None):
+    def _patch_ffmpeg(
+        monkeypatch, *, which, banner, on_run=None, returncode_value=0, raises=None
+    ):
         """Point the ffmpeg probe at a fake binary and banner.
 
         Patched on app.cutter's own namespace rather than the shutil/subprocess
@@ -560,10 +562,13 @@ class TestCutterStatusEndpoint:
         class FakeCompleted:
             stdout = banner
             stderr = ""
+            returncode = returncode_value
 
         def fake_run(*args, **kwargs):
             if on_run is not None:
                 on_run(args)
+            if raises is not None:
+                raise raises
             return FakeCompleted()
 
         monkeypatch.setattr(
@@ -622,6 +627,32 @@ class TestCutterStatusEndpoint:
         assert data["ffmpeg_available"] is False
         assert data["ffmpeg_version"] == ""
         assert data["ffmpeg_build"] == ""
+
+    def test_reports_unavailable_when_the_probe_exits_non_zero(self, client, monkeypatch):
+        """A binary on PATH that fails to run is not a usable ffmpeg."""
+        self._patch_ffmpeg(
+            monkeypatch, which="/usr/bin/ffmpeg", banner="", returncode_value=1
+        )
+
+        resp = client.get("/cutter/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["ffmpeg_available"] is False
+
+    def test_reports_unavailable_when_the_probe_raises(self, client, monkeypatch):
+        import subprocess as subprocess_mod
+
+        self._patch_ffmpeg(
+            monkeypatch,
+            which="/usr/bin/ffmpeg",
+            banner="",
+            raises=subprocess_mod.TimeoutExpired(cmd="ffmpeg", timeout=10),
+        )
+
+        resp = client.get("/cutter/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["ffmpeg_available"] is False
 
     def test_result_is_cached_across_requests(self, client, monkeypatch):
         calls = []
