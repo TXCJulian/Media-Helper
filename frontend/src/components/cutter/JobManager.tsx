@@ -1,4 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import IconButton from '@/components/ui/IconButton'
+import StatusPill from '@/components/ui/StatusPill'
+import { PencilIcon, SaveIcon, TrashIcon } from '@/components/ui/icons'
 import { listJobs, deleteJob, getDownloadUrl, saveToSource } from '@/lib/api'
 import type { CutterJob } from '@/types'
 
@@ -104,186 +107,141 @@ export default function JobManager({
       </button>
 
       {open && (
-        <div className="max-h-[min(480px,60vh)] overflow-y-auto rounded-b-xl border border-t-0 border-[var(--glass-border)] bg-black/20">
+        <div className="max-h-[min(480px,60vh)] space-y-3 overflow-y-auto rounded-b-xl border border-t-0 border-[var(--glass-border)] bg-black/20 p-4">
           {refreshError && (
-            <div className="border-b border-red-500/20 bg-red-500/10 px-4 py-2 text-[0.72rem] text-red-300">
+            <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-2 text-[0.72rem] text-red-300">
               Failed to refresh jobs: {refreshError}
             </div>
           )}
           {jobs.length === 0 ? (
-            <div className="px-4 py-6 text-center text-[0.78rem] text-white/30">No jobs found</div>
+            <p className="rounded-[14px] border border-white/6 bg-white/[0.02] py-5 text-center text-[0.8rem] text-[var(--text-tertiary)]">
+              No jobs found
+            </p>
           ) : (
             jobs.map((job) => (
-              <div
-                key={job.job_id}
-                className="flex items-start gap-3 border-b border-white/5 px-4 py-3 last:border-b-0"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate text-[0.78rem] text-white/80">
+              <div key={job.job_id} className="glass-light rounded-[14px] p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[0.88rem] font-medium text-[var(--text-primary)]">
                       {job.original_name}
-                    </span>
-                    <span
-                      className={`shrink-0 rounded px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase ${STATUS_COLORS[job.status] ?? STATUS_COLORS.ready}`}
-                    >
-                      {job.status.replace(/_/g, ' ')}
-                    </span>
-                    {job.status === 'ready' && job.browser_ready && (
-                      <span
-                        className="shrink-0 rounded bg-emerald-400/15 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase text-emerald-300"
-                        title="File is already browser-compatible"
-                      >
-                        browser ready
-                      </span>
-                    )}
-                    {job.status === 'ready' && !job.browser_ready && job.preview_transcoded && (
-                      <span
-                        className="shrink-0 rounded bg-sky-400/15 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase text-sky-300"
-                        title="Transcoded preview exists on disk; player may still be preparing the stream"
-                      >
-                        preview cached
-                      </span>
-                    )}
-                    {job.audio_transcoded_tracks && job.audio_transcoded_tracks.length > 0 && (
-                      <span
-                        className="shrink-0 rounded bg-violet-400/15 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase text-violet-300"
-                        title={`Audio tracks transcoded: ${job.audio_transcoded_tracks.join(', ')}`}
-                      >
-                        audio cached
-                      </span>
-                    )}
-                    {job.transcode_error && (
-                      <span
-                        className="shrink-0 cursor-help rounded bg-red-400/15 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase text-red-300"
-                        title={job.transcode_error}
-                      >
-                        transcode err
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1 flex items-center gap-3 text-[0.68rem] text-white/35">
-                    <span>{job.source}</span>
-                    {showBaseLabel && job.base && <span className="text-white/25">{job.base}</span>}
-                    <span>{relativeTime(job.created_at)}</span>
-                  </div>
-                  {job.output_files.length > 0 && (
-                    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
-                      {job.output_files.map((file) => (
-                        <div key={file} className="inline-flex items-center gap-1.5">
-                          <a
-                            href={getDownloadUrl(job.job_id, file)}
-                            download
-                            className="font-mono text-[0.68rem] text-emerald-400/70 underline decoration-emerald-400/20 hover:decoration-emerald-400/60"
-                          >
-                            &darr; {file}
-                          </a>
-                          {job.source === 'server' && (
-                            <button
-                              type="button"
-                              disabled={savingFile === `${job.job_id}:${file}`}
-                              onClick={() => {
-                                const key = `${job.job_id}:${file}`
-                                setSavingFile(key)
-                                saveToSource(job.job_id, file)
-                                  .then(() => onLog?.(`Saved ${file} to source directory`))
-                                  .catch((err) =>
-                                    onLog?.(
-                                      `Save failed: ${err instanceof Error ? err.message : String(err)}`,
-                                    ),
-                                  )
-                                  .finally(() => setSavingFile(null))
-                              }}
-                              className="inline-flex items-center gap-0.5 rounded border border-emerald-400/15 bg-emerald-400/5 px-1.5 py-0.5 text-[0.58rem] text-emerald-400/60 transition hover:border-emerald-400/30 hover:text-emerald-400/90"
-                              title="Save to original file directory"
-                            >
-                              {savingFile === `${job.job_id}:${file}` ? (
-                                <span className="spinner-xs" />
-                              ) : (
-                                <svg
-                                  width="10"
-                                  height="10"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="2"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                >
-                                  <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
-                                  <polyline points="17 21 17 13 7 13 7 21" />
-                                  <polyline points="7 3 7 8 15 8" />
-                                </svg>
-                              )}
-                              Save
-                            </button>
-                          )}
-                        </div>
-                      ))}
+                    </p>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                      <StatusPill className={STATUS_COLORS[job.status] ?? STATUS_COLORS.ready}>
+                        {job.status.replace(/_/g, ' ')}
+                      </StatusPill>
+                      {job.status === 'ready' && job.browser_ready && (
+                        <StatusPill
+                          className="bg-emerald-400/15 text-emerald-300"
+                          title="File is already browser-compatible"
+                        >
+                          browser ready
+                        </StatusPill>
+                      )}
+                      {job.status === 'ready' && !job.browser_ready && job.preview_transcoded && (
+                        <StatusPill
+                          className="bg-sky-400/15 text-sky-300"
+                          title="Transcoded preview exists on disk; player may still be preparing the stream"
+                        >
+                          preview cached
+                        </StatusPill>
+                      )}
+                      {job.audio_transcoded_tracks && job.audio_transcoded_tracks.length > 0 && (
+                        <StatusPill
+                          className="bg-violet-400/15 text-violet-300"
+                          title={`Audio tracks transcoded: ${job.audio_transcoded_tracks.join(', ')}`}
+                        >
+                          audio cached
+                        </StatusPill>
+                      )}
+                      {job.transcode_error && (
+                        <StatusPill
+                          className="cursor-help bg-red-400/15 text-red-300"
+                          title={job.transcode_error}
+                        >
+                          transcode err
+                        </StatusPill>
+                      )}
                     </div>
-                  )}
-                </div>
-                <div className="flex shrink-0 items-center gap-1">
-                  {onOpenJob && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onOpenJob(job)
-                        setOpen(false)
-                      }}
-                      disabled={job.job_id === activeJobId}
-                      className={`rounded-md p-1.5 transition ${
-                        job.job_id === activeJobId
-                          ? 'cursor-not-allowed text-white/10'
-                          : 'text-white/25 hover:bg-emerald-500/10 hover:text-emerald-400'
-                      }`}
-                      title={
-                        job.job_id === activeJobId ? 'Currently active job' : 'Open job settings'
-                      }
-                    >
-                      <svg
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
+                    <div className="mt-1.5 flex items-center gap-3 text-[0.72rem] text-[var(--text-secondary)]">
+                      <span>{job.source}</span>
+                      {showBaseLabel && job.base && (
+                        <span className="text-[var(--text-tertiary)]">{job.base}</span>
+                      )}
+                      <span className="text-[var(--text-tertiary)]">
+                        {relativeTime(job.created_at)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    {onOpenJob && (
+                      <IconButton
+                        label={
+                          job.job_id === activeJobId ? 'Currently active job' : 'Open job settings'
+                        }
+                        onClick={() => {
+                          onOpenJob(job)
+                          setOpen(false)
+                        }}
+                        disabled={job.job_id === activeJobId}
+                        tone="accent"
+                        accentClass="hover:bg-emerald-500/10 hover:text-emerald-400"
                       >
-                        <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
-                        <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
-                      </svg>
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => void handleDelete(job.job_id)}
-                    disabled={job.job_id === activeJobId}
-                    className={`rounded-md p-1.5 transition ${
-                      job.job_id === activeJobId
-                        ? 'cursor-not-allowed text-white/10'
-                        : 'text-white/25 hover:bg-red-500/10 hover:text-red-400'
-                    }`}
-                    title={job.job_id === activeJobId ? 'Cannot delete active job' : 'Delete job'}
-                  >
-                    <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
+                        <PencilIcon />
+                      </IconButton>
+                    )}
+                    <IconButton
+                      label={job.job_id === activeJobId ? 'Cannot delete active job' : 'Delete job'}
+                      onClick={() => void handleDelete(job.job_id)}
+                      disabled={job.job_id === activeJobId}
+                      tone="danger"
                     >
-                      <polyline points="3 6 5 6 21 6" />
-                      <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
-                      <path d="M10 11v6" />
-                      <path d="M14 11v6" />
-                      <path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2" />
-                    </svg>
-                  </button>
+                      <TrashIcon />
+                    </IconButton>
+                  </div>
                 </div>
+
+                {job.output_files.length > 0 && (
+                  <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-white/6 pt-3">
+                    {job.output_files.map((file) => (
+                      <div key={file} className="inline-flex items-center gap-1.5">
+                        <a
+                          href={getDownloadUrl(job.job_id, file)}
+                          download
+                          className="font-mono text-[0.68rem] text-emerald-400/70 underline decoration-emerald-400/20 hover:decoration-emerald-400/60"
+                        >
+                          &darr; {file}
+                        </a>
+                        {job.source === 'server' && (
+                          <button
+                            type="button"
+                            disabled={savingFile === `${job.job_id}:${file}`}
+                            onClick={() => {
+                              const key = `${job.job_id}:${file}`
+                              setSavingFile(key)
+                              saveToSource(job.job_id, file)
+                                .then(() => onLog?.(`Saved ${file} to source directory`))
+                                .catch((err) =>
+                                  onLog?.(
+                                    `Save failed: ${err instanceof Error ? err.message : String(err)}`,
+                                  ),
+                                )
+                                .finally(() => setSavingFile(null))
+                            }}
+                            className="inline-flex items-center gap-0.5 rounded border border-emerald-400/15 bg-emerald-400/5 px-1.5 py-0.5 text-[0.58rem] text-emerald-400/60 transition hover:border-emerald-400/30 hover:text-emerald-400/90"
+                            title="Save to original file directory"
+                          >
+                            {savingFile === `${job.job_id}:${file}` ? (
+                              <span className="spinner-xs" />
+                            ) : (
+                              <SaveIcon size={10} />
+                            )}
+                            Save
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             ))
           )}

@@ -124,7 +124,7 @@ export default function MediaPlayer({
   const [muted, setMuted] = useState(false)
   const [isMediaReady, setIsMediaReady] = useState(!needsTranscoding)
   const [loadedAspectRatio, setLoadedAspectRatio] = useState<string | null>(null)
-  // Backend is still producing the file — don't let the browser request it yet
+  // Backend is still producing the file - don't let the browser request it yet
   const isTranscodeRunning =
     needsTranscoding && transcodeState !== 'done' && transcodeState !== 'error'
   const isTranscoding = needsTranscoding && (!isMediaReady || isTranscodeRunning)
@@ -144,6 +144,13 @@ export default function MediaPlayer({
   const enforceTrimBounds = useCallback((el: HTMLVideoElement | HTMLAudioElement): boolean => {
     const start = inPointRef.current
     const end = outPointRef.current
+
+    // A job saved without cut settings reopens with outPoint 0, and the probe
+    // that supplies the real duration lands a moment later. Until it does, the
+    // comparison below is true at every position, so each timeupdate seeks back
+    // to the in point — and on a preload="none" element with nothing buffered
+    // every seek issues a fresh range request, flooding the server.
+    if (!(end > start)) return false
 
     if (el.currentTime >= end - END_TOLERANCE_SECONDS) {
       el.currentTime = start

@@ -1,9 +1,10 @@
 from fastapi import FastAPI, Query, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from starlette.types import ASGIApp, Receive, Scope, Send
 from contextlib import asynccontextmanager
+from email.utils import formatdate
 import asyncio
 import json
 import mimetypes
@@ -60,7 +61,14 @@ from app.transcribe_lyrics import (
     VALID_WHISPER_MODELS,
     DEFAULT_WHISPER_MODEL,
 )
+from app.downloader.routes import (
+    router as downloader_router,
+    init_downloader,
+    shutdown_downloader,
+    get_store as get_downloader_store,
+)
 from app.cutter import (
+    get_ffmpeg_info,
     probe_file,
     generate_waveform,
     generate_thumbnail_strip,
@@ -99,6 +107,13 @@ def require_feature(name: str):
     """Raise 404 if feature is not enabled."""
     if name not in ENABLED_FEATURES_SET:
         raise HTTPException(status_code=404, detail=f"Feature '{name}' is not enabled")
+
+
+def require_any_feature(*names: str):
+    """Raise 404 if none of the named features are enabled."""
+    if not any(name in ENABLED_FEATURES_SET for name in names):
+        joined = ", ".join(names)
+        raise HTTPException(status_code=404, detail=f"Requires one of: {joined}")
 
 
 def validate_path(base: str, user_input: str) -> str:
@@ -144,6 +159,18 @@ async def _cleanup_cutter_jobs():
             logger.exception("Error during cutter job cleanup")
 
 
+async def _cleanup_downloader_jobs():
+    """Periodically purge expired download jobs."""
+    from app.config import DOWNLOADER_JOB_TTL
+
+    while True:
+        await asyncio.sleep(600)  # every 10 minutes
+        try:
+            get_downloader_store().purge_expired(DOWNLOADER_JOB_TTL)
+        except Exception:
+            logger.exception("Error during download job cleanup")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan with startup and shutdown events."""
@@ -165,7 +192,14 @@ async def lifespan(app: FastAPI):
     # Start cutter upload cleanup task only if cutter feature is enabled
     cleanup_task = None
     if "cutter" in ENABLED_FEATURES_SET:
-        os.makedirs(CUTTER_JOBS_DIR, exist_ok=True)
+        try:
+            os.makedirs(CUTTER_JOBS_DIR, exist_ok=True)
+        except OSError as e:
+            logger.error(
+                "Cannot create cutter jobs directory %s: %s — cutter feature may fail",
+                CUTTER_JOBS_DIR,
+                e,
+            )
         from app.cutter import migrate_jobs
 
         migrate_jobs()
@@ -179,11 +213,51 @@ async def lifespan(app: FastAPI):
             threading.Thread(target=_ensure_detected, daemon=True).start()
         cleanup_task = asyncio.create_task(_cleanup_cutter_jobs())
 
-    yield
+    # Start the downloader worker pool only if the download feature is enabled
+    downloader_started = False
+    downloader_cleanup_task = None
+    if "download" in ENABLED_FEATURES_SET:
+        if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+            logger.error(
+                "Downloader requires ffmpeg and ffprobe on PATH; jobs will fail."
+            )
+        try:
+            init_downloader()
+        except Exception:
+            # A downloader that cannot reach its data directory is a broken
+            # downloader, not a dead application. An unwritable /downloads bind
+            # mount or an unopenable SQLite file must not stop episodes, music
+            # and cutter from serving — and an exception escaping here would
+            # also skip the shutdown below, orphaning the watchdog observers
+            # and the cutter cleanup task. Broad on purpose: sqlite3.Error is
+            # not an OSError.
+            logger.exception(
+                "Downloader failed to start; the feature will be unavailable"
+            )
+            try:
+                # Release anything the failed init had already built.
+                shutdown_downloader()
+            except Exception:
+                logger.exception("Downloader cleanup after a failed start failed")
+        else:
+            downloader_started = True
+            downloader_cleanup_task = asyncio.create_task(_cleanup_downloader_jobs())
 
-    # Shutdown
-    if cleanup_task is not None:
-        cleanup_task.cancel()
+    try:
+        yield
+    finally:
+        # Shutdown. In a finally block so worker threads and the SQLite
+        # connection are released even if the application errors out.
+        if cleanup_task is not None:
+            cleanup_task.cancel()
+        if downloader_cleanup_task is not None:
+            downloader_cleanup_task.cancel()
+        if downloader_started:
+            shutdown_downloader()
+        _stop_observers()
+
+
+def _stop_observers():
     for obs in _observers:
         obs.stop()
     for obs in _observers:
@@ -194,12 +268,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# Conditional registration is the gate: with the feature off the downloader
+# routes do not exist at all, which is stronger than a per-route feature check.
+if "download" in ENABLED_FEATURES_SET:
+    app.include_router(downloader_router)
+
 _AUTH_EXEMPT_EXACT = {"/health", "/openapi.json"}
 _AUTH_EXEMPT_PREFIXES = ("/auth/", "/docs", "/redoc")
 
 
 class AuthMiddleware:
-    """Pure ASGI middleware — avoids BaseHTTPMiddleware's streaming/SSE buffering issues."""
+    """Pure ASGI middleware - avoids BaseHTTPMiddleware's streaming/SSE buffering issues."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -224,12 +303,12 @@ class AuthMiddleware:
         await self.app(scope, receive, send)
 
 
-# Auth added FIRST (inner), CORS added SECOND (outer) — LIFO means CORS runs first
+# Auth added FIRST (inner), CORS added SECOND (outer) - LIFO means CORS runs first
 app.add_middleware(AuthMiddleware)
 _cors_credentials = AUTH_ENABLED and "*" not in ALLOWED_ORIGINS
 if not _cors_credentials and AUTH_ENABLED:
     logger.warning(
-        "ALLOWED_ORIGINS contains '*' but AUTH is enabled — credentials cannot be sent. "
+        "ALLOWED_ORIGINS contains '*' but AUTH is enabled - credentials cannot be sent. "
         "Set explicit origins in ALLOWED_ORIGINS for auth to work correctly."
     )
 app.add_middleware(
@@ -359,7 +438,7 @@ def refresh_directories():
 def list_media_directories(
     search: str | None = Query(None, description="Text filter", max_length=200),
 ):
-    require_feature("cutter")
+    require_any_feature("cutter", "download")
     all_dirs = _get_cutter_dirs_cached()
 
     filtered = all_dirs
@@ -633,7 +712,7 @@ def start_transcription(
                 effective_format = check_existing_lyrics(filepath, output_format)
                 if effective_format is None:
                     msg_queue.put(
-                        ("progress", f"[SKIP]\t\t\t{filename} — lyrics already exist")
+                        ("progress", f"[SKIP]\t\t\t{filename} - lyrics already exist")
                     )
                     continue
             else:
@@ -748,6 +827,19 @@ _MEDIA_CONTENT_TYPES = {
     ".ac3": "audio/ac3",
     ".dts": "audio/vnd.dts",
 }
+
+
+@app.get("/cutter/status")
+def cutter_status() -> dict:
+    """Report the ffmpeg build backing the cutter (mirrors /download/status)."""
+    require_feature("cutter")
+    info = get_ffmpeg_info()
+    return {
+        "ffmpeg_available": info["available"],
+        "ffmpeg_version": info["version"],
+        "ffmpeg_build": info["build"],
+        "ffmpeg_path": info["path"],
+    }
 
 
 @app.get("/cutter/files")
@@ -950,7 +1042,7 @@ def cutter_stream(
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Audio preview not ready yet — poll "
+                    "Audio preview not ready yet - poll "
                     f"/cutter/preview-status/{file_id}"
                     f"?audio_transcode_stream={audio_stream} and retry"
                 ),
@@ -979,7 +1071,7 @@ def cutter_stream(
         if not master_path:
             raise HTTPException(
                 status_code=409,
-                detail="Preview not ready yet — poll /cutter/preview-status and retry",
+                detail="Preview not ready yet - poll /cutter/preview-status and retry",
             )
         # If a specific audio track is requested, extract it from the master
         if audio_stream is not None:
@@ -1023,14 +1115,29 @@ def cutter_stream(
             raise HTTPException(status_code=500, detail=str(e))
 
     # Serve raw file with HTTP Range support
-    file_size = os.path.getsize(resolved)
+    stat_result = os.stat(resolved)
+    file_size = stat_result.st_size
     ext = os.path.splitext(resolved)[1].lower()
     content_type = _MEDIA_CONTENT_TYPES.get(
         ext,
         mimetypes.guess_type(resolved)[0] or "application/octet-stream",
     )
 
+    # Without validators a browser cannot reuse a single byte it has already
+    # fetched, so every re-buffer and every scrub re-reads the whole range from
+    # disk -- expensive when the source lives on a network share. A preview file
+    # is immutable for a given (mtime, size), so it is safe to let the browser
+    # cache ranges and revalidate cheaply.
+    etag = f'"{int(stat_result.st_mtime)}-{file_size}"'
+    cache_headers = {
+        "ETag": etag,
+        "Last-Modified": formatdate(stat_result.st_mtime, usegmt=True),
+        "Cache-Control": "private, max-age=3600",
+    }
+
     range_header = request.headers.get("range")
+    if not range_header and request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=cache_headers)
     if range_header:
         # Parse Range: bytes=X-Y
         _range_re = re.match(r"bytes=(\d*)-(\d*)", range_header.strip())
@@ -1068,6 +1175,7 @@ def cutter_stream(
                 "Content-Range": f"bytes {start}-{end}/{file_size}",
                 "Content-Length": str(content_length),
                 "Accept-Ranges": "bytes",
+                **cache_headers,
             },
         )
 
@@ -1086,6 +1194,7 @@ def cutter_stream(
         headers={
             "Content-Length": str(file_size),
             "Accept-Ranges": "bytes",
+            **cache_headers,
         },
     )
 
@@ -1105,7 +1214,7 @@ def cutter_preview_status(
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Audio-only transcode status — uses separate key, bypasses master preview check.
+    # Audio-only transcode status - uses separate key, bypasses master preview check.
     # Also kicks off the transcode if not already started, so polling alone is
     # sufficient to start the work (matches master preview behavior).
     if audio_transcode_stream is not None:
@@ -1124,7 +1233,7 @@ def cutter_preview_status(
                     f"Available: {sorted(stream_indices)}",
                 )
         except RuntimeError:
-            pass  # Probe failed — let the transcode attempt handle it
+            pass  # Probe failed - let the transcode attempt handle it
         start_background_audio_transcode(resolved, audio_transcode_stream, job_id)
         return get_audio_transcode_status(resolved, job_id, audio_transcode_stream)
 
@@ -1203,7 +1312,7 @@ async def cutter_upload(request: Request):
             detail=f"Invalid file extension '{ext}'. Allowed: {', '.join(sorted(VALID_CUTTER_EXT))}",
         )
 
-    # Create a job for this upload — mark as uploading until the stream completes
+    # Create a job for this upload - mark as uploading until the stream completes
     job_id = create_job("upload", "", filename, initial_status="uploading")
     job_dir = get_job_dir(job_id)
     input_dir = os.path.join(job_dir, "input")
@@ -1278,20 +1387,15 @@ def cutter_create_job(
     }
 
 
-@app.get("/cutter/jobs")
-def cutter_list_jobs():
-    """List all active jobs."""
-    require_feature("cutter")
-    return {"jobs": list_jobs()}
+def _add_source_file_id(meta: dict) -> dict:
+    """Attach the signed file id the player needs to stream a job's source.
 
-
-@app.get("/cutter/jobs/{job_id}")
-def cutter_get_job(job_id: str):
-    """Get single job details."""
-    require_feature("cutter")
-    meta = load_job_metadata(job_id)
-    if not meta:
-        raise HTTPException(status_code=404, detail="Job not found")
+    Both the list and the single-job endpoint must do this: the panel reopens
+    a job straight from the list, and without this id it builds an empty
+    stream URL, so the browser receives a 404 body instead of media and
+    reports a format error for every file regardless of codec.
+    """
+    job_id = meta.get("job_id", "")
     if meta.get("source") == "server" and meta.get("original_path"):
         base_label = meta.get("base") or ""
         if not base_label:
@@ -1321,6 +1425,24 @@ def cutter_get_job(job_id: str):
             "upload", meta["original_name"], job_id=job_id, base=""
         )
     return meta
+
+
+@app.get("/cutter/jobs")
+def cutter_list_jobs():
+    """List all active jobs."""
+    require_feature("cutter")
+    return {"jobs": [_add_source_file_id(job) for job in list_jobs()]}
+
+
+@app.get("/cutter/jobs/{job_id}")
+def cutter_get_job(job_id: str):
+    """Get single job details."""
+    require_feature("cutter")
+    meta = load_job_metadata(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Job not found")
+    meta.setdefault("job_id", job_id)
+    return _add_source_file_id(meta)
 
 
 @app.delete("/cutter/jobs/{job_id}")
@@ -1591,7 +1713,7 @@ def cutter_cut(
         for stream in probe_audio_streams:
             source_audio_bitrates[stream["index"]] = stream.get("bit_rate", 0)
 
-    # Determine output filename — use original name if no output_name given
+    # Determine output filename - use original name if no output_name given
     original_name = os.path.basename(resolved)
     original_ext = os.path.splitext(original_name)[1]  # e.g. ".mkv"
 

@@ -431,4 +431,5 @@ TODO.txt
 /.claude
 .worktrees/
 nul
-.github/ 
+
+CLAUDE.md

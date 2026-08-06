@@ -189,3 +189,58 @@ export interface CutterPersistedState {
   serverState: CutterSourceState
   uploadState: CutterSourceState
 }
+
+export type DownloadStage =
+  'queued' | 'downloading' | 'transcoding' | 'done' | 'cancelled' | 'error'
+
+export interface DownloadItem {
+  index: number
+  title: string
+  path: string | null
+  size: number | null
+  progress: number
+  stage: DownloadStage
+  error: string | null
+}
+
+export interface DownloadJob {
+  job_id: string
+  url: string
+  stage: DownloadStage
+  error: string | null
+  created_at: string
+  updated_at: string
+  items: DownloadItem[]
+  has_transcode: boolean
+}
+
+export interface DownloadForm {
+  url: string
+  type: 'video' | 'audio' | 'thumbnail'
+  codec: string
+  format: string
+  quality: string
+  output_dir: string
+  base: string
+  auto_start: boolean
+  sub_folder: string
+  custom_prefix: string
+  custom_filename: string
+  item_limit: number
+}
+
+export interface CutterStatus {
+  ffmpeg_available: boolean
+  ffmpeg_version: string
+  /** 'jellyfin' | 'standard', or '' when ffmpeg is unavailable. */
+  ffmpeg_build: string
+  ffmpeg_path: string
+}
+
+export interface DownloaderStatus {
+  yt_dlp_version: string
+  cookies_present: boolean
+  downloads_dir: string
+  queue_depth: number
+  workers: number
+}

@@ -32,7 +32,7 @@ const containerAudioCodecs: Record<string, Set<string>> = {
 // ── Containers that reject stream-copy (passthru) for specific codecs ──────
 // Passthru copies the bitstream as-is. Most containers (especially MKV/MKA)
 // accept virtually any codec via stream copy. Only list containers with real
-// muxing restrictions here — if a container isn't listed, passthru is allowed.
+// muxing restrictions here - if a container isn't listed, passthru is allowed.
 const containerPassthruBlacklist: Record<string, Set<string>> = {
   mp4: new Set(['dts', 'truehd', 'flac', 'vorbis', 'pcm_s16le', 'pcm_s24le']),
   m4a: new Set(['dts', 'truehd', 'flac', 'vorbis', 'pcm_s16le', 'pcm_s24le']),

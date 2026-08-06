@@ -1,4 +1,7 @@
-export const API_BASE = window.location.origin
+import { API_BASE, assertAuthenticated } from '@/lib/http'
+import { openEventStream } from '@/lib/eventStream'
+
+export { API_BASE, assertAuthenticated }
 
 const DEFAULT_TIMEOUT_MS = 30_000
 
@@ -13,17 +16,11 @@ async function extractErrorMessage(res: Response): Promise<string> {
   return `HTTP ${res.status}: ${res.statusText}`
 }
 
-export function assertAuthenticated(res: Response | XMLHttpRequest): void {
-  if (res.status === 401) {
-    window.dispatchEvent(new Event('auth:expired'))
-    throw new Error('Session expired')
-  }
-}
-
 export async function fetchJson<T>(
   path: string,
   params?: Record<string, string>,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  init?: RequestInit,
 ): Promise<T> {
   const url = new URL(path, API_BASE)
   if (params) {
@@ -31,10 +28,27 @@ export async function fetchJson<T>(
       if (v) url.searchParams.set(k, v)
     }
   }
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), credentials: 'include' })
+  const res = await fetch(url.toString(), {
+    signal: AbortSignal.timeout(timeoutMs),
+    credentials: 'include',
+    ...init,
+  })
   assertAuthenticated(res)
   if (!res.ok) {
     throw new Error(await extractErrorMessage(res))
+  }
+  const contentType = res.headers.get('content-type') ?? ''
+  if (!contentType.includes('application/json')) {
+    const body = await res.text()
+    const preview = body.trim().slice(0, 80)
+    if (preview.startsWith('<!DOCTYPE') || preview.startsWith('<html')) {
+      throw new Error(
+        `Expected JSON from ${path}, but received HTML. Check the frontend API proxy.`,
+      )
+    }
+    throw new Error(
+      `Expected JSON from ${path}, but received ${contentType || 'unknown content type'}.`,
+    )
   }
   return res.json() as Promise<T>
 }
@@ -79,6 +93,12 @@ export async function fetchMusicFiles(
 
 export async function fetchConfig(): Promise<{ features: string[]; base_paths: string[] }> {
   return fetchJson('/config')
+}
+
+export async function fetchMediaDirectories(
+  search?: string,
+): Promise<import('@/types').DirectoriesResponse> {
+  return fetchJson('/directories/media', search ? { search } : undefined)
 }
 
 export function uploadFile(
@@ -289,6 +309,98 @@ export async function fetchAuthStatus(): Promise<{
   authenticated: boolean
 }> {
   return fetchJson('/auth/status')
+}
+
+export async function fetchCutterStatus(): Promise<import('@/types').CutterStatus> {
+  return fetchJson('/cutter/status')
+}
+
+export async function fetchDownloaderStatus(): Promise<import('@/types').DownloaderStatus> {
+  return fetchJson('/download/status')
+}
+
+export async function fetchDownloadJobs(): Promise<{ jobs: import('@/types').DownloadJob[] }> {
+  return fetchJson('/download/jobs')
+}
+
+export async function createDownloads(
+  urls: string[],
+  options: Omit<import('@/types').DownloadForm, 'url'> | Record<string, unknown>,
+): Promise<{ job_ids: string[] }> {
+  return fetchJson('/download', undefined, DEFAULT_TIMEOUT_MS, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ urls, options }),
+  })
+}
+
+export async function startDownloadJob(jobId: string): Promise<{ status: string }> {
+  return fetchJson(
+    `/download/jobs/${encodeURIComponent(jobId)}/start`,
+    undefined,
+    DEFAULT_TIMEOUT_MS,
+    {
+      method: 'POST',
+    },
+  )
+}
+
+export async function cancelDownloadJob(jobId: string): Promise<{ status: string }> {
+  return fetchJson(
+    `/download/jobs/${encodeURIComponent(jobId)}/cancel`,
+    undefined,
+    DEFAULT_TIMEOUT_MS,
+    {
+      method: 'POST',
+    },
+  )
+}
+
+export function openDownloadStream(
+  onEvent: (data: string) => void,
+  onStateChange?: (connected: boolean) => void,
+): () => void {
+  return openEventStream('/download/events', onEvent, { onStateChange })
+}
+
+export function getDownloadItemFileUrl(jobId: string, index: number): string {
+  return `/download/jobs/${encodeURIComponent(jobId)}/items/${index}/file`
+}
+
+export async function deleteDownloadJob(jobId: string): Promise<void> {
+  const url = new URL(`/download/jobs/${encodeURIComponent(jobId)}`, API_BASE)
+  const res = await fetch(url, {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    credentials: 'include',
+  })
+  assertAuthenticated(res)
+  if (!res.ok) throw new Error(await extractErrorMessage(res))
+}
+
+export async function postCookies(file: File): Promise<void> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const url = new URL('/download/cookies', API_BASE)
+  const res = await fetch(url, {
+    method: 'POST',
+    body: formData,
+    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    credentials: 'include',
+  })
+  assertAuthenticated(res)
+  if (!res.ok) throw new Error(await extractErrorMessage(res))
+}
+
+export async function deleteCookies(): Promise<void> {
+  const url = new URL('/download/cookies', API_BASE)
+  const res = await fetch(url, {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    credentials: 'include',
+  })
+  assertAuthenticated(res)
+  if (!res.ok) throw new Error(await extractErrorMessage(res))
 }
 
 export async function postLogout(): Promise<void> {

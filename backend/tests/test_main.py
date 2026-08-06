@@ -82,6 +82,21 @@ class TestDirectoryEndpoints:
         assert "path" in dirs[0]
         assert "base" in dirs[0]
 
+    def test_media_directories_available_for_download_feature(self, client, monkeypatch):
+        import app.main as main_mod
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"download"})
+        monkeypatch.setattr(
+            main_mod,
+            "_get_cutter_dirs_cached",
+            lambda: [{"path": "Downloads", "base": "media"}],
+        )
+
+        resp = client.get("/directories/media")
+
+        assert resp.status_code == 200
+        assert resp.json()["directories"] == [{"path": "Downloads", "base": "media"}]
+
 
 class TestInputValidation:
     def test_threshold_out_of_range(self, client, base_label):
@@ -172,6 +187,143 @@ class TestPathTraversal:
         })
         assert resp.status_code == 400
         assert "Unknown base" in resp.json()["detail"]
+
+
+class TestDownloaderEndpoints:
+    def test_download_status_shape(self, client):
+        resp = client.get("/download/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert set(data.keys()) == {
+            "yt_dlp_version",
+            "cookies_present",
+            "downloads_dir",
+            "queue_depth",
+            "workers",
+        }
+
+    def test_download_create_returns_job_ids_without_starting_work(self, client):
+        resp = client.post(
+            "/download",
+            json={
+                "urls": ["https://example.com/watch?v=demo"],
+                "options": {"type": "video", "format": "mp4", "auto_start": False},
+            },
+        )
+
+        assert resp.status_code == 200
+        job_ids = resp.json()["job_ids"]
+        assert len(job_ids) == 1
+
+        job = client.get(f"/download/jobs/{job_ids[0]}").json()
+        assert job["stage"] == "queued"
+        assert job["url"] == "https://example.com/watch?v=demo"
+
+    def test_download_create_rejects_non_http_url(self, client):
+        resp = client.post(
+            "/download", json={"urls": ["ftp://example.com/x"], "options": {}}
+        )
+
+        assert resp.status_code == 422
+
+    def test_download_delete_unknown_job_returns_404(self, client):
+        resp = client.delete("/download/jobs/11111111-1111-1111-1111-111111111111")
+
+        assert resp.status_code == 404
+
+    def test_download_cookie_upload_writes_file_bytes(self, client):
+        import app.downloader.routes as routes_mod
+
+        resp = client.post(
+            "/download/cookies",
+            files={"file": ("cookies.txt", b"cookie-data", "text/plain")},
+        )
+
+        assert resp.status_code == 200
+        with open(routes_mod.cookie_path(), "rb") as f:
+            assert f.read() == b"cookie-data"
+
+    def test_download_routes_absent_when_feature_disabled(self, tmp_path):
+        """The feature flag gates route registration, not just the handler."""
+        import importlib
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(tmp_path),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes",
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.downloader.routes as routes_mod
+            importlib.reload(routes_mod)
+            import app.main as main_mod
+            importlib.reload(main_mod)
+
+            with TestClient(main_mod.app) as c:
+                paths = c.get("/openapi.json").json()["paths"]
+                assert not any(p.startswith("/download") for p in paths)
+                assert c.get("/download/status").status_code == 404
+                # No store or worker pool was built either.
+                assert routes_mod._store is None
+                assert routes_mod._queue is None
+
+    def test_downloader_failing_to_start_does_not_kill_the_app(self, tmp_path):
+        """An unwritable downloader data dir must degrade one feature, not all.
+
+        The code this replaced wrapped its directory creation in try/except and
+        only logged. init_downloader() opens SQLite as well, so a failure here
+        must not escape lifespan startup: the app would never serve, and
+        because the raise happens before the try/finally, the watchdog
+        observers and the cutter cleanup task would both be orphaned.
+        """
+        import importlib
+
+        media = tmp_path / "media"
+        (media / "TV Shows").mkdir(parents=True)
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(media),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes,cutter,download",
+            "DOWNLOADS_DIR": str(tmp_path / "downloads"),
+            "DOWNLOADER_DATA_DIR": str(tmp_path / "dl-data"),
+            "DOWNLOADER_DB": str(tmp_path / "dl-data" / "downloader.db"),
+            "CUTTER_JOBS_DIR": str(tmp_path / "cutter-jobs"),
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.downloader.routes as routes_mod
+            importlib.reload(routes_mod)
+            import app.main as main_mod
+            importlib.reload(main_mod)
+
+            with patch.object(
+                routes_mod, "JobStore", side_effect=OSError("read-only file system")
+            ):
+                with TestClient(main_mod.app) as c:
+                    # The app serves, and the untouched features still work.
+                    assert c.get("/health").status_code == 200
+                    assert c.get("/directories/tvshows").status_code == 200
+                    # The downloader itself is unavailable, not half-built.
+                    assert routes_mod._store is None
+                    assert routes_mod._queue is None
+
+                # The watchers were actually started, so this is not vacuous...
+                assert main_mod._observers
+                # ...and the shutdown half of lifespan still ran, rather than
+                # being skipped by an exception raised before the try block.
+                assert all(not obs.is_alive() for obs in main_mod._observers)
 
 
 class TestCutterStreamValidation:
@@ -380,6 +532,150 @@ class TestCutterDeleteJob:
 
         assert resp.status_code == 409
         assert "still busy" in resp.json()["detail"]
+
+
+class TestCutterStatusEndpoint:
+    """/cutter/status reports the ffmpeg build the cutter will actually use."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_ffmpeg_cache(self):
+        """The probe is cached for the process, so no fake may outlive a test."""
+        import app.cutter as cutter_mod
+
+        cutter_mod.get_ffmpeg_info.cache_clear()
+        yield
+        cutter_mod.get_ffmpeg_info.cache_clear()
+
+    @staticmethod
+    def _patch_ffmpeg(
+        monkeypatch, *, which, banner, on_run=None, returncode_value=0, raises=None
+    ):
+        """Point the ffmpeg probe at a fake binary and banner.
+
+        Patched on app.cutter's own namespace rather than the shutil/subprocess
+        modules so nothing else running in-process sees the fakes.
+        """
+        import subprocess as subprocess_mod
+        import types
+        import app.cutter as cutter_mod
+
+        class FakeCompleted:
+            stdout = banner
+            stderr = ""
+            returncode = returncode_value
+
+        def fake_run(*args, **kwargs):
+            if on_run is not None:
+                on_run(args)
+            if raises is not None:
+                raise raises
+            return FakeCompleted()
+
+        monkeypatch.setattr(
+            cutter_mod, "shutil", types.SimpleNamespace(which=lambda name: which)
+        )
+        monkeypatch.setattr(
+            cutter_mod,
+            "subprocess",
+            types.SimpleNamespace(
+                run=fake_run, SubprocessError=subprocess_mod.SubprocessError
+            ),
+        )
+
+    def test_reports_jellyfin_build(self, client, monkeypatch):
+        self._patch_ffmpeg(
+            monkeypatch,
+            which="/usr/local/bin/ffmpeg",
+            banner=(
+                "ffmpeg version 7.1.1-Jellyfin Copyright (c) 2000-2025 the FFmpeg developers\n"
+                "built with gcc 12\n"
+            ),
+        )
+
+        resp = client.get("/cutter/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ffmpeg_available"] is True
+        assert data["ffmpeg_version"] == "7.1.1-Jellyfin"
+        assert data["ffmpeg_build"] == "jellyfin"
+
+    def test_reports_plain_build(self, client, monkeypatch):
+        self._patch_ffmpeg(
+            monkeypatch,
+            which="/usr/bin/ffmpeg",
+            banner=(
+                "ffmpeg version 5.1.6-0+deb12u1 Copyright (c) 2000-2024 the FFmpeg developers\n"
+            ),
+        )
+
+        resp = client.get("/cutter/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ffmpeg_available"] is True
+        assert data["ffmpeg_version"] == "5.1.6-0+deb12u1"
+        assert data["ffmpeg_build"] == "standard"
+
+    def test_reports_missing_ffmpeg_without_raising(self, client, monkeypatch):
+        self._patch_ffmpeg(monkeypatch, which=None, banner="")
+
+        resp = client.get("/cutter/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ffmpeg_available"] is False
+        assert data["ffmpeg_version"] == ""
+        assert data["ffmpeg_build"] == ""
+
+    def test_reports_unavailable_when_the_probe_exits_non_zero(self, client, monkeypatch):
+        """A binary on PATH that fails to run is not a usable ffmpeg."""
+        self._patch_ffmpeg(
+            monkeypatch, which="/usr/bin/ffmpeg", banner="", returncode_value=1
+        )
+
+        resp = client.get("/cutter/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["ffmpeg_available"] is False
+
+    def test_reports_unavailable_when_the_probe_raises(self, client, monkeypatch):
+        import subprocess as subprocess_mod
+
+        self._patch_ffmpeg(
+            monkeypatch,
+            which="/usr/bin/ffmpeg",
+            banner="",
+            raises=subprocess_mod.TimeoutExpired(cmd="ffmpeg", timeout=10),
+        )
+
+        resp = client.get("/cutter/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["ffmpeg_available"] is False
+
+    def test_result_is_cached_across_requests(self, client, monkeypatch):
+        calls = []
+        self._patch_ffmpeg(
+            monkeypatch,
+            which="/usr/local/bin/ffmpeg",
+            banner="ffmpeg version 7.1.1-Jellyfin Copyright (c) 2000-2025\n",
+            on_run=calls.append,
+        )
+
+        client.get("/cutter/status")
+        client.get("/cutter/status")
+
+        assert len(calls) == 1
+
+    def test_absent_when_cutter_feature_disabled(self, client, monkeypatch):
+        import app.main as main_mod
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"episodes"})
+
+        resp = client.get("/cutter/status")
+
+        assert resp.status_code == 404
 
 
 class TestCutterValidation:
@@ -642,3 +938,73 @@ class TestRenameMusicLyricsAction:
         })
 
         assert seen["lyrics_action"] == "rename"
+
+
+def test_upload_cookies_rejects_oversized_file(client):
+    """Cookie files should be limited to 1 MB."""
+    huge = b"x" * (1024 * 1024 + 1)
+    response = client.post(
+        "/download/cookies",
+        files={"file": ("cookies.txt", huge, "text/plain")},
+    )
+    assert response.status_code == 413
+
+
+def test_upload_cookies_accepts_valid_netscape_format(client):
+    import app.downloader.routes as routes_mod
+
+    content = b"# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t0\tname\tvalue\n"
+    response = client.post(
+        "/download/cookies",
+        files={"file": ("cookies.txt", content, "text/plain")},
+    )
+    assert response.status_code == 200
+    with open(routes_mod.cookie_path(), "rb") as f:
+        assert f.read() == content
+
+
+class TestCutterJobListEnrichment:
+    """A job reopened from the Jobs list must carry a usable source_file_id.
+
+    `/cutter/jobs/{id}` computes `source_file_id`; `/cutter/jobs` used to
+    return raw metadata without it. The panel reopens jobs from the *list*,
+    so `fileId` arrived empty, the player requested `/cutter/stream/` and got
+    a 404 JSON body, and the browser reported MEDIA_ELEMENT_ERROR 4 for every
+    file regardless of codec.
+    """
+
+    def _write_job(self, jobs_dir, job_id, base_label):
+        import json
+
+        job_dir = jobs_dir / job_id
+        job_dir.mkdir(parents=True)
+        meta = {
+            "job_id": job_id,
+            "source": "server",
+            "original_path": "TV Shows/Example.mkv",
+            "original_name": "Example.mkv",
+            "base": base_label,
+            "status": "ready",
+            "output_files": [],
+            "created_at": "2026-08-06T00:00:00+00:00",
+        }
+        (job_dir / "job.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    def test_listed_job_carries_the_same_source_file_id_as_the_single_job(
+        self, client, tmp_path, monkeypatch, base_label
+    ):
+        import app.cutter as cutter_mod
+        import app.main as main_mod
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"cutter"})
+        jobs_dir = tmp_path / "cutter-jobs"
+        job_id = "11111111-1111-1111-1111-111111111111"
+        self._write_job(jobs_dir, job_id, base_label)
+        monkeypatch.setattr(cutter_mod, "CUTTER_JOBS_DIR", str(jobs_dir))
+
+        single = main_mod.cutter_get_job(job_id)
+        listed = main_mod.cutter_list_jobs()["jobs"]
+
+        assert single.get("source_file_id"), "single-job endpoint should compute a file id"
+        assert len(listed) == 1
+        assert listed[0].get("source_file_id") == single["source_file_id"]

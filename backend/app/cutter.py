@@ -159,6 +159,78 @@ def _safe_getmtime(filepath: str) -> float:
         raise RuntimeError(f"Cannot access file {filepath}: {e}") from e
 
 
+_FFMPEG_VERSION_RE = re.compile(r"^ffmpeg version (\S+)", re.IGNORECASE)
+
+
+def _parse_ffmpeg_version(banner: str) -> str:
+    """Pull the version token out of the first line of ``ffmpeg -version``.
+
+    Jellyfin's build reports e.g. ``ffmpeg version 7.1.1-Jellyfin`` while a
+    distro build reports ``ffmpeg version 5.1.6-0+deb12u1``.
+    """
+    for line in banner.splitlines():
+        match = _FFMPEG_VERSION_RE.match(line.strip())
+        if match:
+            return match.group(1)
+    return ""
+
+
+@functools.lru_cache(maxsize=1)
+def get_ffmpeg_info() -> dict:
+    """Describe the ffmpeg binary on PATH: version and which build it is.
+
+    Cached for the process lifetime — the binary cannot change under a running
+    container, and shelling out per request would be wasteful. Never raises:
+    a missing or unrunnable ffmpeg is reported as ``available: False``.
+
+    The build is identified from the version banner (Jellyfin stamps
+    ``-Jellyfin`` into its version string) with the resolved binary path as a
+    second signal, because the image symlinks
+    ``/usr/lib/jellyfin-ffmpeg/ffmpeg`` onto PATH on amd64 only and falls back
+    to the distro package on other architectures.
+    """
+    path = shutil.which("ffmpeg")
+    if path is None:
+        return {"available": False, "version": "", "build": "", "path": ""}
+
+    try:
+        resolved = os.path.realpath(path)
+    except OSError:
+        resolved = path
+
+    # Being on PATH is not the same as being runnable: a truncated download, a
+    # missing shared library or a wrong-architecture binary all resolve fine and
+    # then fail to execute. Reporting those as available would put a build label
+    # and an empty version in front of the user for an ffmpeg that cannot run.
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        logger.warning("Could not run 'ffmpeg -version'", exc_info=True)
+        return {"available": False, "version": "", "build": "", "path": resolved}
+
+    if result.returncode != 0:
+        logger.warning(
+            "'ffmpeg -version' exited with %s; treating ffmpeg as unavailable",
+            result.returncode,
+        )
+        return {"available": False, "version": "", "build": "", "path": resolved}
+
+    banner = result.stdout or result.stderr or ""
+    version = _parse_ffmpeg_version(banner)
+    is_jellyfin = "jellyfin" in version.lower() or "jellyfin-ffmpeg" in resolved.lower()
+    return {
+        "available": True,
+        "version": version,
+        "build": "jellyfin" if is_jellyfin else "standard",
+        "path": resolved,
+    }
+
+
 def _extract_window(filepath: str, position: float, window_secs: float = 5.0) -> bytes:
     """Extract a short audio window from a file using fast seek."""
     cmd = [
@@ -406,10 +478,10 @@ def needs_transcoding(
     """Return True if the file needs transcoding for browser preview.
 
     Checks file extension plus audio/video codecs. Browsers only
-    support a limited set of containers (MP4, WebM, etc.) — files in
+    support a limited set of containers (MP4, WebM, etc.) - files in
     unsupported containers (MKV, AVI, etc.) must always be transcoded.
     """
-    # Check file extension — more reliable than ffprobe format_name
+    # Check file extension - more reliable than ffprobe format_name
     if filepath:
         ext = os.path.splitext(filepath)[1].lower()
         if ext and ext not in _BROWSER_EXTENSIONS:
@@ -531,7 +603,7 @@ def _preview_status_key(filepath: str, job_id: str) -> str:
 def _audio_transcode_status_key(
     filepath: str, job_id: str, audio_stream_index: int
 ) -> str:
-    """Status key for audio-only transcode — distinct from master preview key."""
+    """Status key for audio-only transcode - distinct from master preview key."""
     return f"{job_id}:{_preview_cache_key(filepath)}:srcaudio{audio_stream_index}"
 
 
@@ -1308,9 +1380,9 @@ def get_or_create_audio_master(
 ) -> tuple[str, bool]:
     """Extract all audio streams from source into a cached MKA file.
 
-    Uses stream copy (no decode/encode) — pure I/O, much faster than
+    Uses stream copy (no decode/encode) - pure I/O, much faster than
     transcoding.  The result is cached per source file in the job directory.
-    Callers should NOT call ``_begin_job_operation`` — this function uses
+    Callers should NOT call ``_begin_job_operation`` - this function uses
     the caller's existing ``cancel_event``.
 
     Returns ``(audio_master_path, was_extracted)`` where *was_extracted*
@@ -1516,7 +1588,7 @@ def transcode_audio_track_from_source(
     """Transcode a single audio track from the source file to AAC MP4.
 
     Unlike ``get_audio_track_preview`` (which extracts from a master preview),
-    this works directly on the source file — no master preview needed.
+    this works directly on the source file - no master preview needed.
     Returns the path to the cached audio-only MP4.
     """
     cancel_event = threading.Event()
@@ -2069,7 +2141,7 @@ def start_background_transcode(
         _transcode_semaphore.acquire()
         try:
             get_or_transcode_preview(filepath, job_id)
-            # Transcode succeeded — clear active flag
+            # Transcode succeeded - clear active flag
             with get_job_meta_lock(job_id):
                 _meta = load_job_metadata(job_id)
                 if _meta:
@@ -2538,7 +2610,7 @@ def cut_file(
                 if stripped:
                     stderr_lines.append(stripped)
                     # Deduplicate repetitive warnings (e.g. per-frame
-                    # "Non-monotonic DTS" messages) — show only the first
+                    # "Non-monotonic DTS" messages) - show only the first
                     # occurrence to avoid flooding the log.
                     # Strip varying numeric values to normalise the key.
                     dedup_key = re.sub(r"\d+", "#", stripped)
@@ -2561,7 +2633,7 @@ def cut_file(
             if _gpu_encoder_name:
                 blacklist_encoder(_gpu_encoder_name)
                 progress_cb(
-                    f"GPU encoder {_gpu_encoder_name} failed — retrying with CPU"
+                    f"GPU encoder {_gpu_encoder_name} failed - retrying with CPU"
                 )
                 # Clean up before recursive retry; set flag so finally doesn't repeat
                 _cleaned_up = True
@@ -2930,7 +3002,7 @@ def cleanup_old_jobs() -> None:
                     delete_job(name)
                     logger.info("Cleaned up expired job %s", name)
             else:
-                # No metadata — check dir mtime
+                # No metadata - check dir mtime
                 mtime = datetime.fromtimestamp(
                     os.path.getmtime(job_dir), tz=timezone.utc
                 )
@@ -2999,7 +3071,7 @@ def cleanup_old_jobs() -> None:
     ]:
         if len(d) > _DICT_SIZE_WARN_THRESHOLD:
             logger.warning(
-                "Cutter runtime dict %s has %d entries (threshold %d) — "
+                "Cutter runtime dict %s has %d entries (threshold %d) - "
                 "possible memory leak",
                 name,
                 len(d),

@@ -6,6 +6,7 @@ import EpisodePanel from '@/components/EpisodePanel'
 import MusicPanel from '@/components/MusicPanel'
 import LyricsPanel from '@/components/LyricsPanel'
 import CutterPanel from '@/components/CutterPanel'
+import DownloaderPanel from '@/components/DownloaderPanel'
 import { fetchAuthStatus, fetchConfig, postLogout } from '@/lib/api'
 import type { CutterPersistedState, CutterSourceState } from '@/types'
 
@@ -129,6 +130,8 @@ export default function App() {
   const [cutterStarted, setCutterStarted] = useState(false)
   const [cutterState, setCutterState] = useState<CutterPersistedState>(INITIAL_CUTTER_STATE)
 
+  const [downloaderError, setDownloaderError] = useState('')
+
   const handleEpisodeLog = useCallback((log: string[]) => {
     setEpisodeStarted(true)
     setEpisodeLog(log)
@@ -153,6 +156,7 @@ export default function App() {
   const handleMusicError = useCallback((err: string) => setMusicError(err), [])
   const handleLyricsError = useCallback((err: string) => setLyricsError(err), [])
   const handleCutterError = useCallback((err: string) => setCutterError(err), [])
+  const handleDownloaderError = useCallback((err: string) => setDownloaderError(err), [])
 
   const goHome = useCallback(() => {
     setActiveView('home')
@@ -247,6 +251,17 @@ export default function App() {
         hasStarted={cutterStarted}
         persisted={cutterState}
         onPersistedChange={setCutterState}
+        showBaseLabel={basePaths.length > 1}
+      />
+    )
+  }
+
+  if (activeView === 'download') {
+    return (
+      <DownloaderPanel
+        onError={handleDownloaderError}
+        onBack={goHome}
+        error={downloaderError}
         showBaseLabel={basePaths.length > 1}
       />
     )

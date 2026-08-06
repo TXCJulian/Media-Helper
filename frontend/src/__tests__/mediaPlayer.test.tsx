@@ -151,3 +151,52 @@ describe('MediaPlayer', () => {
     expect(video?.getAttribute('style')).toContain('aspect-ratio: 16 / 9')
   })
 })
+
+describe('trim bounds with an unset out point', () => {
+  // A job saved without cut_settings reopens with outPoint = 0. enforceTrimBounds
+  // compared `currentTime >= outPoint - tolerance`, which is always true at 0, so
+  // every timeupdate seeked back to the in point — and each seek on a
+  // preload="none" element with nothing buffered issues a fresh range request.
+  // That was the ~10 requests/second storm after a transcode finished.
+  it('does not seek when the out point is zero', () => {
+    const { container } = render(<MediaPlayer {...baseProps({ outPoint: 0, inPoint: 0 })} />)
+    const video = container.querySelector('video') as HTMLVideoElement
+
+    let seeks = 0
+    let time = 5
+    Object.defineProperty(video, 'currentTime', {
+      configurable: true,
+      get: () => time,
+      set: (v: number) => {
+        seeks += 1
+        time = v
+      },
+    })
+
+    fireEvent.timeUpdate(video)
+    fireEvent.timeUpdate(video)
+    fireEvent.timeUpdate(video)
+
+    expect(seeks).toBe(0)
+  })
+
+  it('still loops back to the in point once a real out point is reached', () => {
+    const { container } = render(<MediaPlayer {...baseProps({ inPoint: 2, outPoint: 10 })} />)
+    const video = container.querySelector('video') as HTMLVideoElement
+
+    const written: number[] = []
+    let time = 10
+    Object.defineProperty(video, 'currentTime', {
+      configurable: true,
+      get: () => time,
+      set: (v: number) => {
+        written.push(v)
+        time = v
+      },
+    })
+
+    fireEvent.timeUpdate(video)
+
+    expect(written).toContain(2)
+  })
+})

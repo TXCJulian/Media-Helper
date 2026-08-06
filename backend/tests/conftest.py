@@ -48,7 +48,7 @@ def tmp_tvshow_pattern_dir(tmp_media_dir):
 
 @pytest.fixture
 def tmp_tvshow_mixed_dir(tmp_media_dir):
-    """Create a TV show directory with mixed filenames — some with titles, some pattern-only."""
+    """Create a TV show directory with mixed filenames - some with titles, some pattern-only."""
     show_dir = tmp_media_dir / "TV Shows" / "MixedShow" / "Season 01"
     show_dir.mkdir(parents=True)
 
@@ -65,7 +65,7 @@ def base_label(tmp_media_dir):
 
 
 @pytest.fixture
-def client(tmp_media_dir):
+def client(tmp_media_dir, tmp_path):
     """Create a test client with mocked paths."""
     with patch.dict(os.environ, {
         "BASE_PATHS": str(tmp_media_dir),
@@ -75,6 +75,13 @@ def client(tmp_media_dir):
         "AUTH_USERNAME": "",
         "AUTH_PASSWORD": "",
         "SECRET_KEY": "test-secret-key",
+        # The download feature is on by default, so its lifespan startup runs
+        # for every test using this fixture. Point its state at tmp_path so the
+        # suite never touches the real /downloads or /data/downloader.
+        "DOWNLOADS_DIR": str(tmp_path / "downloads"),
+        "DOWNLOADER_DATA_DIR": str(tmp_path / "dl-data"),
+        "DOWNLOADER_DB": str(tmp_path / "dl-data" / "downloader.db"),
+        "YT_DLP_COOKIES": "",
     }):
         import importlib
         import app.config as config_mod
@@ -83,6 +90,12 @@ def client(tmp_media_dir):
         importlib.reload(auth_mod)
         import app.get_dirs as get_dirs_mod
         importlib.reload(get_dirs_mod)
+        # routes.py copies config values into its own namespace at import time,
+        # so it must be reloaded after config for those paths to take effect.
+        import app.downloader.ydl as ydl_mod
+        importlib.reload(ydl_mod)
+        import app.downloader.routes as routes_mod
+        importlib.reload(routes_mod)
         import app.main as main_mod
         importlib.reload(main_mod)
 

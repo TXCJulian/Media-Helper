@@ -37,12 +37,13 @@ A media management tool for renaming TV shows, music files, transcribing lyrics,
 
 ## Overview
 
-Media-Helper is a dockerized tool with four modules:
+Media-Helper is a dockerized tool with five modules:
 
-1. **Episode Renamer** — Renames TV show episodes using TMDB metadata
-2. **Music Renamer** — Renames music files based on ID3/audio tags
-3. **Lyrics Transcriber** — Transcribes lyrics from audio files using AI (HDemucs + Whisper + Genius)
-4. **Media Cutter** — Trim and cut audio/video files with waveform preview and per-track codec control
+1. **Episode Renamer** - Renames TV show episodes using TMDB metadata
+2. **Music Renamer** - Renames music files based on ID3/audio tags
+3. **Lyrics Transcriber** - Transcribes lyrics from audio files using AI (HDemucs + Whisper + Genius)
+4. **Media Cutter** - Trim and cut audio/video files with waveform preview and per-track codec control
+5. **Downloader** - Download media via yt-dlp with codec/format/quality selection, playlist support, and cookie authentication
 
 The application consists of a FastAPI backend (Python 3.14), a React frontend (Vite + Tailwind CSS), and an optional GPU-powered lyrics transcription service. All services communicate over a Docker bridge network behind an Nginx reverse proxy.
 
@@ -99,7 +100,7 @@ The application consists of a FastAPI backend (Python 3.14), a React frontend (V
 ### General
 
 - Modern dark-themed web interface with glassmorphism design
-- Feature toggle system — enable/disable modules via environment variable
+- Feature toggle system - enable/disable modules via environment variable
 - Landing page with module navigation
 - Real-time output logs per module
 - Fully dockerized with Docker Compose
@@ -164,7 +165,7 @@ Browser                    Frontend Container               Backend Container
 
 - **No CORS issues**: all requests are same-origin from the browser's perspective
 - **Single entry point**: only port 3333 needs to be exposed
-- **Backend stays private**: port 3332 is not published — the backend is only reachable via Nginx
+- **Backend stays private**: port 3332 is not published - the backend is only reachable via Nginx
 - **SSE support**: Nginx configured with disabled buffering for real-time streaming
 - **Feature isolation**: each module can be independently enabled/disabled
 - **Session-based auth**: when `AUTH_USERNAME`/`AUTH_PASSWORD` are set, all endpoints require a valid signed session
@@ -203,7 +204,7 @@ Edit the `docker-compose.yml` and adjust the following values:
 ```yaml
 environment:
   - TMDB_API_KEY=YOUR_TMDB_API_KEY_HERE
-  - ENABLED_FEATURES=episodes,music,lyrics,cutter  # Enable modules
+  - ENABLED_FEATURES=episodes,music,lyrics,cutter,download  # Enable modules
 volumes:
   - /path/to/your/media:/media:rw
 ```
@@ -238,17 +239,23 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `VALID_VIDEO_EXT` | Video file extensions (CSV) | `.mp4,.mkv,.mov,.avi` |
 | `VALID_MUSIC_EXT` | Music file extensions (CSV) | `.flac,.wav,.mp3` |
 | `TRANSCRIBER_URL` | Lyrics transcriber service URL | `http://lyric-transcriber:3334` |
-| `ENABLED_FEATURES` | Active modules (CSV) | `episodes,music,cutter` |
+| `ENABLED_FEATURES` | Active modules (CSV) | `episodes,music,cutter,download` (+ `lyrics` when `TRANSCRIBER_URL` is set) |
 | `ALLOWED_ORIGINS` | CORS allowed origins | `http://localhost:3333` |
 | `VALID_CUTTER_EXT` | Cutter file extensions (CSV) | `.mp4,.mkv,.mov,.avi,.webm,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.opus,.ogg,.aiff` |
-| `CUTTER_JOBS_DIR` | Directory for cutter job data | `/tmp/cutter-jobs` |
+| `CUTTER_JOBS_DIR` | Directory for cutter job data | `/data/cutter-jobs` |
 | `CUTTER_JOB_TTL` | Job expiry in seconds | `86400` |
 | `CUTTER_MAX_DIRECT_REMUX_BYTES` | Max file size for direct remux preview | `1073741824` (1 GB) |
+| `DOWNLOADS_DIR` | Fallback download output root (used when no base/output directory is chosen) | `/downloads` |
+| `DOWNLOADER_DATA_DIR` | Directory for the downloader's SQLite job store, cookie file and scratch space | `/data/downloader` |
+| `DOWNLOADER_DB` | Path to the SQLite job store | `$DOWNLOADER_DATA_DIR/downloader.db` |
+| `DOWNLOADER_WORKERS` | Number of concurrent download workers | `3` |
+| `DOWNLOADER_JOB_TTL` | Download job history retention in seconds | `604800` (7 days) |
+| `YT_DLP_COOKIES` | Path to cookies.txt for yt-dlp (optional) | `$DOWNLOADER_DATA_DIR/cookies.txt` |
 | `HWACCEL` | Cutter hardware acceleration mode (`off` disables; otherwise auto-detect) | auto-detect |
 | `VAAPI_DEVICE` | VAAPI render node path (used for VAAPI backend) | `/dev/dri/renderD128` |
-| `AUTH_USERNAME` | Login username (optional — auth disabled if unset) | - |
-| `AUTH_PASSWORD` | Login password (optional — auth disabled if unset) | - |
-| `SECRET_KEY` | Session signing key (optional — auto-generated and persisted if unset) | auto-generated |
+| `AUTH_USERNAME` | Login username (optional - auth disabled if unset) | - |
+| `AUTH_PASSWORD` | Login password (optional - auth disabled if unset) | - |
+| `SECRET_KEY` | Session signing key (optional - auto-generated and persisted if unset) | auto-generated |
 | `PUID` | User ID the container process runs as | `1000` |
 | `PGID` | Group ID the container process runs as | `1000` |
 
@@ -264,7 +271,7 @@ When both are set, all endpoints are protected by a session-based login. The ses
 environment:
   - AUTH_USERNAME=admin
   - AUTH_PASSWORD=changeme
-  # SECRET_KEY is optional — omit to auto-generate, or set for reproducibility:
+  # SECRET_KEY is optional - omit to auto-generate, or set for reproducibility:
   # - SECRET_KEY=your-random-secret-here
 ```
 
@@ -355,6 +362,24 @@ The application expects the following structure in your media directory:
 | `POST` | `/cutter/jobs/{job_id}/save/{filename}` | Save output back to source directory |
 | `POST` | `/cutter/cut` | Cut a media file (SSE stream, form: `path`, `source`, `job_id`, `in_point`, `out_point`, `codec`, `audio_codec`, `container`, `stream_copy`, `keep_quality`, `audio_tracks`) |
 
+### Downloader Endpoints
+
+| Method | Endpoint | Description |
+| ------ | -------- | ----------- |
+| `GET` | `/download/status` | yt-dlp version, cookie presence, downloads dir, queue depth, worker count |
+| `POST` | `/download` | Create jobs (JSON body: `urls: string[]`, `options: object`) → `{job_ids: string[]}`. One request per bulk submission - all URLs become jobs, none is rejected for exceeding the worker cap |
+| `GET` | `/download/jobs` | List all jobs |
+| `GET` | `/download/jobs/{job_id}` | Get job status/progress, including per-item detail |
+| `POST` | `/download/jobs/{job_id}/start` | Start a queued job that wasn't auto-started |
+| `POST` | `/download/jobs/{job_id}/cancel` | Cancel an active job (download or re-encode stage) |
+| `DELETE` | `/download/jobs/{job_id}` | Cancel (if active) and delete a job |
+| `GET` | `/download/jobs/{job_id}/items/{index}/file` | Download a completed item's output file |
+| `GET` | `/download/events` | SSE stream: a full snapshot on connect, then incremental job updates |
+| `POST` | `/download/cookies` | Upload a `cookies.txt` for yt-dlp (max 1 MB) |
+| `DELETE` | `/download/cookies` | Remove the stored cookie file |
+
+Jobs beyond `DOWNLOADER_WORKERS` wait in the queue rather than being rejected. A job holds one or more output items, so playlist URLs report progress per item. When a codec is explicitly selected, re-encoding runs as a separate, cancellable stage after the download completes. Queued and in-progress jobs are persisted to SQLite and resume automatically after a backend restart.
+
 ## Deployment
 
 ### Local Development
@@ -391,20 +416,20 @@ docker compose -f deploy.yml down
 
 ```bash
 # Build and tag
-docker build -t bosscock/media-renamer:backend ./backend
-docker build -t bosscock/media-renamer:frontend ./frontend
+docker build -t txcjulian/media-helper:backend ./backend
+docker build -t txcjulian/media-helper:frontend ./frontend
 
 # Push
-docker push bosscock/media-renamer:backend
-docker push bosscock/media-renamer:frontend
+docker push txcjulian/media-helper:backend
+docker push txcjulian/media-helper:frontend
 ```
 
 For multi-arch builds (amd64 + arm64):
 
 ```bash
 docker buildx create --use
-docker buildx build --platform linux/amd64,linux/arm64 -t bosscock/media-renamer:backend ./backend --push
-docker buildx build --platform linux/amd64,linux/arm64 -t bosscock/media-renamer:frontend ./frontend --push
+docker buildx build --platform linux/amd64,linux/arm64 -t txcjulian/media-helper:backend ./backend --push
+docker buildx build --platform linux/amd64,linux/arm64 -t txcjulian/media-helper:frontend ./frontend --push
 ```
 
 ## Development
@@ -423,7 +448,15 @@ Media-Helper/
 │   │   ├── cutter.py                   # Media cutting (ffmpeg, jobs, preview)
 │   │   ├── hwaccel.py                  # GPU encoder detection + ffmpeg arg mapping
 │   │   ├── get_dirs.py                 # Directory listing (cached)
-│   │   └── fs_utils.py                 # Filesystem utilities (fsync)
+│   │   ├── fs_utils.py                 # Filesystem utilities (fsync)
+│   │   └── downloader/                 # Queue-backed yt-dlp downloads
+│   │       ├── routes.py               # FastAPI routes
+│   │       ├── store.py                # SQLite-backed job store
+│   │       ├── queue.py                # Worker pool + startup recovery
+│   │       ├── runner.py               # Per-job download/transcode orchestration
+│   │       ├── ydl.py                  # yt-dlp option building
+│   │       ├── transcode.py            # Cancellable ffmpeg re-encode stage
+│   │       └── events.py               # SSE event broadcaster
 │   ├── tests/                          # pytest test suite (incl. hwaccel + audio-only transcode)
 │   ├── Dockerfile
 │   └── requirements.txt
@@ -436,6 +469,10 @@ Media-Helper/
 │   │   │   ├── MusicPanel.tsx          # Music renaming panel
 │   │   │   ├── LyricsPanel.tsx         # Lyrics transcription panel
 │   │   │   ├── CutterPanel.tsx         # Media cutting panel
+│   │   │   ├── DownloaderPanel.tsx     # Downloader panel
+│   │   │   ├── downloader/             # Downloader sub-components
+│   │   │   │   ├── DownloadOptions.tsx
+│   │   │   │   └── DownloadJobCard.tsx
 │   │   │   ├── cutter/                 # Cutter sub-components
 │   │   │   │   ├── MediaPlayer.tsx
 │   │   │   │   ├── TrimControls.tsx
@@ -555,7 +592,7 @@ mount -t nfs server:/export /mnt -o actimeo=1,vers=4
 
 ### Session expired / Can't log in
 
-- Click "Log in" again — sessions expire after 30 days or when the secret key changes (e.g. container recreated without a persisted key).
+- Click "Log in" again - sessions expire after 30 days or when the secret key changes (e.g. container recreated without a persisted key).
 - Set a fixed `SECRET_KEY` environment variable so sessions remain valid across container recreations.
 - If you changed `AUTH_USERNAME`, existing sessions are invalidated immediately. If you changed `AUTH_PASSWORD`, existing sessions remain valid until they expire (the password is only checked at login time).
 
