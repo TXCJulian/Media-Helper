@@ -1,4 +1,4 @@
-import { API_BASE } from './http'
+import { API_BASE, assertAuthenticated } from './http'
 import { parseSSEChunk } from './sse'
 
 interface EventStreamOptions {
@@ -51,6 +51,21 @@ export function openEventStream(
     } catch {
       setConnected(false)
       scheduleReconnect()
+      return
+    }
+
+    // An expired session is not transient: retrying cannot fix it, and doing so
+    // would leave the panel stuck on "Reconnecting..." while quietly hammering
+    // the server. Hand it to the app-wide auth-expired flow and stop.
+    if (response.status === 401) {
+      closed = true
+      setConnected(false)
+      try {
+        assertAuthenticated(response)
+      } catch {
+        // assertAuthenticated dispatches `auth:expired` before throwing; the
+        // throw carries no information this caller can act on.
+      }
       return
     }
 

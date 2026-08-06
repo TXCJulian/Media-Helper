@@ -131,3 +131,24 @@ describe('openEventStream', () => {
     }
   })
 })
+
+describe('authentication failures', () => {
+  it('signals auth expiry and stops reconnecting on 401', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 401, body: null } as unknown as Response)
+    vi.stubGlobal('fetch', fetchMock)
+    const expired = vi.fn()
+    window.addEventListener('auth:expired', expired)
+
+    const close = openEventStream('/download/events', () => {}, { retryMs: 1 })
+    await vi.waitFor(() => expect(expired).toHaveBeenCalled())
+
+    const attemptsWhenExpired = fetchMock.mock.calls.length
+    await new Promise((r) => setTimeout(r, 60))
+    expect(fetchMock.mock.calls.length).toBe(attemptsWhenExpired)
+
+    close()
+    window.removeEventListener('auth:expired', expired)
+  })
+})
