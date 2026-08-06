@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 _HEARTBEAT_SECONDS = 15.0
 # How long the event stream waits before re-checking its subscription. Short
@@ -116,9 +116,17 @@ def shutdown_downloader() -> None:
     _store = _queue = _broadcaster = None
 
 
-def _require_valid_id(job_id: str) -> None:
+def _normalised_job_id(job_id: str) -> str:
+    """Validate a job id and return it in the form the store holds.
+
+    uuid4 only ever emits lowercase, so ids we issue always match as-is. A
+    caller that upper-cases one is still asking for the same job, and the store
+    looks up the exact string -- so accept either case and normalise, rather
+    than rejecting it or letting it fall through to a confusing 404.
+    """
     if not _UUID_RE.match(job_id):
         raise HTTPException(status_code=422, detail=f"Invalid job_id: {job_id}")
+    return job_id.lower()
 
 
 class CreateDownloadRequest(BaseModel):
@@ -166,7 +174,7 @@ def list_download_jobs() -> dict[str, list[dict[str, Any]]]:
 
 @router.get("/download/jobs/{job_id}")
 def get_download_job(job_id: str) -> dict[str, Any]:
-    _require_valid_id(job_id)
+    job_id = _normalised_job_id(job_id)
     job = get_store().get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -175,7 +183,7 @@ def get_download_job(job_id: str) -> dict[str, Any]:
 
 @router.post("/download/jobs/{job_id}/start")
 def start_download_job(job_id: str) -> dict[str, str]:
-    _require_valid_id(job_id)
+    job_id = _normalised_job_id(job_id)
     job = get_store().get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -187,7 +195,7 @@ def start_download_job(job_id: str) -> dict[str, str]:
 
 @router.post("/download/jobs/{job_id}/cancel")
 def cancel_download_job(job_id: str) -> dict[str, str]:
-    _require_valid_id(job_id)
+    job_id = _normalised_job_id(job_id)
     if get_store().get_job(job_id) is None:
         raise HTTPException(status_code=404, detail="Job not found")
     if not get_queue().cancel(job_id):
@@ -197,7 +205,7 @@ def cancel_download_job(job_id: str) -> dict[str, str]:
 
 @router.delete("/download/jobs/{job_id}")
 def delete_download_job(job_id: str) -> dict[str, str]:
-    _require_valid_id(job_id)
+    job_id = _normalised_job_id(job_id)
     job_queue = get_queue()
     job_queue.cancel(job_id)
     # Wait for the worker to let go of the job. `is_active` only goes False
@@ -219,7 +227,7 @@ def delete_download_job(job_id: str) -> dict[str, str]:
 
 @router.get("/download/jobs/{job_id}/items/{index}/file")
 def download_item_file(job_id: str, index: int) -> FileResponse:
-    _require_valid_id(job_id)
+    job_id = _normalised_job_id(job_id)
     job = get_store().get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")

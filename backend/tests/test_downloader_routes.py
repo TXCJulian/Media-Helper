@@ -349,3 +349,22 @@ def test_idle_event_stream_borrows_no_anyio_worker_thread(client):
     assert baseline == 0
     assert borrowed == 0
 
+
+
+def test_job_id_lookup_accepts_uppercase(client):
+    """A caller that upper-cases a job id should still reach the job.
+
+    uuid4 only ever emits lowercase, so this cannot happen with ids we issue --
+    but rejecting the same id in different case is needlessly strict, and
+    accepting it without normalising would just move the failure to a confusing
+    404 because the store looks up the exact string.
+    """
+    job_id = client.post(
+        "/download",
+        json={"urls": ["https://example.com/a"], "options": {"auto_start": False}},
+    ).json()["job_ids"][0]
+
+    resp = client.get(f"/download/jobs/{job_id.upper()}")
+
+    assert resp.status_code == 200
+    assert resp.json()["job_id"] == job_id
