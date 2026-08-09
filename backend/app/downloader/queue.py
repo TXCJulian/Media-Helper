@@ -195,9 +195,7 @@ class DownloadQueue:
                 else:
                     stage, message = "cancelled", "Cancelled by user"
             else:
-                logger.error(
-                    "Worker failed on job %s: %s", job_id, exc, exc_info=True
-                )
+                logger.error("Worker failed on job %s: %s", job_id, exc, exc_info=True)
                 stage, message = "error", str(exc)
             try:
                 self._store.set_job_stage(job_id, stage, message)

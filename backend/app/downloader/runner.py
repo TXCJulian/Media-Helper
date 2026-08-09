@@ -288,7 +288,9 @@ def run_job(
             assert_within_allowed_roots(path)
             index = allocator.for_path(path)
             entry_indices.add(index)
-            title = str(entry.get("title") or _display_name(path) or f"Item {index + 1}")
+            title = str(
+                entry.get("title") or _display_name(path) or f"Item {index + 1}"
+            )
             item_fields: dict[str, Any] = dict(
                 title=title,
                 path=path,
@@ -367,7 +369,9 @@ def _drop_vanished_items(store: JobStore, job_id: str) -> None:
     except Exception:
         # Best-effort cleanup on a path that is already reporting a failure;
         # it must never displace the terminal stage the caller is about to set.
-        logger.warning("Could not prune vanished items for job %s", job_id, exc_info=True)
+        logger.warning(
+            "Could not prune vanished items for job %s", job_id, exc_info=True
+        )
 
 
 def _make_hook(

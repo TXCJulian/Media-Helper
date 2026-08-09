@@ -79,9 +79,7 @@ def _contain(root: str, relative: str) -> str:
 
 
 def allowed_roots() -> list[str]:
-    return [os.path.realpath(DOWNLOADS_DIR)] + [
-        os.path.realpath(p) for p in BASE_PATHS
-    ]
+    return [os.path.realpath(DOWNLOADS_DIR)] + [os.path.realpath(p) for p in BASE_PATHS]
 
 
 def assert_within_allowed_roots(path: str) -> None:
@@ -152,9 +150,7 @@ def build_ydl_opts(
     if media_type == "audio":
         opts["format"] = audio_format_selector(quality)
         pp: dict[str, Any] = {"key": "FFmpegExtractAudio"}
-        pp["preferredcodec"] = (
-            container if container in AUDIO_CONTAINERS else "best"
-        )
+        pp["preferredcodec"] = container if container in AUDIO_CONTAINERS else "best"
         kbps = _AUDIO_QUALITY_KBPS.get(quality.lower())
         if kbps:
             pp["preferredquality"] = str(kbps)

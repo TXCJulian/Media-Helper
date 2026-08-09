@@ -22,6 +22,10 @@ A media management tool for renaming TV shows, music files, transcribing lyrics,
 | --- | --- |
 | ![Cutter Panel](docs/screenshots/cutter-panel.png) | ![Cutter Upload](docs/screenshots/cutter-upload.png) |
 
+| Downloader | Downloader (Jobs) |
+| --- | --- |
+| ![Downloader Panel](docs/screenshots/downloader-panel.png) | ![Downloader Jobs](docs/screenshots/downloader-jobs.png) |
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -52,7 +56,7 @@ The application consists of a FastAPI backend (Python 3.14), a React frontend (V
 ### TV Shows
 
 - Automatic series search via TMDB API (multi-language: DE, EN, etc.)
-- Episode renaming: `SxxExx - Episode title.ext` (`S` = season number, `E` = episode number)
+- Episode renaming: `SxxExx Episode title.ext` (`S` = season number, `E` = episode number)
 - Intelligent filename-to-episode matching with configurable threshold
 - Sequence assignment mode for unmatched files
 - Batch processing of entire seasons
@@ -96,6 +100,22 @@ The application consists of a FastAPI backend (Python 3.14), a React frontend (V
 - Real-time cut progress streaming via SSE
 - Automatic GPU encoder usage for preview/cut re-encoding when supported (with safe CPU fallback)
 - Supported formats: MP4, MKV, MOV, AVI, WebM, MP3, FLAC, M4A, WAV, AAC, AC3, DTS, Opus, OGG, AIFF
+
+### Downloader
+
+- Downloads video, audio, or thumbnails from any [yt-dlp](https://github.com/yt-dlp/yt-dlp)-supported site via URL
+- Paste multiple links at once (one per line) — each becomes its own queued job
+- Media type selector: Video (MP4/MKV/WebM/MOV), Audio (MP3/M4A/FLAC/Opus/WAV), or Thumbnail (JPG/PNG/WebP)
+- Quality selection: video up to 2160p or "worst"; audio up to 320kbps or "worst"
+- Optional re-encode to a specific codec (H.264/H.265/VP9/AV1 for video, MP3/FLAC/AAC/Opus for audio) — runs as a separate, cancellable stage after the download completes; left on "auto" the original codec is kept and no re-encode runs
+- Destination picker: save to the configured `DOWNLOADS_DIR`, or into any directory under `BASE_PATHS` with an optional subfolder
+- Advanced options: playlist item limit, filename prefix/override
+- "Start now" or "hold in queue" per submission — held jobs can be started later from the job card
+- Playlist URLs report progress per item, not just per job
+- Cookie authentication: upload a `cookies.txt` for sites that require a logged-in session (e.g. age-restricted or private content)
+- Live job cards via SSE with per-item progress, cancel, retry, and delete actions; a collapsible history section keeps finished/failed/cancelled jobs
+- Queued and in-progress jobs are persisted to SQLite and resume automatically after a backend restart
+- Concurrent download workers (`DOWNLOADER_WORKERS`, default 3) — additional jobs wait in the queue rather than being rejected
 
 ### General
 
@@ -412,24 +432,43 @@ docker compose -f deploy.yml logs -f
 docker compose -f deploy.yml down
 ```
 
-### Push Images to Docker Hub
+### Prebuilt Images
+
+CI/CD (`.github/workflows/ci-cd.yaml`) builds and publishes multi-arch (amd64 + arm64) images on every push to `master`, to both Docker Hub and GitHub Container Registry. Pushes to other branches publish `_beta`-tagged images instead.
+
+| Image | Docker Hub | GitHub Container Registry |
+| ----- | ---------- | -------------------------- |
+| Backend | `txcjulian/media-helper:backend` | `ghcr.io/txcjulian/media-helper:backend` |
+| Frontend | `txcjulian/media-helper:frontend` | `ghcr.io/txcjulian/media-helper:frontend` |
+
+```bash
+# Pull from GHCR instead of Docker Hub
+docker pull ghcr.io/txcjulian/media-helper:backend
+docker pull ghcr.io/txcjulian/media-helper:frontend
+```
+
+### Push Images Manually
 
 ```bash
 # Build and tag
 docker build -t txcjulian/media-helper:backend ./backend
 docker build -t txcjulian/media-helper:frontend ./frontend
 
-# Push
+# Push to Docker Hub
 docker push txcjulian/media-helper:backend
 docker push txcjulian/media-helper:frontend
 ```
 
-For multi-arch builds (amd64 + arm64):
+For multi-arch builds (amd64 + arm64), pushed to both registries in one go:
 
 ```bash
 docker buildx create --use
-docker buildx build --platform linux/amd64,linux/arm64 -t txcjulian/media-helper:backend ./backend --push
-docker buildx build --platform linux/amd64,linux/arm64 -t txcjulian/media-helper:frontend ./frontend --push
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t txcjulian/media-helper:backend -t ghcr.io/txcjulian/media-helper:backend \
+  ./backend --push
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t txcjulian/media-helper:frontend -t ghcr.io/txcjulian/media-helper:frontend \
+  ./frontend --push
 ```
 
 ## Development

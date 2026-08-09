@@ -199,7 +199,9 @@ def transcode_file(
     duration = probe_duration(src)
     cmd = build_transcode_command(src, dst, codec)
 
-    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as stderr_file:
+    with tempfile.TemporaryFile(
+        mode="w+", encoding="utf-8", errors="replace"
+    ) as stderr_file:
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -248,7 +250,9 @@ def transcode_file(
             stderr_file.seek(0)
             stderr = stderr_file.read()
             _remove_partial(dst)
-            raise RuntimeError(stderr.strip() or f"ffmpeg exited with code {returncode}")
+            raise RuntimeError(
+                stderr.strip() or f"ffmpeg exited with code {returncode}"
+            )
 
 
 def _remove_partial(path: str) -> None:

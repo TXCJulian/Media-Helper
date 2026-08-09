@@ -109,9 +109,7 @@ class JobStore:
         `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so a new
         column has to be added explicitly.
         """
-        columns = {
-            row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")
-        }
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")}
         if "enqueued" not in columns:
             self._conn.execute(
                 "ALTER TABLE jobs ADD COLUMN enqueued INTEGER NOT NULL DEFAULT 0"
@@ -214,9 +212,7 @@ class JobStore:
             by_job.setdefault(item["job_id"], []).append(item)
         return [_to_job(row, by_job.get(row["id"], [])) for row in rows]
 
-    def set_job_stage(
-        self, job_id: str, stage: str, error: str | None = None
-    ) -> None:
+    def set_job_stage(self, job_id: str, stage: str, error: str | None = None) -> None:
         if stage not in STAGES:
             raise ValueError(f"Unknown stage: {stage}")
         job = None
@@ -304,9 +300,7 @@ class JobStore:
         state, and it is written from `DownloadQueue.enqueue`.
         """
         with self._lock:
-            self._conn.execute(
-                "UPDATE jobs SET enqueued = 1 WHERE id = ?", (job_id,)
-            )
+            self._conn.execute("UPDATE jobs SET enqueued = 1 WHERE id = ?", (job_id,))
             self._conn.commit()
 
     def delete_job(self, job_id: str) -> bool:
