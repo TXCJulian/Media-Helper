@@ -10,21 +10,21 @@ A media management tool for renaming TV shows, music files, transcribing lyrics,
 
 ## Screenshots
 
-| Landing Page | Episode Renamer |
-| --- | --- |
-| ![Landing Page](docs/screenshots/landing.png) | ![Episode Panel](docs/screenshots/episode-panel.png) |
+| Landing Page |
+| --- |
+| ![Landing Page](docs/screenshots/landing.png) |
 
-| Music Renamer | Lyrics Transcriber |
+| Episode Renamer | Music Renamer |
 | --- | --- |
-| ![Music Panel](docs/screenshots/music-panel.png) | ![Lyrics Panel](docs/screenshots/lyrics-panel.png) |
+| ![Episode Panel](docs/screenshots/episode-panel.png) | ![Music Panel](docs/screenshots/music-panel.png) |
+
+| Lyrics Transcriber | Downloader |
+| --- | --- |
+| ![Lyrics Panel](docs/screenshots/lyrics-panel.png) | ![Downloader Panel](docs/screenshots/downloader-panel.png) |
 
 | Media Cutter (Server) | Media Cutter (Upload) |
 | --- | --- |
 | ![Cutter Panel](docs/screenshots/cutter-panel.png) | ![Cutter Upload](docs/screenshots/cutter-upload.png) |
-
-| Downloader | Downloader (Jobs) |
-| --- | --- |
-| ![Downloader Panel](docs/screenshots/downloader-panel.png) | ![Downloader Jobs](docs/screenshots/downloader-jobs.png) |
 
 ## Table of Contents
 
