@@ -31,4 +31,4 @@ if [ -d /dev/dri ]; then
     done
 fi
 
-exec gosu appuser "$@"
+exec setpriv --reuid="$PUID" --regid="$PGID" --init-groups "$@"
