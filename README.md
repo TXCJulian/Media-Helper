@@ -361,7 +361,7 @@ The application expects the following structure in your media directory:
 | ------ | -------- | ----------- |
 | `GET` | `/transcribe/health` | Transcriber service health + GPU info |
 | `GET` | `/transcribe/files` | List music files with lyrics status (query: `directory`) |
-| `POST` | `/transcribe/start` | Start transcription (SSE stream, form: `directory`, `base`, `files` (JSON array of filenames), `output_format`, `skip_existing`, `language`, `no_separation`, `no_correction`, `whisper_model`, `artist_override`, `title_override`) |
+| `POST` | `/transcribe/start` | Start transcription (SSE stream, form: `directory`, `base`, `files` (JSON array of filenames), `output_format`, `skip_existing`, `language`, `no_separation`, `no_correction`, `demucs_model`, `whisper_model`, `artist_override`, `title_override`) |
 
 ### Media Cutter Endpoints
 

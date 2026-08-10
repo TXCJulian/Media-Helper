@@ -34,6 +34,14 @@ const WHISPER_MODELS = [
   { label: 'Large', value: 'large-v3' },
 ]
 
+// UI subset of the vocal separation models the backend accepts, ordered
+// fastest-to-most-accurate.
+const DEMUCS_MODELS = [
+  { label: 'htdemucs', value: 'htdemucs' },
+  { label: 'htdemucs_ft', value: 'htdemucs_ft' },
+  { label: 'mdx_extra_q', value: 'mdx_extra_q' },
+]
+
 function shortGpuName(gpu: string | null | undefined): string {
   if (!gpu) return ''
   return gpu.replace(/^NVIDIA GeForce /, '')
@@ -58,6 +66,7 @@ export default function LyricsPanel({
     language: '',
     no_separation: false,
     no_correction: false,
+    demucs_model: 'htdemucs',
     whisper_model: 'large-v3-turbo',
     artist_override: '',
     title_override: '',
@@ -212,6 +221,7 @@ export default function LyricsPanel({
       skip_existing: String(form.skip_existing),
       no_separation: String(form.no_separation),
       no_correction: String(form.no_correction),
+      demucs_model: form.demucs_model,
       whisper_model: form.whisper_model,
     }
     if (form.language) params.language = form.language
@@ -466,6 +476,20 @@ export default function LyricsPanel({
                   />
                   <p className="mt-[0.35rem] text-[0.68rem] leading-snug text-[var(--text-tertiary)]">
                     Larger models are more accurate but slower. Turbo is the best all-round choice.
+                  </p>
+                </div>
+
+                <div className="mb-[0.65rem]">
+                  <label className="field-label">Vocal Separation Model</label>
+                  <SegmentedControl
+                    options={DEMUCS_MODELS}
+                    value={form.demucs_model}
+                    onChange={(v) => update('demucs_model', v)}
+                    disabled={busy || form.no_separation}
+                    color="rose"
+                  />
+                  <p className="mt-[0.35rem] text-[0.68rem] leading-snug text-[var(--text-tertiary)]">
+                    Fine-tuned gives the cleanest vocal isolation at similar VRAM cost, but runs slower. Low VRAM trades some quality for a lighter footprint.
                   </p>
                 </div>
 

@@ -60,6 +60,8 @@ from app.transcribe_lyrics import (
     transcribe_file,
     VALID_WHISPER_MODELS,
     DEFAULT_WHISPER_MODEL,
+    VALID_DEMUCS_MODELS,
+    DEFAULT_DEMUCS_MODEL,
 )
 from app.downloader.routes import (
     router as downloader_router,
@@ -620,6 +622,7 @@ def start_transcription(
     no_separation: bool = Form(False),
     no_correction: bool = Form(False),
     base: str = Form(..., max_length=200),
+    demucs_model: str = Form(DEFAULT_DEMUCS_MODEL, max_length=50),
     whisper_model: str = Form(DEFAULT_WHISPER_MODEL, max_length=50),
     # Genius lookup overrides — only honoured for a single-file batch, since
     # one artist/title pair cannot describe several songs.
@@ -638,6 +641,14 @@ def start_transcription(
             detail=(
                 f"Invalid whisper model '{whisper_model}'. Must be one of: "
                 + ", ".join(sorted(VALID_WHISPER_MODELS))
+            ),
+        )
+    if demucs_model not in VALID_DEMUCS_MODELS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid demucs model '{demucs_model}'. Must be one of: "
+                + ", ".join(sorted(VALID_DEMUCS_MODELS))
             ),
         )
     if not TRANSCRIBER_URL:
@@ -682,11 +693,12 @@ def start_transcription(
     use_title_override = title_override.strip() if single_file else ""
 
     logger.info(
-        "Starting transcription: dir=%s, files=%d, format=%s, model=%s",
+        "Starting transcription: dir=%s, files=%d, format=%s, model=%s, demucs=%s",
         directory,
         len(selected),
         output_format,
         whisper_model,
+        demucs_model,
     )
 
     msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -737,6 +749,7 @@ def start_transcription(
                 transcriber_url=TRANSCRIBER_URL,
                 output_format=effective_format,
                 no_separation=no_separation,
+                demucs_model=demucs_model,
                 whisper_model=whisper_model,
                 language=language or None,
                 artist=file_artist,

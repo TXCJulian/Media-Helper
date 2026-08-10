@@ -29,6 +29,23 @@ VALID_WHISPER_MODELS: frozenset[str] = frozenset(
 )
 DEFAULT_WHISPER_MODEL = "large-v3-turbo"
 
+# Demucs model names accepted by the transcriber service for vocal
+# separation. The UI exposes a subset; the full list is allowed for direct
+# API callers.
+VALID_DEMUCS_MODELS: frozenset[str] = frozenset(
+    {
+        "htdemucs",
+        "htdemucs_ft",
+        "htdemucs_6s",
+        "hdemucs_mmi",
+        "mdx",
+        "mdx_extra",
+        "mdx_q",
+        "mdx_extra_q",
+    }
+)
+DEFAULT_DEMUCS_MODEL = "htdemucs"
+
 _LOG_TAGS: dict[str, str] = {
     "UPLOAD": "[UPLOAD]\t\t",
     "PROCESS": "[PROCESS]\t\t",
@@ -129,6 +146,7 @@ def transcribe_file(
     transcriber_url: str,
     output_format: str = "lrc",
     no_separation: bool = False,
+    demucs_model: str = DEFAULT_DEMUCS_MODEL,
     whisper_model: str = "large-v3-turbo",
     language: str | None = None,
     artist: str | None = None,
@@ -162,6 +180,7 @@ def transcribe_file(
             form_data: dict[str, str] = {
                 "format": output_format,
                 "no_separation": str(no_separation).lower(),
+                "demucs_model": demucs_model,
                 "whisper_model": whisper_model,
                 "no_correction": str(no_correction).lower(),
             }
