@@ -47,6 +47,7 @@ export interface LyricsForm {
   language: string
   no_separation: boolean
   no_correction: boolean
+  demucs_model: string
   whisper_model: string
   /** Genius lookup overrides — only sent when exactly one song is selected. */
   artist_override: string
