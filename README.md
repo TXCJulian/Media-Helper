@@ -170,13 +170,13 @@ Browser                    Frontend Container               Backend Container
   |                               |                                  |
   |--[2] GET :3333/directories--->|                                  |
   |                               |--[3] proxy_pass----------------->|
-  |                               |    http://renamer-backend:3332   |
+  |                               |    http://helper-backend:3332    |
   |                               |<---[4] JSON response-------------|
   |<--[5] JSON response-----------|                                  |
   |                               |                                  |
   |--[6] GET :3333/transcribe/--->|                                  |
   |    (SSE stream)               |--[7] proxy_pass (no buffering)-->|
-  |                               |    http://renamer-backend:3332   |
+  |                               |    http://helper-backend:3332    |
   |                               |                                  |---> lyric-transcriber:3334
   |<--[8] SSE events--------------|<---[9] SSE stream----------------|     (GPU service)
 ```
@@ -278,6 +278,15 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `SECRET_KEY` | Session signing key (optional - auto-generated and persisted if unset) | auto-generated |
 | `PUID` | User ID the container process runs as | `1000` |
 | `PGID` | Group ID the container process runs as | `1000` |
+
+### Frontend Environment Variables
+
+The frontend's Nginx config proxies API calls to the backend. The target host/port is templated into `nginx-app.conf` at container startup via `docker-entrypoint.sh` — override these if the backend service is reachable under a different name (e.g. a Kubernetes Service name instead of the Docker Compose service name):
+
+| Variable | Description | Default |
+| -------- | ----------- | ------- |
+| `BACKEND_HOST` | Hostname of the backend service | `helper-backend` |
+| `BACKEND_PORT` | Port of the backend service | `3332` |
 
 ### Authentication
 
@@ -573,7 +582,7 @@ npm run test
 
 ```bash
 # View logs
-docker compose logs renamer-backend
+docker compose logs helper-backend
 
 # Common causes:
 # 1. Missing TMDB_API_KEY
@@ -587,7 +596,7 @@ docker compose logs renamer-backend
 1. Check preview status directly: `curl "http://localhost:3332/cutter/preview-status/<file_id>"`
 2. For audio-only transcode mode, include stream index: `curl "http://localhost:3332/cutter/preview-status/<file_id>?audio_transcode_stream=1"`
 3. A `409` from `/cutter/stream/<file_id>` means preview generation is still in progress (expected); keep polling status and retry stream request.
-4. Inspect backend logs for ffmpeg/hwaccel errors: `docker compose logs renamer-backend`
+4. Inspect backend logs for ffmpeg/hwaccel errors: `docker compose logs helper-backend`
 
 ### Cutter hardware acceleration not used
 
@@ -601,13 +610,13 @@ docker compose logs renamer-backend
 1. Check that both containers are in the same network:
 
 ```bash
-docker network inspect renamer-network
+docker network inspect helper-network
 ```
 
-2. Check service names in `nginx-app.conf`:
+2. Check the `BACKEND_HOST`/`BACKEND_PORT` values baked into the frontend container at startup (defaults to `helper-backend:3332`, matching the `docker-compose.yml` service name):
 
-```nginx
-proxy_pass http://renamer-backend:3332;  # Must match docker-compose.yml
+```bash
+docker exec media-helper_frontend cat /etc/nginx/conf.d/default.conf | grep proxy_pass
 ```
 
 ### Lyrics transcriber shows "Offline"

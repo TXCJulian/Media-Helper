@@ -4,7 +4,7 @@ WORKDIR /backend
 
 RUN set -e; \
     apt-get update; \
-    apt-get install -y --no-install-recommends build-essential ca-certificates curl gnupg gosu nodejs; \
+    apt-get install -y --no-install-recommends build-essential ca-certificates curl gnupg nodejs; \
     if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
       curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
         | gpg --dearmor -o /usr/share/keyrings/jellyfin.gpg; \

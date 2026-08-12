@@ -20,7 +20,11 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # Eigene Nginx-Konfiguration, die auf Port 3000 lauscht
 COPY nginx-app.conf /etc/nginx/conf.d/default.conf
 
+# Entrypoint setzt den Backend-Hostnamen/-Port zur Laufzeit ein (Default: Docker-Compose-Netzwerkalias)
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
 # Container-intern benutzt Nginx Port 3000
 EXPOSE 3000
 
-CMD ["nginx", "-g", "daemon off;"]
+ENTRYPOINT ["/docker-entrypoint.sh"]
