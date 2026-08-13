@@ -29,6 +29,7 @@ A media management tool for renaming TV shows, music files, transcribing lyrics,
 ## Table of Contents
 
 - [Overview](#overview)
+- [Related Projects](#related-projects)
 - [Features](#features)
 - [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
@@ -50,6 +51,20 @@ Media-Helper is a dockerized tool with five modules:
 5. **Downloader** - Download media via yt-dlp with codec/format/quality selection, playlist support, and cookie authentication
 
 The application consists of a FastAPI backend (Python 3.14), a React frontend (Vite + Tailwind CSS), and an optional GPU-powered lyrics transcription service. All services communicate over a Docker bridge network behind an Nginx reverse proxy.
+
+## Related Projects
+
+This repo deliberately keeps some functionality out of its own backend and delegates it to standalone companion services instead. The dividing line isn't "feature vs. feature" — it's whether the work needs a heavy, optional, often GPU-bound dependency (large image, non-trivial build, real GPU driver requirements) that most deployments of this app shouldn't have to pay for. Splitting that work out means:
+
+- Deployments that only need renaming/cutting/downloading never build or pull a GPU-capable image they don't use.
+- The heavy service can run on whichever machine actually has the right hardware, independent of where this backend is deployed (e.g. a small low-power node), and gets pointed at via a `*_URL` environment variable.
+- Each service has its own build, release cadence, and Docker image, decoupled from this repo's.
+
+| Service | Purpose | Required for |
+| --- | --- | --- |
+| [Whisper_Lyric-Transcriber](https://github.com/TXCJulian/Whisper_Lyric-Transcriber) | Vocal separation (Demucs) → speech-to-text (faster-whisper) → Genius lyrics correction | The **Lyrics Transcription** module (`TRANSCRIBER_URL`) |
+
+More companion services following this pattern may be added as GPU-heavy features (e.g. automated encoding) are introduced.
 
 ## Features
 
