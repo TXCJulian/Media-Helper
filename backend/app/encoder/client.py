@@ -43,11 +43,7 @@ def is_retryable(exc: Exception) -> bool:
     if isinstance(exc, EncoderUnreachable):
         return True
     if isinstance(exc, EncoderRejected):
-        if exc.code in RETRYABLE_CODES:
-            return True
-        # An unrecognised 5xx -- a proxy 502 while the encoder restarts, say --
-        # is transient. Unrecognised 4xx are not: the request itself is wrong.
-        return exc.status >= 500 and exc.code == "unknown"
+        return exc.code in RETRYABLE_CODES
     return False
 
 

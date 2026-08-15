@@ -124,13 +124,15 @@ def test_an_unparseable_error_body_still_yields_a_rejection(client, monkeypatch)
     assert exc.value.code == "unknown"
 
 
-def test_an_unrecognised_5xx_is_retryable(client, monkeypatch):
-    """A proxy 502 while the encoder restarts is transient, not a bad job."""
+def test_an_unrecognised_5xx_is_not_retryable(client, monkeypatch):
+    """An unrecognized 5xx (e.g. encoder bug producing uncaught exception)
+    must fail immediately to avoid silent infinite requeue. Failing safely
+    leaves the source file untouched for manual requeue after fixing."""
     monkeypatch.setattr(client_mod.requests, "post",
-                        lambda *a, **k: _Response(502, "bad gateway"))
+                        lambda *a, **k: _Response(500, "bad gateway"))
     with pytest.raises(EncoderRejected) as exc:
         client.submit("/media3/x.mkv", {}, "P")
-    assert is_retryable(exc.value) is True
+    assert is_retryable(exc.value) is False
 
 
 def test_poll_returns_the_job_body(client, monkeypatch):
