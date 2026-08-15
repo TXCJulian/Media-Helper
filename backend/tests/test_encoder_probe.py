@@ -196,6 +196,32 @@ def test_timeout_raises_probe_error(monkeypatch):
         probe("/x.mkv")
 
 
+def test_bit_depth_detection_for_p010le_format():
+    """p010le is semi-planar 10-bit used by hardware encoders and HDR files.
+    The digit 010 (zero-padded) must be recognized as 10-bit."""
+    assert probe_mod._bit_depth("p010le") == 10
+
+
+def test_bit_depth_detection_for_p016le_format():
+    """p016le is semi-planar 16-bit. Zero-padded 016 must be recognized as 16-bit."""
+    assert probe_mod._bit_depth("p016le") == 16
+
+
+def test_bit_depth_detection_for_yuv420p10le_format():
+    """yuv420p10le is planar 10-bit. Digit 10 following p must be recognized."""
+    assert probe_mod._bit_depth("yuv420p10le") == 10
+
+
+def test_bit_depth_detection_for_8bit_format():
+    """yuv420p is 8-bit (no depth digits following p). Should default to 8."""
+    assert probe_mod._bit_depth("yuv420p") == 8
+
+
+def test_bit_depth_detection_for_empty_format():
+    """Empty pix_fmt should return None."""
+    assert probe_mod._bit_depth("") is None
+
+
 def test_side_data_is_requested(monkeypatch):
     """HDR/DoVi detection depends on it, and it is not in ffprobe's defaults."""
     seen = {}

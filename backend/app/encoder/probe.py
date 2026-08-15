@@ -12,6 +12,7 @@ change a shape the Cutter's tests pin.
 
 import json
 import logging
+import re
 import subprocess
 
 logger = logging.getLogger(__name__)
@@ -201,14 +202,21 @@ def _as_float(value: object) -> float | None:
 def _bit_depth(pix_fmt: str) -> int | None:
     """Bit depth from the pixel format name, e.g. yuv420p10le -> 10.
 
+    Handles both naming conventions:
+    - yuv420p10le, yuv420p9le, yuv422p12le → depth follows a 'p'
+    - p010le, p016le → zero-padded depth follows a leading 'p'
+    - yuv420p, nv12, rgb24 → 8 (no depth digits)
+
     Read from pix_fmt rather than bits_per_raw_sample because the latter is
     frequently absent on exactly the HDR files where depth decides the rule.
     """
     if not pix_fmt:
         return None
-    for depth in (16, 14, 12, 10, 9):
-        if f"p{depth}" in pix_fmt:
-            return depth
+    match = re.search(r"p(\d{1,3})", pix_fmt)
+    if match:
+        depth_str = match.group(1)
+        depth_int = int(depth_str)
+        return depth_int
     return 8
 
 
