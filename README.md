@@ -239,7 +239,7 @@ Edit the `docker-compose.yml` and adjust the following values:
 ```yaml
 environment:
   - TMDB_API_KEY=YOUR_TMDB_API_KEY_HERE
-  - ENABLED_FEATURES=episodes,music,lyrics,cutter,download  # Enable modules
+  - ENABLED_FEATURES=episodes,music,lyrics,cutter,download,encoder  # Enable modules
 volumes:
   - /path/to/your/media:/media:rw
 ```
@@ -274,7 +274,7 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `VALID_VIDEO_EXT` | Video file extensions (CSV) | `.mp4,.mkv,.mov,.avi` |
 | `VALID_MUSIC_EXT` | Music file extensions (CSV) | `.flac,.wav,.mp3` |
 | `TRANSCRIBER_URL` | Lyrics transcriber service URL | `http://lyric-transcriber:3334` |
-| `ENABLED_FEATURES` | Active modules (CSV) | `episodes,music,cutter,download` (+ `lyrics` when `TRANSCRIBER_URL` is set) |
+| `ENABLED_FEATURES` | Active modules (CSV): `episodes,music,lyrics,cutter,download,encoder` | `episodes,music,cutter,download` (+ `lyrics` when `TRANSCRIBER_URL` is set) |
 | `ALLOWED_ORIGINS` | CORS allowed origins | `http://localhost:3333` |
 | `VALID_CUTTER_EXT` | Cutter file extensions (CSV) | `.mp4,.mkv,.mov,.avi,.webm,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.opus,.ogg,.aiff` |
 | `CUTTER_JOBS_DIR` | Directory for cutter job data | `/data/cutter-jobs` |
@@ -286,6 +286,14 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `DOWNLOADER_WORKERS` | Number of concurrent download workers | `3` |
 | `DOWNLOADER_JOB_TTL` | Download job history retention in seconds | `604800` (7 days) |
 | `YT_DLP_COOKIES` | Path to cookies.txt for yt-dlp (optional) | `$DOWNLOADER_DATA_DIR/cookies.txt` |
+| `ENCODER_URL` | URL of the remote `HandBrake_Video-Encoder` service (**required** for the `encoder` feature) | `http://handbrake-encoder:3335` |
+| `ENCODER_WATCH_PATHS` | Folders to watch for new video files (CSV, in-container paths) | *(empty — watcher stays off)* |
+| `ENCODER_MODE` | `review` (queue for approval) or `auto` (encode unattended) | `review` |
+| `ENCODER_ORIGINAL_TTL` | Seconds to retain the original after a successful encode before purging it (`0` deletes immediately) | `604800` (7 days) |
+| `ENCODER_SETTLE_SECONDS` | Seconds a watched file's size must be stable before it is probed | `30` |
+| `ENCODER_JOB_TTL` | Encode job history retention in seconds | `604800` (7 days) |
+| `ENCODER_DATA_DIR` | Directory for the encoder's SQLite job store and retained-originals holding area | `/data/encoder` |
+| `ENCODER_DB` | Path to the SQLite job store | `$ENCODER_DATA_DIR/encoder.db` |
 | `HWACCEL` | Cutter hardware acceleration mode (`off` disables; otherwise auto-detect) | auto-detect |
 | `VAAPI_DEVICE` | VAAPI render node path (used for VAAPI backend) | `/dev/dri/renderD128` |
 | `AUTH_USERNAME` | Login username (optional - auth disabled if unset) | - |
@@ -293,6 +301,8 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `SECRET_KEY` | Session signing key (optional - auto-generated and persisted if unset) | auto-generated |
 | `PUID` | User ID the container process runs as | `1000` |
 | `PGID` | Group ID the container process runs as | `1000` |
+
+The `encoder` feature requires the separate `HandBrake_Video-Encoder` service to be deployed and reachable at `ENCODER_URL`. Both this renamer and the encoder service must mount the media library at identical in-container paths, since the renamer sends the encoder in-container source paths and never transfers file contents itself.
 
 ### Frontend Environment Variables
 

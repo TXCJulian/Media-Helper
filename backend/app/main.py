@@ -26,12 +26,15 @@ from app.config import (
     MUSIC_FOLDER_NAME,
     VALID_MUSIC_EXT,
     VALID_CUTTER_EXT,
+    VALID_VIDEO_EXT,
     CUTTER_JOBS_DIR,
     CUTTER_MAX_DIRECT_REMUX_BYTES,
     TRANSCRIBER_URL,
     ALLOWED_ORIGINS,
     ENABLED_FEATURES,
     ENABLED_FEATURES_SET,
+    ENCODER_WATCH_PATHS,
+    ENCODER_SETTLE_SECONDS,
     AUTH_ENABLED,
 )
 from app.auth import (
@@ -69,6 +72,7 @@ from app.downloader.routes import (
     shutdown_downloader,
     get_store as get_downloader_store,
 )
+from app.encoder.routes import router as encoder_router
 from app.cutter import (
     get_ffmpeg_info,
     probe_file,
@@ -245,6 +249,38 @@ async def lifespan(app: FastAPI):
             downloader_started = True
             downloader_cleanup_task = asyncio.create_task(_cleanup_downloader_jobs())
 
+    # Start the encoder's queue and watcher only if the encoder feature is
+    # enabled. The panel and routes stay dark without it (see the
+    # conditional include_router below); this starts the background work
+    # that backs those routes.
+    encoder_watcher = None
+    encoder_queue = None
+    if "encoder" in ENABLED_FEATURES_SET:
+        from app.encoder import routes as encoder_routes
+        from app.encoder.swap import sweep_orphans
+        from app.encoder.watcher import EncoderWatcher
+
+        encoder_store = encoder_routes.get_store()
+        encoder_queue = encoder_routes.get_queue()
+        # Sweep before recovering: a crash mid-encode leaves partials no live
+        # job owns, and they are invisible to the user because the name is
+        # dotted.
+        active = {j.id for j in encoder_store.list_jobs()}
+        for watch_path in ENCODER_WATCH_PATHS:
+            sweep_orphans(watch_path, active)
+        encoder_queue.start()
+        encoder_queue.recover()
+        encoder_watcher = EncoderWatcher(
+            encoder_store,
+            on_settled=lambda path: encoder_queue.plan(
+                encoder_store.create_job(path).id
+            ),
+            paths=ENCODER_WATCH_PATHS,
+            settle_seconds=ENCODER_SETTLE_SECONDS,
+            valid_extensions=VALID_VIDEO_EXT,
+        )
+        encoder_watcher.start()
+
     try:
         yield
     finally:
@@ -256,6 +292,11 @@ async def lifespan(app: FastAPI):
             downloader_cleanup_task.cancel()
         if downloader_started:
             shutdown_downloader()
+        if "encoder" in ENABLED_FEATURES_SET:
+            if encoder_watcher is not None:
+                encoder_watcher.stop()
+            if encoder_queue is not None:
+                encoder_queue.stop()
         _stop_observers()
 
 
@@ -274,6 +315,9 @@ app = FastAPI(lifespan=lifespan)
 # routes do not exist at all, which is stronger than a per-route feature check.
 if "download" in ENABLED_FEATURES_SET:
     app.include_router(downloader_router)
+
+if "encoder" in ENABLED_FEATURES_SET:
+    app.include_router(encoder_router)
 
 _AUTH_EXEMPT_EXACT = {"/health", "/openapi.json"}
 _AUTH_EXEMPT_PREFIXES = ("/auth/", "/docs", "/redoc")
