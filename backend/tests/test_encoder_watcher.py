@@ -178,6 +178,29 @@ def test_non_video_extensions_are_ignored(store, tmp_path):
     assert settled == []
 
 
+def test_a_file_vanishing_mid_settle_is_never_dispatched(store, tmp_path):
+    """A rip that gets deleted or moved out from under the watcher between
+    scans (a failed copy cleaned up, a user cancelling a rip) must not crash
+    the scan loop and must not be dispatched. os.path.getsize raises OSError
+    for a path that no longer exists, and _consider must swallow that."""
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"data")
+    settled = []
+    watcher = make_watcher(store, tmp_path, settled.append)
+
+    watcher.scan_existing()  # first sight: tracker now holds an entry for it
+    target.unlink()
+    watcher.scan_existing()  # must not raise, and must not dispatch
+
+    assert settled == []
+    # Pin the current behaviour: a vanished path's tracker entry is not
+    # cleaned up (the OSError branch returns before calling tracker.forget).
+    # If this ever starts failing because the entry is gone, that's a
+    # deliberate improvement, not a regression -- update the assertion
+    # rather than treating it as broken.
+    assert str(target) in watcher._tracker._seen
+
+
 def test_start_and_stop_leave_no_thread_running(store, tmp_path):
     watcher = make_watcher(store, tmp_path, lambda path: None)
     watcher.start()
