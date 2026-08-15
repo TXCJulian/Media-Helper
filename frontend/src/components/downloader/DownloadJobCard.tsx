@@ -206,7 +206,7 @@ export default function DownloadJobCard({ job, onCancel, onDelete, onStart, onRe
             <div className="mt-2 flex items-center gap-3 text-[0.72rem] text-[var(--text-tertiary)]">
               <span>{formatSize(job.items[0]!.size)}</span>
               <a
-                href={getDownloadItemFileUrl(job.job_id, 0)}
+                href={getDownloadItemFileUrl(job.job_id, job.items[0]!.index)}
                 download
                 className="min-w-0 truncate font-mono text-[0.68rem] text-[var(--accent-6)]/70 underline decoration-[var(--accent-6)]/20 hover:decoration-[var(--accent-6)]/60"
               >

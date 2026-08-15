@@ -308,6 +308,22 @@ describe('DownloadJobCard save link', () => {
     expect(link.getAttribute('download')).not.toBeNull()
   })
 
+  it('uses the stored item index for a single-item download link', () => {
+    render(
+      <DownloadJobCard
+        job={baseJob({ stage: 'done', items: [item({ index: 1 })] })}
+        onCancel={noop}
+        onDelete={noop}
+        onStart={noop}
+        onRetry={noop}
+      />,
+    )
+
+    expect(screen.getByRole('link', { name: /My Video\.mp4/ }).getAttribute('href')).toBe(
+      '/download/jobs/job-1/items/1/file',
+    )
+  })
+
   it('shows a generic download-arrow link per row in a multi-item job, without repeating the title', () => {
     render(
       <DownloadJobCard

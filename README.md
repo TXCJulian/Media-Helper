@@ -171,7 +171,7 @@ More companion services following this pattern may be added as GPU-heavy feature
 - Multi-stage Docker builds
 - Nginx reverse proxy
 - Bridge network for service communication
-- Optional: NVIDIA GPU service for lyrics transcription
+- Optional: NVIDIA or Intel Arc GPU service for lyrics transcription (AMD ROCm builds too but is untested; CPU fallback also available)
 - Cutter backend container uses Jellyfin FFmpeg build on amd64 for broader HW encoder availability
 
 ### Request Flow
@@ -214,7 +214,7 @@ Browser                    Frontend Container               Backend Container
 - **Media directory** with read/write permissions
 - **Node** 22.22.2+, 24.15+, or 26+ (only for local frontend development; the Docker build is unaffected)
 - **Optional**: Hardware-acceleration compatible APU/GPU (for ffmpeg in cutter section)
-- **Optional**: NVIDIA GPU + CUDA drivers (for lyrics transcription)
+- **Optional**: NVIDIA GPU + CUDA drivers, or Intel Arc GPU + oneAPI/Level Zero drivers (for lyrics transcription; see [Whisper_Lyric-Transcriber](https://github.com/TXCJulian/Whisper_Lyric-Transcriber)'s README for per-GPU requirements)
 
 ## Installation
 
@@ -250,7 +250,7 @@ volumes:
 # Without lyrics transcription (CPU only)
 docker compose up --build
 
-# With lyrics transcription (requires NVIDIA GPU)
+# With lyrics transcription (requires an NVIDIA or Intel Arc GPU)
 docker compose --profile gpu up --build #Clone transcriber repo first
 ```
 
@@ -639,7 +639,7 @@ docker exec media-helper_frontend cat /etc/nginx/conf.d/default.conf | grep prox
 1. Ensure the GPU service is running: `docker compose --profile gpu ps`
 2. Check the transcriber health: `curl http://localhost:3334/health`
 3. Verify `TRANSCRIBER_URL` is set correctly in the backend environment
-4. The transcriber requires an NVIDIA GPU with CUDA drivers
+4. The transcriber needs an NVIDIA or Intel Arc GPU (CUDA / oneAPI-Level Zero drivers respectively) — see [Whisper_Lyric-Transcriber](https://github.com/TXCJulian/Whisper_Lyric-Transcriber)'s README for per-GPU requirements and driver caveats
 
 ### Renamed files not visible on SMB/CIFS or NFS shares
 

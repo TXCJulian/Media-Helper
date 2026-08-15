@@ -210,14 +210,11 @@ export default function DownloaderPanel({
               placeholder="One link per line"
               rows={urls.length > 1 ? Math.min(urls.length + 1, 8) : 2}
               onChange={(e) => patchForm({ url: e.target.value })}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey && urls.length <= 1) {
-                  e.preventDefault()
-                  void submit()
-                }
-              }}
               className="input-field input-cyan min-h-[76px] resize-y leading-relaxed"
             />
+            <p className="text-[0.72rem] text-[var(--text-tertiary)]">
+              Paste or enter one link per line, then select Download.
+            </p>
             <button type="button" onClick={() => void submit()} className="btn-submit btn-cyan">
               {urls.length > 1 ? `Download ${urls.length} links` : 'Download'}
             </button>
