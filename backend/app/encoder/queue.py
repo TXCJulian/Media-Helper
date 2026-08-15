@@ -21,12 +21,21 @@ from app.encoder.client import EncoderRejected, EncoderUnreachable, is_retryable
 from app.encoder.events import EventBroadcaster, job_to_payload
 from app.encoder.probe import ProbeError, probe
 from app.encoder.rules import SKIP, RuleError, evaluate
-from app.encoder.store import EncoderStore
+from app.encoder.store import EncoderStore, Job
 from app.encoder.swap import SwapError, purge_original, swap_in
 
 logger = logging.getLogger(__name__)
 
 _REQUEUE_SECONDS = 30.0
+
+# How long the worker blocks on an empty queue before re-checking `_stopping`.
+# Only affects shutdown latency when idle -- a job pushed onto the queue
+# wakes `queue.Queue.get()` immediately regardless of this value.
+_WORKER_POLL_SECONDS = 0.5
+
+# Codes/statuses meaning "the remote has no memory of this job at all", the
+# only condition under which a reattach may fall back to a fresh submit.
+_REMOTE_JOB_GONE_CODES = frozenset({"source_not_found_on_encoder", "job_not_found"})
 
 
 class EncodeQueue:
@@ -51,6 +60,8 @@ class EncodeQueue:
         self._queue: queue_mod.Queue = queue_mod.Queue()
         self._thread: threading.Thread | None = None
         self._stopping = threading.Event()
+        self._timers: set[threading.Timer] = set()
+        self._timers_lock = threading.Lock()
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -65,14 +76,73 @@ class EncodeQueue:
 
     def stop(self, timeout: float = 10.0) -> None:
         self._stopping.set()
-        self._queue.put(None)
+
+        # Join the worker before touching `_timers`. While it is still
+        # running, `_run` can create a new retry timer at any moment (e.g.
+        # `_handle_dispatch_error` mid-flight); draining the set first would
+        # race that and could miss a timer created just after the drain.
+        # Once the join below returns, the worker cannot schedule anything
+        # new, so `_timers` is stable.
         if self._thread is not None:
             self._thread.join(timeout=timeout)
-            self._thread = None
+            # Only release the handle once the thread has actually exited.
+            # Nulling it unconditionally would let a later start() spawn a
+            # second worker while this one is still finishing up, breaking
+            # the one-worker guarantee.
+            if not self._thread.is_alive():
+                self._thread = None
+
+        # Pending retry/reattach timers must not fire after shutdown -- one
+        # left running would requeue a job onto a dispatcher no longer
+        # reading it (or, in tests, after the store has been closed).
+        with self._timers_lock:
+            timers = list(self._timers)
+            self._timers.clear()
+        for timer in timers:
+            timer.cancel()
+        for timer in timers:
+            # cancel() only asks a not-yet-fired timer to stand down; the
+            # thread still needs a moment to wake from its wait and exit.
+            # Join it so a caller who checks "is anything still running?"
+            # right after stop() returns sees a truthful answer.
+            timer.join(timeout=1.0)
 
     def recover(self) -> None:
-        """Requeue whatever a restart interrupted."""
+        """Requeue whatever a restart interrupted.
+
+        ``reset_active_for_recovery`` already flips every resumable job to
+        ``queued`` in the store, but the ``Job`` objects it returns still
+        carry the stage each job was in *before* that reset -- its SELECT
+        runs before its UPDATE, so the row is captured pre-flip. That
+        pre-reset stage is what decides how a job must be resumed:
+
+        - ``swapping``: never re-dispatched. ``swap_in`` is not idempotent
+          and nothing in the store can say whether the publish had already
+          landed when the restart hit, so guessing risks silently
+          re-encoding an already-published file and swapping that in over
+          the real result. This goes to a human instead. ``blocked`` is
+          already excluded from recovery, which is exactly the property
+          this needs too.
+        - everything else (``queued``, ``encoding``): requeued normally.
+          An ``encoding`` job keeps its ``remote_job_id`` in the store (the
+          reset only touches `stage`), so ``_run`` will reattach to the
+          in-flight remote job instead of submitting a second one.
+        """
         for job in self._store.reset_active_for_recovery():
+            if job.stage == "swapping":
+                self._store.set_stage(
+                    job.id,
+                    "blocked",
+                    error=(
+                        "The service restarted while publishing this encode. "
+                        "The file's state on disk is unknown -- confirm it "
+                        "manually before retrying this job."
+                    ),
+                    error_code="swap_interrupted",
+                )
+                self._publish(job.id)
+                continue
+
             logger.info("Resuming interrupted encode job %s", job.id)
             self.enqueue(job.id)
 
@@ -168,9 +238,10 @@ class EncodeQueue:
 
     def _worker(self) -> None:
         while not self._stopping.is_set():
-            job_id = self._queue.get()
-            if job_id is None:
-                return
+            try:
+                job_id = self._queue.get(timeout=_WORKER_POLL_SECONDS)
+            except queue_mod.Empty:
+                continue
             try:
                 self._run(job_id)
             except Exception:
@@ -190,21 +261,75 @@ class EncodeQueue:
                        "preset_missing")
             return
 
-        try:
-            remote_id = self._client.submit(job.source_path, preset.body, preset.name)
-        except (EncoderRejected, EncoderUnreachable) as exc:
-            self._handle_dispatch_error(job_id, exc)
-            return
-
-        self._store.set_remote_job(job_id, remote_id)
-        self._store.set_stage(job_id, "encoding")
-        self._publish(job_id)
+        if job.remote_job_id:
+            # A job that already has a remote id got here via recover()
+            # resuming an interrupted `encoding` job. Reattach rather than
+            # resubmit -- submitting again would start a second remote
+            # encode of the same source while the first may still be
+            # running.
+            remote_id = self._reattach(job_id, job, preset)
+            if remote_id is None:
+                return
+        else:
+            try:
+                remote_id = self._client.submit(job.source_path, preset.body, preset.name)
+            except (EncoderRejected, EncoderUnreachable) as exc:
+                self._handle_dispatch_error(job_id, exc)
+                return
+            self._store.set_remote_job(job_id, remote_id)
+            self._store.set_stage(job_id, "encoding")
+            self._publish(job_id)
 
         result = self._await_remote(job_id, remote_id)
         if result is None:
             return
 
+        # A cancel can land in the window between the remote reporting
+        # `completed` and the swap actually running. `_await_remote` only
+        # checks the stage before each poll, so check once more here,
+        # immediately before anything touches the file.
+        current = self._store.get_job(job_id)
+        if current is None or current.stage == "cancelled":
+            return
+
         self._publish_result(job_id, job.source_path, result)
+
+    def _reattach(self, job_id: str, job: Job, preset) -> str | None:
+        """Rejoin a job that already has a remote id instead of resubmitting.
+
+        Polls the existing remote id first. Only falls back to a fresh
+        submit if the remote reports it has no memory of that job at all
+        (a 404, or a ``source_not_found_on_encoder``-class rejection) --
+        anything else means the original encode might still be running or
+        might already be done, and either way a second submit would be
+        wrong.
+        """
+        remote_id = job.remote_job_id
+        assert remote_id is not None
+        try:
+            self._client.poll(remote_id)
+        except EncoderUnreachable:
+            # Can't tell yet. Stay queued and try again shortly rather than
+            # guess at a resubmit.
+            self._schedule_requeue(job_id, self._poll_interval)
+            return None
+        except EncoderRejected as exc:
+            gone = exc.status == 404 or exc.code in _REMOTE_JOB_GONE_CODES
+            if not gone:
+                self._fail(job_id, exc.reason, exc.code)
+                return None
+            try:
+                remote_id = self._client.submit(
+                    job.source_path, preset.body, preset.name
+                )
+            except (EncoderRejected, EncoderUnreachable) as submit_exc:
+                self._handle_dispatch_error(job_id, submit_exc)
+                return None
+
+        self._store.set_remote_job(job_id, remote_id)
+        self._store.set_stage(job_id, "encoding")
+        self._publish(job_id)
+        return remote_id
 
     def _await_remote(self, job_id: str, remote_id: str) -> dict | None:
         """Poll until the remote job is terminal. Returns its final body."""
@@ -289,16 +414,44 @@ class EncodeQueue:
             return
 
         if is_retryable(exc):
-            delay = getattr(exc, "retry_after", None) or _REQUEUE_SECONDS
+            # `None` means the response carried no Retry-After and we fall
+            # back to our own default; `0` is a legitimate value from the
+            # server (retry immediately) and must not be treated as absent.
+            retry_after = getattr(exc, "retry_after", None)
+            delay = retry_after if retry_after is not None else _REQUEUE_SECONDS
             logger.info("Encoder busy or unreachable; requeueing %s in %ss",
                         job_id, delay)
             self._store.set_stage(job_id, "queued")
             self._publish(job_id)
-            threading.Timer(float(delay), self._queue.put, args=(job_id,)).start()
+            self._schedule_requeue(job_id, float(delay))
             return
 
         code = getattr(exc, "code", "dispatch_failed")
         self._fail(job_id, str(exc), code)
+
+    def _schedule_requeue(self, job_id: str, delay: float) -> None:
+        """Put *job_id* back on the dispatch queue after *delay* seconds.
+
+        The timer is tracked on the instance so :meth:`stop` can cancel it.
+        Without that, a shutdown mid-retry leaves a live timer that outlives
+        the queue -- in tests it fires after the store has been closed; in
+        production it requeues onto a dispatcher no longer reading anything.
+        """
+        holder: list[threading.Timer] = []
+
+        def _fire() -> None:
+            with self._timers_lock:
+                if holder:
+                    self._timers.discard(holder[0])
+            self._queue.put(job_id)
+
+        timer = threading.Timer(max(delay, 0.0), _fire)
+        timer.daemon = True
+        timer.name = "encoder-requeue"
+        holder.append(timer)
+        with self._timers_lock:
+            self._timers.add(timer)
+        timer.start()
 
     def _fail(self, job_id: str, error: str, code: str) -> None:
         self._store.set_stage(job_id, "failed", error=error, error_code=code)

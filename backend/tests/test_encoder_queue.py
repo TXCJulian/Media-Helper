@@ -18,10 +18,12 @@ class FakeClient:
         self.submitted = []
         self.polls = []
         self.submit_error = None
+        self.submit_attempts = 0
         self.terminal = {"status": "completed", "progress": 100.0,
                          "output_path": None, "encoder_used": "x264"}
 
     def submit(self, source_path, preset_body, preset_name):
+        self.submit_attempts += 1
         if self.submit_error:
             raise self.submit_error
         self.submitted.append((source_path, preset_name))
@@ -162,7 +164,11 @@ def test_encoder_unavailable_blocks_rather_than_fails(env):
     assert store.get_job(job.id).error_code == "encoder_unavailable"
 
 
-def test_a_transient_rejection_requeues_instead_of_failing(env):
+def test_a_transient_rejection_requeues_and_retries(env):
+    """A retry_after=0 rejection must fire a real second submit, not just
+    leave the stage looking plausible -- `plan()` already sets `queued`
+    before the worker ever runs, so asserting the stage alone can't tell a
+    working retry from a dispatcher that never dispatched."""
     store, client, movies, source, _ = env
     client.submit_error = EncoderRejected("queue_full", "busy", 503, retry_after=0)
     q = _queue(store, client, mode="auto")
@@ -170,27 +176,51 @@ def test_a_transient_rejection_requeues_instead_of_failing(env):
     q.plan(job.id)
     q.start()
     try:
-        time.sleep(0.2)
-        assert store.get_job(job.id).stage in {"queued", "encoding"}
+        _wait(lambda: client.submit_attempts >= 2)
     finally:
         q.stop()
     assert store.get_job(job.id).stage != "failed"
+    assert not _timer_alive("encoder-requeue")
 
 
-def test_an_unreachable_encoder_keeps_the_job_queued(env):
+def test_an_unreachable_encoder_retries_until_reachable(env, monkeypatch):
     """Jobs queue in the renamer rather than being lost, as the downloader
-    already does."""
-    store, client, movies, source, _ = env
+    already does -- and must actually retry the submit, not merely sit at
+    `queued` because nothing ran yet."""
+    store, client, movies, source, queue_mod = env
+    # EncoderUnreachable carries no retry_after, so the dispatcher falls
+    # back to its own default. Shrink that default so the retry is
+    # observable within the test's deadline instead of waiting out the real
+    # 30s production value.
+    monkeypatch.setattr(queue_mod, "_REQUEUE_SECONDS", 0.01)
     client.submit_error = EncoderUnreachable("refused")
     q = _queue(store, client, mode="auto")
     job = store.create_job(str(source))
     q.plan(job.id)
     q.start()
     try:
-        time.sleep(0.2)
-        assert store.get_job(job.id).stage != "failed"
+        _wait(lambda: client.submit_attempts >= 2)
     finally:
         q.stop()
+    assert store.get_job(job.id).stage != "failed"
+    assert not _timer_alive("encoder-requeue")
+
+
+def test_stop_cancels_a_pending_retry_timer(env):
+    """A shutdown mid-retry must not leave a live timer that requeues onto
+    a dispatcher no longer reading anything (and, in tests, fires after the
+    store has closed)."""
+    store, client, movies, source, _ = env
+    client.submit_error = EncoderRejected("queue_full", "busy", 503, retry_after=5)
+    q = _queue(store, client, mode="auto")
+    job = store.create_job(str(source))
+    q.plan(job.id)
+    q.start()
+    try:
+        _wait(lambda: client.submit_attempts >= 1)
+    finally:
+        q.stop()
+    assert not _timer_alive("encoder-requeue")
 
 
 def test_a_non_retryable_rejection_fails_the_job(env):
@@ -216,6 +246,111 @@ def test_recover_requeues_interrupted_jobs(env):
     q = _queue(store, client, mode="auto")
     q.recover()
     assert store.get_job(job.id).stage == "queued"
+
+
+def test_recover_reattaches_an_interrupted_encode_instead_of_resubmitting(env):
+    """A restart must not start a second remote encode of the same source.
+    An `encoding` job keeps its remote_job_id across recover(); the worker
+    must poll that id rather than calling submit() again."""
+    store, client, movies, source, _ = env
+    job = store.create_job(str(source))
+    store.set_plan(job.id, preset_name="NVENC", rule_id="r1", facts={},
+                   original_size=4096)
+    store.set_remote_job(job.id, "remote-old")
+    store.set_stage(job.id, "encoding")
+
+    encoded = movies / ".hbenc-remote-old.mkv"
+    encoded.write_bytes(b"E" * 10)
+    client.terminal = {"status": "completed", "progress": 100.0,
+                       "output_path": str(encoded), "encoder_used": "x264"}
+
+    q = _queue(store, client, mode="auto")
+    q.recover()
+    q.start()
+    try:
+        _wait(lambda: store.get_job(job.id).stage == "done")
+    finally:
+        q.stop()
+    assert client.submitted == []
+    assert all(remote_id == "remote-old" for remote_id in client.polls)
+
+
+def test_recover_blocks_an_interrupted_swap_rather_than_resubmitting(env):
+    """swap_in is not idempotent and nothing in the store says whether the
+    publish had already landed -- recovery must never guess here. It goes to
+    `blocked` for a human instead."""
+    store, client, movies, source, _ = env
+    job = store.create_job(str(source))
+    store.set_remote_job(job.id, "remote-old")
+    store.set_stage(job.id, "swapping")
+
+    q = _queue(store, client, mode="auto")
+    q.recover()
+
+    fetched = store.get_job(job.id)
+    assert fetched.stage == "blocked"
+    assert fetched.error_code == "swap_interrupted"
+    assert client.submitted == []
+    assert client.polls == []
+
+
+def test_a_cancel_racing_a_completing_encode_does_not_touch_the_source(env):
+    """`_await_remote` only checks for a cancel before each poll. Once a
+    poll has already returned `completed`, nothing re-checked the stage
+    before this fix -- a cancel landing in that exact window still swapped
+    the file in. Simulate the race deterministically: cancel from inside
+    the fake client's poll(), synchronously, right as it hands back the
+    terminal body."""
+    store, client, movies, source, _ = env
+    encoded = movies / ".hbenc-remote-1.mkv"
+    encoded.write_bytes(b"E" * 1024)
+    client.terminal = {"status": "completed", "progress": 100.0,
+                       "output_path": str(encoded), "encoder_used": "x264"}
+
+    q = _queue(store, client, mode="auto")
+    job = store.create_job(str(source))
+    q.plan(job.id)
+
+    original_poll = client.poll
+
+    def racing_poll(remote_job_id):
+        q.cancel(job.id)
+        return original_poll(remote_job_id)
+
+    client.poll = racing_poll
+
+    q.start()
+    try:
+        _wait(lambda: store.get_job(job.id).stage == "cancelled")
+    finally:
+        q.stop()
+
+    fetched = store.get_job(job.id)
+    assert fetched.output_path is None
+    assert source.read_bytes() == b"O" * 4096
+
+
+def test_stop_then_start_dispatches_normally(env):
+    """A stop()/start() cycle must not poison the dispatcher: a stale `None`
+    sentinel left in the queue (the old shutdown mechanism) would make the
+    next worker exit immediately on its first get(), silently accepting
+    enqueues forever after without ever dispatching them."""
+    store, client, movies, source, _ = env
+    q = _queue(store, client, mode="auto")
+    q.start()
+    q.stop()
+
+    job = store.create_job(str(source))
+    q.plan(job.id)
+    q.start()
+    try:
+        _wait(lambda: client.submitted != [])
+    finally:
+        q.stop()
+    assert client.submitted == [(str(source), "NVENC")]
+    assert not any(
+        t.name == "encoder-dispatch" and t.is_alive() for t in threading.enumerate()
+    )
 
 
 def test_run_retentions_purges_elapsed_originals(env, tmp_path):
@@ -290,3 +425,10 @@ def _wait(predicate, timeout=5.0):
             return
         time.sleep(0.02)
     raise AssertionError("condition not reached in time")
+
+
+def _timer_alive(name):
+    return any(
+        isinstance(t, threading.Timer) and t.name == name and t.is_alive()
+        for t in threading.enumerate()
+    )
