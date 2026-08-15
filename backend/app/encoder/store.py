@@ -19,6 +19,11 @@ from typing import Any
 from app.encoder.presets import NamedPreset
 from app.encoder.rules import Condition, Rule
 
+STAGES = frozenset(
+    {"settling", "pending", "queued", "encoding", "swapping", "done", "failed",
+     "blocked", "skipped", "cancelled"}
+)
+
 TERMINAL_STAGES = ("done", "failed", "skipped", "cancelled")
 
 # Stages a restart must requeue. `pending` (awaiting review) and `blocked`
@@ -134,7 +139,10 @@ class EncoderStore:
                 (job_id, source_path),
             )
             self._conn.commit()
-        return self.get_job(job_id)  # type: ignore[return-value]
+            row = self._conn.execute(
+                "SELECT * FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        return _to_job(row)  # type: ignore[return-value]
 
     def get_job(self, job_id: str) -> Job | None:
         with self._lock:
@@ -152,6 +160,8 @@ class EncoderStore:
 
     def set_stage(self, job_id: str, stage: str, error: str | None = None,
                   error_code: str | None = None) -> None:
+        if stage not in STAGES:
+            raise ValueError(f"Unknown stage: {stage}")
         self._update(job_id, stage=stage, error=error, error_code=error_code)
 
     def set_progress(self, job_id: str, pct: float) -> None:

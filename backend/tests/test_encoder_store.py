@@ -1,3 +1,4 @@
+import sqlite3
 import time
 
 import pytest
@@ -38,11 +39,27 @@ def test_failure_records_both_message_and_code(store):
     assert (fetched.error, fetched.error_code) == ("no such preset", "preset_not_found")
 
 
+def test_set_stage_rejects_an_unknown_stage(store):
+    job = store.create_job("/media3/x.mkv")
+    with pytest.raises(ValueError):
+        store.set_stage(job.id, "encdoing")
+    assert store.get_job(job.id).stage == "settling"
+
+
+def test_set_stage_accepts_every_valid_stage(store):
+    job = store.create_job("/media3/x.mkv")
+    for stage in ("pending", "queued", "encoding", "swapping", "blocked",
+                  "skipped", "cancelled", "failed", "done"):
+        job = store.create_job(f"/media3/{stage}.mkv")
+        store.set_stage(job.id, stage)
+        assert store.get_job(job.id).stage == stage
+
+
 def test_only_one_active_job_per_source_path(store):
     """The watcher can see one file twice -- a second event, a rescan after
     restart. Two jobs encoding one file would race for the same output."""
     store.create_job("/media3/x.mkv")
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.IntegrityError):
         store.create_job("/media3/x.mkv")
 
 
