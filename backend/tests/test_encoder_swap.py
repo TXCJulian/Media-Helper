@@ -142,6 +142,90 @@ def test_the_original_survives_when_publish_fails_at_zero_ttl(library, tmp_path,
     assert source.read_bytes() == b"O" * 4096
 
 
+def test_swap_refuses_to_overwrite_an_unrelated_file_at_the_destination(library, tmp_path):
+    """final_path is derived by extension substitution alone. If a different,
+    unrelated movie already sits at that path (e.g. the library holds both
+    "Film (2019).mkv" and a distinct "Film (2019).mp4"), publishing must not
+    silently destroy it -- that file was never part of this job."""
+    movies, source, encoded = library
+    encoded = movies / ".hbenc-job1.mp4"
+    encoded.write_bytes(b"E" * 1024)
+    unrelated = movies / "Film (2019).mp4"
+    unrelated.write_bytes(b"U" * 2048)
+
+    with pytest.raises(SwapError):
+        swap_in(str(source), str(encoded), original_ttl=0,
+                holding_dir=str(tmp_path / "hold"))
+
+    assert source.read_bytes() == b"O" * 4096
+    assert unrelated.read_bytes() == b"U" * 2048
+
+
+def test_the_original_is_restored_when_publish_fails_after_it_was_preserved(
+    library, tmp_path, monkeypatch
+):
+    """The highest-consequence branch in the module: the original has
+    physically been moved into holding, and then the publish itself fails.
+    It must be moved back to source rather than left stranded."""
+    movies, source, encoded = library
+    holding = tmp_path / "hold"
+
+    import app.encoder.swap as swap_mod
+
+    def _boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(swap_mod.os, "replace", _boom)
+    with pytest.raises(SwapError):
+        swap_in(str(source), str(encoded), original_ttl=604800,
+                holding_dir=str(holding))
+
+    assert source.read_bytes() == b"O" * 4096
+    assert not holding.exists() or list(holding.glob("*")) == []
+
+
+def test_swap_error_carries_the_kept_path_when_restore_also_fails(
+    library, tmp_path, monkeypatch
+):
+    """If the original was moved into holding and *both* the publish and the
+    subsequent restore-to-source fail, the movie survives at kept_path but
+    not at source. Callers (Task 8's error handling, the UI) need that
+    pointer -- a log line alone is not a recovery path."""
+    movies, source, encoded = library
+    holding = tmp_path / "hold"
+
+    import app.encoder.swap as swap_mod
+
+    def _boom(*_a, **_k):
+        raise OSError("disk full")
+
+    # Captured before patching, so it's the real function object rather than
+    # a module-attribute lookup that would recurse into the patch below.
+    _real_move = swap_mod.shutil.move
+    move_calls = {"n": 0}
+
+    def _flaky_move(src, dst):
+        # Let the initial preserve-to-holding move succeed for real, so the
+        # scenario under test is specifically "restore back to source" --
+        # not "could not preserve in the first place", which is already
+        # covered by test_the_original_survives_when_the_holding_move_fails.
+        move_calls["n"] += 1
+        if move_calls["n"] == 1:
+            return _real_move(src, dst)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(swap_mod.os, "replace", _boom)
+    monkeypatch.setattr(swap_mod.shutil, "move", _flaky_move)
+
+    with pytest.raises(SwapError) as excinfo:
+        swap_in(str(source), str(encoded), original_ttl=604800,
+                holding_dir=str(holding))
+
+    assert excinfo.value.kept_path is not None
+    assert os.path.exists(excinfo.value.kept_path)
+    assert open(excinfo.value.kept_path, "rb").read() == b"O" * 4096
+
+
 def test_sweep_removes_partials_from_dead_jobs(library):
     """After a crash the encoder's partials are unowned. Both the published
     and the staging shapes can be left behind."""
@@ -154,6 +238,25 @@ def test_sweep_removes_partials_from_dead_jobs(library):
         ".hbenc-dead1.mkv", ".hbenc-dead2-9f3a1c.mkv"
     ]
     assert (movies / ".hbenc-alive.mkv").exists()
+
+
+def test_sweep_protects_a_live_job_with_a_hyphenated_id(library):
+    """Job ids come verbatim from the encoder service (client.py) and are not
+    guaranteed to be hyphen-free -- a canonical str(uuid4()) is exactly this
+    shape. A sweep that split on the first hyphen to find the job id would
+    slice such an id in half and mistake a live job's own partial, in either
+    its published or staging form, for an orphan."""
+    movies, _, _ = library
+    live_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    (movies / f".hbenc-{live_id}.mkv").write_bytes(b"x")
+    (movies / f".hbenc-{live_id}-9f3a1c.mkv").write_bytes(b"x")
+    (movies / ".hbenc-dead1.mkv").write_bytes(b"x")
+
+    removed = sweep_orphans(str(movies), active_job_ids={live_id, "job1"})
+
+    assert sorted(os.path.basename(p) for p in removed) == [".hbenc-dead1.mkv"]
+    assert (movies / f".hbenc-{live_id}.mkv").exists()
+    assert (movies / f".hbenc-{live_id}-9f3a1c.mkv").exists()
 
 
 def test_sweep_never_touches_real_media(library):

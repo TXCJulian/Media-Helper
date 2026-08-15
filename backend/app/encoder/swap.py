@@ -35,13 +35,27 @@ the encode. A crash mid-encode leaves the latter, so a sweep that only knew
 the former would leave partials behind forever.
 """
 
-_ORPHAN_RE = re.compile(
-    r"^\.hbenc-(?P<job_id>[A-Za-z0-9]+)(?:-[A-Za-z0-9]+)?\.[A-Za-z0-9]+$"
-)
+_ORPHAN_RE = re.compile(r"^\.hbenc-(?P<id_portion>.+)\.[A-Za-z0-9]+$")
+"""Matches the `.hbenc-` shape without trying to split the job id from an
+optional `-<token>` suffix -- job ids come verbatim from the encoder service
+(client.py) and are not guaranteed to be hyphen-free, so a regex that treated
+the first hyphen as the id/token boundary could slice a hyphenated id in half
+and mistake a live job's partial for an orphan's. See ``_is_protected``.
+"""
 
 
 class SwapError(RuntimeError):
-    """Raised when an encode cannot be published. The source is untouched."""
+    """Raised when an encode cannot be published. The source is untouched.
+
+    ``kept_path`` is set when the original had already been moved into the
+    holding area and could not be moved back after a later failure -- the
+    movie survives, but not at ``source``, so callers need the pointer to
+    tell the user where it went.
+    """
+
+    def __init__(self, message: str, kept_path: str | None = None) -> None:
+        super().__init__(message)
+        self.kept_path = kept_path
 
 
 @dataclass(frozen=True)
@@ -82,6 +96,21 @@ def swap_in(
     # lies about its contents.
     final_path = os.path.splitext(source)[0] + os.path.splitext(encoded)[1]
 
+    if final_path != source and os.path.exists(final_path):
+        # final_path is derived purely by extension substitution, so an
+        # mkv->mp4 preset could land on a *different* movie that happens to
+        # share the title -- e.g. "Film (2019).mkv" and a pre-existing,
+        # unrelated "Film (2019).mp4". os.replace() below would silently
+        # unlink that file with no retention and a success return, which is
+        # exactly the harm this module exists to prevent. Nothing has been
+        # touched yet, so aborting here is free. This is a name collision a
+        # human should see, not something to route through _preserve and
+        # silently retitle -- that file was never part of this job.
+        raise SwapError(
+            f"Refusing to publish {encoded} over {final_path}: a file "
+            f"already exists there and was never part of this job."
+        )
+
     # Preserve the original *before* publishing, so that if retention was
     # requested we never reach a state where the encode is live but the
     # original was neither kept nor recoverable. Deletion, by contrast, is
@@ -106,6 +135,19 @@ def swap_in(
                 kept_path = None
             except OSError:
                 logger.exception("Could not restore the original from %s", kept_path)
+        if kept_path:
+            # The restore above failed (or was never attempted because the
+            # move already happened and vanished some other way). The movie
+            # is not lost -- it survives at kept_path -- but a log line is
+            # not a recovery path: the job record, the UI, and Task 8's
+            # error handling all need this pointer to tell the user where
+            # their original went.
+            raise SwapError(
+                f"Could not publish {encoded} to {final_path}: {exc}. The "
+                f"original could not be restored from holding; it survives "
+                f"at {kept_path}.",
+                kept_path=kept_path,
+            ) from exc
         raise SwapError(f"Could not publish {encoded} to {final_path}: {exc}") from exc
 
     if original_ttl <= 0 and final_path != source:
@@ -175,6 +217,21 @@ def _preserve(source: str, holding_dir: str) -> str:
     return target
 
 
+def _is_protected(id_portion: str, active_job_ids: set[str]) -> bool:
+    """Is *id_portion* -- the text between ``.hbenc-`` and the extension --
+    the published or staging name of a job in *active_job_ids*?
+
+    ``id_portion`` is either a bare job id (``.hbenc-<job_id>.<ext>``) or a
+    job id followed by ``-<token>`` (the staging shape written mid-encode).
+    Job ids are opaque strings from the encoder service and may themselves
+    contain hyphens, so this checks candidacy directly against the full
+    active ids rather than splitting on the first hyphen.
+    """
+    if id_portion in active_job_ids:
+        return True
+    return any(id_portion.startswith(f"{job_id}-") for job_id in active_job_ids)
+
+
 def sweep_orphans(directory: str, active_job_ids: set[str]) -> list[str]:
     """Delete `.hbenc-` partials in *directory* not belonging to a live job.
 
@@ -189,7 +246,7 @@ def sweep_orphans(directory: str, active_job_ids: set[str]) -> list[str]:
 
     for name in entries:
         match = _ORPHAN_RE.match(name)
-        if not match or match.group("job_id") in active_job_ids:
+        if not match or _is_protected(match.group("id_portion"), active_job_ids):
             continue
         path = os.path.join(directory, name)
         try:
