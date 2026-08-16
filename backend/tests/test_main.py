@@ -391,13 +391,24 @@ class TestEncoderLifespan:
 
     def test_encoder_failing_to_start_does_not_kill_the_app(self, tmp_path):
         """A failure that happens *after* the queue has already started its
-        dispatch worker thread must not leak that thread, and must not take
-        the rest of the app down with it -- mirrors
-        test_downloader_failing_to_start_does_not_kill_the_app. Without the
-        try/except around the encoder startup block, the exception aborts
-        the lifespan generator before the `finally` that would stop the
-        queue is ever entered, and `TestClient(...)` itself would raise
-        instead of the app coming up.
+        dispatch worker thread must not leak that thread, must not take the
+        rest of the app down with it, and -- critically -- must not leave
+        the encoder routes handing back a fake success once the singletons
+        are dead.
+
+        Mirrors test_downloader_failing_to_start_does_not_kill_the_app for
+        the "app survives" half. Without the try/except around the encoder
+        startup block, the exception aborts the lifespan generator before
+        the `finally` that would stop the queue is ever entered, and
+        `TestClient(...)` itself would raise instead of the app coming up.
+
+        Round 2 of review added the second half: a first fix contained the
+        thread leak by stopping the queue, but left `get_queue()` free to
+        silently rebuild a fresh, never-started replacement -- so
+        `POST /jobs/{id}/approve` would report `200 {"stage": "queued"}` for
+        a job nobody would ever dispatch. `mark_startup_failed()` is what
+        closes that: this test asserts the route raises instead of quietly
+        "succeeding".
         """
         import importlib
         import threading
@@ -440,11 +451,15 @@ class TestEncoderLifespan:
                     assert c.get("/health").status_code == 200
                     assert c.get("/directories/tvshows").status_code == 200
 
-                    # The queue really was started (non-vacuous: this thread
-                    # only exists if `encoder_queue.start()` ran before the
-                    # induced EncoderWatcher failure).
-                    queue = encoder_routes_mod.get_queue()
-                    assert queue is not None
+                    # The singletons were torn down, not left dangling.
+                    assert encoder_routes_mod._store is None
+                    assert encoder_routes_mod._queue is None
+
+                    # The caller does not get a quiet 200 -- approving (or
+                    # any other store/queue-backed route) fails loud instead
+                    # of silently accepting work nobody will ever process.
+                    with pytest.raises(RuntimeError):
+                        c.post("/api/encoder/jobs/some-id/approve")
 
                 # No leaked dispatch worker thread survives the failure.
                 assert not any(

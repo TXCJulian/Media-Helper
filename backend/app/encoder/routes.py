@@ -40,9 +40,23 @@ _client: EncoderClient | None = None
 _events: EventBroadcaster | None = None
 _queue: EncodeQueue | None = None
 
+# Set by `mark_startup_failed()` when main.py's lifespan catches an exception
+# partway through building the store/queue/watcher. Without this, `get_store()`
+# and `get_queue()` would just lazily rebuild on the next call -- handing back
+# a queue with no worker thread reading it, so `approve` would report success
+# ("queued") for a job nobody will ever dispatch. Once set, both fail loud
+# instead, matching the downloader's `get_store()`/`get_queue()`, which raise
+# unconditionally when `init_downloader()` was never called or was undone by
+# `shutdown_downloader()`.
+_startup_failed = False
+
 
 def get_store() -> EncoderStore:
     global _store
+    if _startup_failed:
+        raise RuntimeError(
+            "Encoder failed to start; check the server logs for the cause"
+        )
     if _store is None:
         _store = EncoderStore(config.ENCODER_DB)
     return _store
@@ -64,6 +78,10 @@ def get_events() -> EventBroadcaster:
 
 def get_queue() -> EncodeQueue:
     global _queue
+    if _startup_failed:
+        raise RuntimeError(
+            "Encoder failed to start; check the server logs for the cause"
+        )
     if _queue is None:
         _queue = EncodeQueue(
             get_store(),
@@ -76,13 +94,34 @@ def get_queue() -> EncodeQueue:
     return _queue
 
 
+def mark_startup_failed() -> None:
+    """Record a contained lifespan startup failure and discard live state.
+
+    Called from `main.py`'s lifespan *after* it has already stopped whatever
+    of the queue/watcher had managed to start. Resets the singletons (so
+    nothing hands back a half-built or already-stopped object) and flips the
+    guard `get_store()`/`get_queue()` check, so every subsequent call -- from
+    a route handler or anywhere else -- fails loud instead of silently
+    reconstructing (a fresh `EncodeQueue()` whose `.start()` nobody calls
+    again is exactly as dead as the stopped one it would replace).
+    """
+    global _store, _queue, _events, _startup_failed
+    if _store is not None:
+        _store.close()
+    _store = None
+    _queue = None
+    _events = None
+    _startup_failed = True
+
+
 def reset_state_for_tests() -> None:
-    global _store, _events, _queue
+    global _store, _events, _queue, _startup_failed
     if _store is not None:
         _store.close()
     _store = None
     _events = None
     _queue = None
+    _startup_failed = False
 
 
 class PresetImport(BaseModel):
@@ -140,7 +179,14 @@ async def _validation_exception_handler(
     feature's validation errors fall through to FastAPI's unmodified
     default handler.
     """
-    if not request.url.path.startswith(router.prefix):
+    path = request.url.path
+    # Segment-bounded, not a bare prefix check: `path == router.prefix`
+    # covers the (currently unused) bare "/api/encoder" path itself, and
+    # `path.startswith(router.prefix + "/")` requires the next character
+    # after the prefix to be a path separator. Without the separator, a
+    # future route like "/api/encoderXYZ" would have its validation errors
+    # silently reshaped into this envelope too.
+    if not (path == router.prefix or path.startswith(router.prefix + "/")):
         return await request_validation_exception_handler(request, exc)
     errors = exc.errors()
     reason = "; ".join(

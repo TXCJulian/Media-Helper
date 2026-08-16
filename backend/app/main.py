@@ -313,6 +313,12 @@ async def lifespan(app: FastAPI):
                         "Encoder queue cleanup after a failed start failed"
                     )
                 encoder_queue = None
+            # Discard the module singletons and make get_store()/get_queue()
+            # fail loud from here on. Without this, a route handler calling
+            # get_queue() would just lazily rebuild a fresh (never-started)
+            # queue -- approve() would then report "queued" for a job that
+            # is, silently and permanently, never going to be dispatched.
+            encoder_routes.mark_startup_failed()
 
     try:
         yield

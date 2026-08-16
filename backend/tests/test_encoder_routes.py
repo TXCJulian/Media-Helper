@@ -276,3 +276,61 @@ def test_the_flat_envelope_does_not_leak_into_other_routes():
         # FastAPI's untouched default shape: a "detail" list, no "code".
         assert "detail" in body
         assert "code" not in body
+
+
+def test_the_flat_envelope_check_is_segment_bounded():
+    """A bare `str.startswith(router.prefix)` would also match
+    "/api/encoderXYZ" -- a route that doesn't exist today, but a future one
+    starting with the same characters must not have its errors silently
+    reshaped just because it happens to share a prefix with no path
+    separator between them."""
+    app = FastAPI()
+    routes_mod.register_error_handlers(app)
+
+    class _Body(BaseModel):
+        required_field: str
+
+    @app.post("/api/encoderXYZ/thing")
+    def _lookalike(body: _Body) -> dict:
+        return {"ok": True}
+
+    with TestClient(app) as c:
+        r = c.post("/api/encoderXYZ/thing", json={})
+        assert r.status_code == 422
+        body = r.json()
+        assert "detail" in body
+        assert "code" not in body
+
+
+# ---- Review round 2, item 2: a contained startup failure must not leave --
+# ---- get_store()/get_queue() handing back a dead singleton silently -----
+
+
+def test_mark_startup_failed_makes_store_and_queue_fail_loud(client):
+    """`main.py`'s lifespan calls this after a contained startup failure.
+    Without it, `get_queue()` would keep lazily rebuilding a fresh
+    `EncodeQueue` that nobody ever calls `.start()` on again -- `approve`
+    would report "queued" for a job that will silently never be dispatched.
+    Failing loud here is what makes that impossible."""
+    routes_mod.get_store()  # populate the singletons first, non-vacuously
+    routes_mod.get_queue()
+    assert routes_mod._store is not None
+    assert routes_mod._queue is not None
+
+    routes_mod.mark_startup_failed()
+
+    assert routes_mod._store is None
+    assert routes_mod._queue is None
+    with pytest.raises(RuntimeError):
+        routes_mod.get_store()
+    with pytest.raises(RuntimeError):
+        routes_mod.get_queue()
+
+
+def test_a_contained_startup_failure_surfaces_at_the_route_not_a_fake_200(client):
+    """The caller-observable version of the above: hitting an encoder route
+    after a startup failure must not come back as a quiet success."""
+    routes_mod.mark_startup_failed()
+
+    with pytest.raises(RuntimeError):
+        client.get("/api/encoder/jobs")
