@@ -366,6 +366,44 @@ def test_run_retentions_purges_elapsed_originals(env, tmp_path):
     assert store.get_job(job.id).original_kept_path is None
 
 
+def test_run_retentions_keeps_the_record_when_the_purge_fails_for_a_real_reason(env, tmp_path, monkeypatch):
+    """`purge_original` returns False for both "already gone" and "a real
+    error occurred" -- clearing the retention record on both would lose the
+    only pointer to a file that, in the real-error case, is still sitting
+    there. Only a confirmed-absent file (checked separately) is safe to
+    clear alongside a False return."""
+    store, client, movies, source, queue_mod = env
+    kept = tmp_path / "hold" / "still-here.mkv"
+    kept.parent.mkdir(parents=True)
+    kept.write_bytes(b"x")
+    job = store.create_job("/media3/other.mkv")
+    store.set_retention(job.id, str(kept), expires_at=time.time() - 1)
+
+    monkeypatch.setattr(queue_mod, "purge_original", lambda _p: False)
+    q = _queue(store, client)
+    purged = q.run_retentions()
+
+    assert purged == 0
+    assert kept.exists()
+    assert store.get_job(job.id).original_kept_path == str(kept)
+
+
+def test_run_retentions_clears_the_record_for_a_confirmed_absent_file(env, tmp_path, monkeypatch):
+    """A file that's already gone (a race with a manual purge, e.g.) must
+    still have its retention record cleared even though `purge_original`
+    reports False for it -- there is nothing left to retry."""
+    store, client, movies, source, queue_mod = env
+    kept = tmp_path / "hold" / "already-gone.mkv"
+    job = store.create_job("/media3/other.mkv")
+    store.set_retention(job.id, str(kept), expires_at=time.time() - 1)
+
+    monkeypatch.setattr(queue_mod, "purge_original", lambda _p: False)
+    q = _queue(store, client)
+    q.run_retentions()
+
+    assert store.get_job(job.id).original_kept_path is None
+
+
 def test_swap_failure_with_original_untouched_says_so(env):
     """SwapError with no kept_path: the original genuinely never moved."""
     store, client, movies, source, _ = env
@@ -416,6 +454,121 @@ def test_swap_failure_with_kept_path_names_it(env, monkeypatch):
     assert "the original was left untouched" not in fetched.error
     assert kept in fetched.error
     assert "preserved" in fetched.error.lower()
+
+
+def test_an_unreachable_encoder_eventually_blocks_instead_of_polling_forever(env, monkeypatch):
+    """There is exactly one worker; an encoder that never comes back must not
+    hold every other job hostage forever with no signal the UI could act on.
+    Shrinks the block threshold so this is observable in-test rather than
+    waiting out the real 30-minute default."""
+    store, client, movies, source, queue_mod = env
+    monkeypatch.setattr(queue_mod, "_UNREACHABLE_BLOCK_SECONDS", 0.05)
+
+    original_poll = client.poll
+    poll_calls = {"n": 0}
+
+    def always_unreachable(remote_job_id):
+        poll_calls["n"] += 1
+        raise EncoderUnreachable("refused")
+
+    client.poll = always_unreachable
+
+    q = _queue(store, client, mode="auto")
+    job = store.create_job(str(source))
+    q.plan(job.id)
+    q.start()
+    try:
+        _wait(lambda: store.get_job(job.id).stage == "blocked", timeout=5.0)
+    finally:
+        q.stop()
+
+    fetched = store.get_job(job.id)
+    assert fetched.error_code == "encoder_unreachable"
+    assert poll_calls["n"] >= 2  # actually retried, not blocked on the first poll
+
+
+def test_a_successful_poll_resets_the_unreachable_counter(env, monkeypatch):
+    """A brief outage followed by recovery must not count toward the block
+    threshold -- only *consecutive* unreachable polls should."""
+    store, client, movies, source, queue_mod = env
+    monkeypatch.setattr(queue_mod, "_UNREACHABLE_BLOCK_SECONDS", 0.05)
+
+    calls = {"n": 0}
+
+    def flaky_then_fine(remote_job_id):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise EncoderUnreachable("refused")
+        return {"status": "completed", "progress": 100.0,
+               "output_path": str(movies / ".hbenc-remote-1.mkv"),
+               "encoder_used": "x264"}
+
+    (movies / ".hbenc-remote-1.mkv").write_bytes(b"E" * 10)
+    client.poll = flaky_then_fine
+
+    q = _queue(store, client, mode="auto")
+    job = store.create_job(str(source))
+    q.plan(job.id)
+    q.start()
+    try:
+        _wait(lambda: store.get_job(job.id).stage == "done", timeout=5.0)
+    finally:
+        q.stop()
+
+    assert store.get_job(job.id).stage == "done"
+
+
+def test_start_after_a_stale_thread_handle_restarts_the_worker(env):
+    """After a `stop()` that times out, the thread handle survives (it is
+    only nulled once the join confirms the thread has exited) -- a bare
+    `is not None` check in `start()` would then make every later start() a
+    permanent no-op, even once that old thread has since died on its own."""
+    store, client, movies, source, _ = env
+    q = _queue(store, client, mode="auto")
+    q.start()
+    q.stop()
+    assert q._thread is None  # a clean stop() already nulls it
+
+    # Simulate the timed-out-stop scenario directly: a thread object that has
+    # since finished, but is still referenced by `_thread`.
+    stale = threading.Thread(target=lambda: None)
+    stale.start()
+    stale.join()
+    q._thread = stale
+
+    q.start()
+    try:
+        assert q._thread is not None
+        assert q._thread is not stale
+        assert q._thread.is_alive()
+    finally:
+        q.stop()
+
+
+def test_a_zero_retry_after_is_floored_rather_than_hot_looping(env, monkeypatch):
+    """A server-supplied `retry_after=0` must not schedule an immediate
+    (effectively zero-delay) requeue -- floored to at least 1 second."""
+    store, client, movies, source, queue_mod = env
+    client.submit_error = EncoderRejected("queue_full", "busy", 503, retry_after=0)
+
+    scheduled = []
+    q = _queue(store, client, mode="auto")
+    original_schedule = q._schedule_requeue
+
+    def _spy(job_id, delay):
+        scheduled.append(delay)
+        original_schedule(job_id, delay)
+
+    monkeypatch.setattr(q, "_schedule_requeue", _spy)
+    job = store.create_job(str(source))
+    q.plan(job.id)
+    q.start()
+    try:
+        _wait(lambda: scheduled != [])
+    finally:
+        q.stop()
+
+    assert scheduled[0] >= 1.0
 
 
 def _wait(predicate, timeout=5.0):

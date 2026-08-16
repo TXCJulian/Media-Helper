@@ -13,6 +13,7 @@ The stage machine:
 """
 
 import logging
+import os
 import queue as queue_mod
 import threading
 import time
@@ -32,6 +33,12 @@ _REQUEUE_SECONDS = 30.0
 # Only affects shutdown latency when idle -- a job pushed onto the queue
 # wakes `queue.Queue.get()` immediately regardless of this value.
 _WORKER_POLL_SECONDS = 0.5
+
+# How long `_await_remote` keeps polling an unreachable encoder before giving
+# up and moving the job to `blocked`. There is exactly one worker, so an
+# encoder that never comes back would otherwise hold every other job hostage
+# forever with no signal the UI could act on.
+_UNREACHABLE_BLOCK_SECONDS = 1800.0
 
 # Codes/statuses meaning "the remote has no memory of this job at all", the
 # only condition under which a reattach may fall back to a fresh submit.
@@ -66,7 +73,13 @@ class EncodeQueue:
     # ---- lifecycle -------------------------------------------------------
 
     def start(self) -> None:
-        if self._thread is not None:
+        # Checking `is_alive()` too, not just `is not None`, matters after a
+        # `stop()` that timed out: the thread handle survives that (it is
+        # only nulled once the join confirms the thread has exited), so a
+        # bare None-check here would make every start() after a timed-out
+        # stop() a permanent no-op even once that old thread has since died
+        # on its own.
+        if self._thread is not None and self._thread.is_alive():
             return
         self._stopping.clear()
         self._thread = threading.Thread(
@@ -229,9 +242,21 @@ class EncodeQueue:
         """Purge originals whose TTL has elapsed. Safe to call repeatedly."""
         purged = 0
         for job in self._store.due_retentions(time.time()):
-            if job.original_kept_path and purge_original(job.original_kept_path):
+            kept = job.original_kept_path
+            if not kept:
+                continue
+            if purge_original(kept):
                 purged += 1
-            self._store.clear_retention(job.id)
+                self._store.clear_retention(job.id)
+            elif not os.path.exists(kept):
+                # purge_original() returns False for both "already gone" and
+                # "a real error occurred" -- os.path.exists disambiguates.
+                # Confirmed-absent is safe to clear too (there is nothing
+                # left to retry); anything else (a permission error, a
+                # transient I/O failure) must keep the retention record so a
+                # later run retries, rather than losing the only pointer to a
+                # file that is, in fact, still sitting there.
+                self._store.clear_retention(job.id)
         return purged
 
     # ---- worker ----------------------------------------------------------
@@ -333,6 +358,7 @@ class EncodeQueue:
 
     def _await_remote(self, job_id: str, remote_id: str) -> dict | None:
         """Poll until the remote job is terminal. Returns its final body."""
+        unreachable_since: float | None = None
         while not self._stopping.is_set():
             job = self._store.get_job(job_id)
             if job is None or job.stage == "cancelled":
@@ -340,13 +366,36 @@ class EncodeQueue:
             try:
                 body = self._client.poll(remote_id)
             except EncoderUnreachable:
-                # Transient: the encode is still running on the other side.
+                # Transient: the encode is still running on the other side --
+                # but only up to a point. There is exactly one worker, so an
+                # encoder container that never comes back would otherwise
+                # poll forever and hold every other job hostage with no
+                # signal the UI could act on. Once unreachable for too long,
+                # give up and hand the job to a human instead.
+                now = time.monotonic()
+                if unreachable_since is None:
+                    unreachable_since = now
+                elif now - unreachable_since >= _UNREACHABLE_BLOCK_SECONDS:
+                    self._store.set_stage(
+                        job_id,
+                        "blocked",
+                        error=(
+                            "The encoder has been unreachable for over "
+                            f"{int(_UNREACHABLE_BLOCK_SECONDS // 60)} minutes. "
+                            "Check the encoder service, then approve this "
+                            "job to resume polling it."
+                        ),
+                        error_code="encoder_unreachable",
+                    )
+                    self._publish(job_id)
+                    return None
                 time.sleep(self._poll_interval)
                 continue
             except EncoderRejected as exc:
                 self._fail(job_id, exc.reason, exc.code)
                 return None
 
+            unreachable_since = None
             progress = body.get("progress")
             if isinstance(progress, (int, float)):
                 self._store.set_progress(job_id, float(progress))
@@ -417,13 +466,16 @@ class EncodeQueue:
             # `None` means the response carried no Retry-After and we fall
             # back to our own default; `0` is a legitimate value from the
             # server (retry immediately) and must not be treated as absent.
+            # Floored to 1s regardless: a server-supplied `retry_after=0`
+            # must not produce an uncapped hot loop of immediate resubmits.
             retry_after = getattr(exc, "retry_after", None)
             delay = retry_after if retry_after is not None else _REQUEUE_SECONDS
+            delay = max(float(delay), 1.0)
             logger.info("Encoder busy or unreachable; requeueing %s in %ss",
                         job_id, delay)
             self._store.set_stage(job_id, "queued")
             self._publish(job_id)
-            self._schedule_requeue(job_id, float(delay))
+            self._schedule_requeue(job_id, delay)
             return
 
         code = getattr(exc, "code", "dispatch_failed")
