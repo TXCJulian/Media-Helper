@@ -215,6 +215,44 @@ class EncoderStore:
             ).fetchall()
         return {r["source_path"] for r in rows}
 
+    def observed_sizes(self) -> dict[str, set[int]]:
+        """Every file size we have already made a decision about, by path.
+
+        The watcher uses this to stop reconsidering files it has already
+        judged. Without it, a job reaching a *terminal* stage leaves its path
+        in neither `active_source_paths()` nor the settle tracker, so the next
+        rescan treats the file as a brand-new arrival: an ffprobe subprocess
+        and a fresh job row per file per scan interval, forever. On a library
+        of any size that is a permanent load, not a transient one.
+
+        Both sizes are recorded per job on purpose. `original_size` suppresses
+        the re-probe of a file we skipped or failed on; `encoded_size`
+        suppresses it for a file we *published*, whose size on disk is now the
+        encoded one -- otherwise a successful encode would be re-detected and,
+        under a rule that still matches, re-encoded on every pass.
+
+        A size we have never seen for that path still gets through, so a
+        genuinely replaced file (a re-rip, a manual overwrite) is picked up.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT source_path, output_path, original_size, encoded_size "
+                "FROM jobs"
+            ).fetchall()
+
+        sizes: dict[str, set[int]] = {}
+        for row in rows:
+            for path, size in (
+                (row["source_path"], row["original_size"]),
+                (row["source_path"], row["encoded_size"]),
+                # A container change publishes under a different name; that
+                # path is our own output too and must not be re-detected.
+                (row["output_path"], row["encoded_size"]),
+            ):
+                if path and size is not None:
+                    sizes.setdefault(path, set()).add(size)
+        return sizes
+
     def reset_active_for_recovery(self) -> list[Job]:
         """Requeue jobs a restart interrupted, and return them."""
         placeholders = ",".join("?" * len(_RESUMABLE_STAGES))

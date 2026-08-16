@@ -264,3 +264,116 @@ def test_start_with_no_paths_does_not_start_threads(store):
     assert watcher._observer is None
     assert watcher._scanner is None
     watcher.stop()  # must be safe to call even though start() was a no-op
+
+
+# ---------------------------------------------------------------------------
+# Re-detection of files we have already judged.
+#
+# Found in production, not by these tests: the deployed watcher created a fresh
+# job for the same file every ~60s (scan interval + settle window) forever,
+# because a job in a *terminal* stage leaves its path in neither
+# `active_source_paths()` nor the settle tracker. Each pass costs an ffprobe
+# subprocess and a job row, for every file in the library that no rule matches
+# -- which is most of them.
+# ---------------------------------------------------------------------------
+
+
+def _finish_job(store, path, size, stage, output_path=None, encoded_size=None):
+    """Record a job for *path* the way the queue would, ending at *stage*."""
+    job = store.create_job(path)
+    store.set_plan(job.id, None, None, {"size": size}, size)
+    if output_path is not None:
+        store.set_result(job.id, output_path, encoded_size)
+    store.set_stage(job.id, stage)
+    return job
+
+
+@pytest.mark.parametrize("stage", ["skipped", "failed", "done", "cancelled"])
+def test_a_file_with_a_terminal_job_is_not_rejobbed(store, tmp_path, stage):
+    """The production loop: reproduces it by driving the scan repeatedly."""
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"data" * 100)
+    settled = []
+    watcher = make_watcher(store, tmp_path, settled.append)
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert settled == [str(target)]  # dispatched once, as before
+
+    _finish_job(store, str(target), target.stat().st_size, stage)
+
+    # Ten further passes stand in for "forever". Before the fix this appended
+    # one dispatch every second scan.
+    for _ in range(10):
+        watcher.scan_existing()
+    assert settled == [str(target)], f"re-dispatched after reaching {stage!r}"
+
+
+def test_a_replaced_file_is_reconsidered(store, tmp_path):
+    """The suppression is keyed on size, not path: a genuine re-rip must still
+    be picked up, otherwise one skipped job would blacklist a path forever."""
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"data" * 100)
+    settled = []
+    watcher = make_watcher(store, tmp_path, settled.append)
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert settled == [str(target)]
+    _finish_job(store, str(target), target.stat().st_size, "skipped")
+
+    watcher.scan_existing()
+    assert settled == [str(target)]  # unchanged file stays suppressed
+
+    target.write_bytes(b"different content entirely" * 50)  # re-ripped
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert settled == [str(target), str(target)]
+
+
+def test_our_own_published_output_is_not_rejobbed(store, tmp_path):
+    """After a successful swap the file at the source path IS the encode, at a
+    new size. Suppressing only the original size would let a still-matching
+    rule re-encode it on every pass -- silent generation loss."""
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"original" * 100)
+    original_size = target.stat().st_size
+    settled = []
+    watcher = make_watcher(store, tmp_path, settled.append)
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert settled == [str(target)]
+
+    # The encode publishes over the source path, smaller than the original.
+    target.write_bytes(b"encoded" * 10)
+    _finish_job(store, str(target), original_size, "done",
+                output_path=str(target), encoded_size=target.stat().st_size)
+
+    for _ in range(6):
+        watcher.scan_existing()
+    assert settled == [str(target)]
+
+
+def test_output_published_under_a_new_extension_is_not_rejobbed(store, tmp_path):
+    """A container change publishes beside the source under a different name.
+    That file is our own output and must not be treated as a new arrival."""
+    source = tmp_path / "movie.mkv"
+    published = tmp_path / "movie.mp4"
+    source.write_bytes(b"original" * 100)
+    settled = []
+    watcher = make_watcher(store, tmp_path, settled.append)
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert settled == [str(source)]
+
+    source.unlink()
+    published.write_bytes(b"encoded" * 10)
+    _finish_job(store, str(source), 800, "done",
+                output_path=str(published),
+                encoded_size=published.stat().st_size)
+
+    for _ in range(6):
+        watcher.scan_existing()
+    assert settled == [str(source)]

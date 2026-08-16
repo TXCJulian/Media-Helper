@@ -287,20 +287,44 @@ def import_presets(payload: PresetImport) -> dict | JSONResponse:
     if not presets:
         return _error(400, "invalid_preset", "The document contains no presets")
 
-    # Reject at upload rather than at dispatch: an unusable preset should never
-    # enter the system, so the failure arrives while the user is looking at the
+    # Filter at upload rather than at dispatch: an unusable preset should never
+    # enter the system, so the news arrives while the user is looking at the
     # upload rather than an hour into an encode that cannot run.
+    #
+    # Skipped rather than rejected wholesale, because a stock HandBrake export
+    # describes every vendor's hardware presets -- QSV, VCN, Media Foundation,
+    # VideoToolbox -- and no single machine has them all. Refusing the document
+    # over presets the user was never going to use made the export from their
+    # own HandBrake un-importable.
     available = set(get_client().health().get("encoders") or [])
-    missing = sorted({p.encoder for p in presets} - available)
-    if missing:
+    if not available:
+        # Distinguish "cannot check" from "checked, and unsupported": without
+        # this the message would claim the encoder lacks every encoder in the
+        # document, when in fact it is simply unreachable.
+        return _error(
+            503,
+            "encoder_unreachable",
+            "Cannot validate presets: the encoder did not report its encoders",
+        )
+
+    usable = [p for p in presets if p.encoder in available]
+    skipped = [
+        {"name": p.name, "encoder": p.encoder,
+         "reason": f"The connected encoder does not provide {p.encoder!r}"}
+        for p in presets
+        if p.encoder not in available
+    ]
+    if not usable:
         return _error(
             400,
             "encoder_unavailable",
-            f"The connected encoder does not provide: {', '.join(missing)}",
+            "None of the presets in this document can run on the connected "
+            f"encoder; it does not provide: "
+            f"{', '.join(sorted({p.encoder for p in presets}))}",
         )
 
-    get_store().replace_presets(presets)
-    return {"imported": [p.name for p in presets]}
+    get_store().replace_presets(usable)
+    return {"imported": [p.name for p in usable], "skipped": skipped}
 
 
 @router.delete("/presets/{name}", status_code=204, response_model=None)
@@ -371,8 +395,8 @@ def replace_rules(payload: RulesIn) -> dict | JSONResponse:
     return {"saved": len(rules)}
 
 
-def _resolve_watch_path(path: str) -> str | None:
-    """Resolve *path* against the watch-path allow-list, or None if it escapes.
+def _resolve_probe_path(path: str) -> str | None:
+    """Resolve *path* against the readable-roots allow-list, or None if it escapes.
 
     Mirrors `resolve_cutter_path`/`validate_path` in main.py: realpath first
     so a symlink cannot point outside the configured roots, then require
@@ -380,9 +404,22 @@ def _resolve_watch_path(path: str) -> str | None:
     rather than adopting the cutter's `{path, base}` + label shape -- because
     `ENCODER_WATCH_PATHS` has no label system the way `BASE_PATH_LABELS`
     does; every entry is already a full in-container path.
+
+    The roots are `BASE_PATHS` *and* the watch paths, not the watch paths
+    alone. This endpoint only reads: it answers "which rule would win for this
+    file", which is exactly the question you ask about a folder you are
+    considering adding to the watch list. Scoping it to the watch paths made
+    that unanswerable, and made an unconfigured install reject every path --
+    which reads as a broken endpoint rather than an unconfigured one.
+    `BASE_PATHS` is already this application's boundary for "paths a user may
+    point at"; the watch paths are unioned in because an operator may watch a
+    location outside it.
     """
     resolved = os.path.realpath(path)
-    roots = [os.path.realpath(p) for p in config.ENCODER_WATCH_PATHS]
+    roots = [
+        os.path.realpath(p)
+        for p in (*config.BASE_PATHS, *config.ENCODER_WATCH_PATHS)
+    ]
     for root in roots:
         if resolved == root or resolved.startswith(root + os.sep):
             return resolved
@@ -403,7 +440,7 @@ def test_against_file(payload: TestIn) -> dict | JSONResponse:
     root closes both.
     """
     store = get_store()
-    resolved = _resolve_watch_path(payload.path)
+    resolved = _resolve_probe_path(payload.path)
     if resolved is None:
         return _error(400, "invalid_path",
                       "Path is not within a configured watch root")

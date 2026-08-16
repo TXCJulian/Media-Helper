@@ -61,14 +61,50 @@ def test_importing_a_preset_document_stores_its_leaves(client):
     assert [p["name"] for p in client.get("/api/encoder/presets").json()] == ["NVENC"]
 
 
-def test_a_preset_needing_an_absent_encoder_is_rejected(client, monkeypatch):
-    """Rejecting at upload keeps an unusable preset out of the system entirely,
-    rather than surfacing as a failed job an hour later."""
+def test_a_document_with_no_usable_preset_at_all_is_rejected(client, monkeypatch):
+    """Filtering at upload keeps an unusable preset out of the system entirely,
+    rather than surfacing as a failed job an hour later. With nothing left to
+    import there is no partial success to report, so this is still a 400."""
     monkeypatch.setattr(routes_mod, "_client", FakeClient(encoders=("x264",)))
     r = client.post("/api/encoder/presets", json={"document": PRESET_DOC})
     assert r.status_code == 400
     assert r.json()["code"] == "encoder_unavailable"
     assert "nvenc_h265" in r.json()["reason"]
+
+
+def test_unusable_presets_are_skipped_rather_than_failing_the_document(client):
+    """A stock HandBrake export describes every vendor's hardware presets --
+    QSV, VCN, Media Foundation, VideoToolbox -- and no single machine has them
+    all. Rejecting the document over presets the user was never going to use
+    made their own HandBrake export un-importable, which is how this was found.
+    """
+    document = {
+        "PresetList": [
+            {"PresetName": "NVENC", "VideoEncoder": "nvenc_h265",
+             "VideoPreset": "medium", "FileFormat": "av_mkv"},
+            {"PresetName": "QSV", "VideoEncoder": "qsv_h265",
+             "VideoPreset": "speed", "FileFormat": "av_mp4"},
+        ]
+    }
+    r = client.post("/api/encoder/presets", json={"document": document})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["imported"] == ["NVENC"]
+    assert [s["name"] for s in body["skipped"]] == ["QSV"]
+    assert "qsv_h265" in body["skipped"][0]["reason"]
+
+    # Only the usable one is actually stored.
+    assert [p["name"] for p in client.get("/api/encoder/presets").json()] == ["NVENC"]
+
+
+def test_import_says_so_when_the_encoder_list_cannot_be_read(client, monkeypatch):
+    """An unreachable encoder must not be reported as one that lacks every
+    encoder in the document -- that sends the user to fix their presets when
+    the real problem is the service being down."""
+    monkeypatch.setattr(routes_mod, "_client", FakeClient(encoders=()))
+    r = client.post("/api/encoder/presets", json={"document": PRESET_DOC})
+    assert r.status_code == 503
+    assert r.json()["code"] == "encoder_unreachable"
 
 
 def test_a_malformed_document_is_rejected(client):
@@ -470,3 +506,50 @@ def test_events_endpoint_resolves_the_store_before_the_streaming_response(client
         await response.body_iterator.aclose()
 
     asyncio.run(_drive())
+
+
+def test_test_endpoint_accepts_a_file_under_a_base_path_outside_the_watch_roots(
+    client, monkeypatch, tmp_path
+):
+    """/test only reads, and its question -- "which rule would win for this
+    file" -- is exactly what you ask about a folder you are *considering*
+    watching. Scoping it to the watch paths made that unanswerable, and made
+    an install with no watch paths reject every path, which reads as a broken
+    endpoint rather than an unconfigured one. BASE_PATHS is already this
+    application's boundary for paths a user may point at.
+    """
+    media = tmp_path / "media"
+    watched = media / "Movies"
+    unwatched = media / "Home Videos"
+    watched.mkdir(parents=True)
+    unwatched.mkdir(parents=True)
+    candidate = unwatched / "clip.mkv"
+    candidate.write_bytes(b"data")
+
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(media)])
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watched)])
+    monkeypatch.setattr(routes_mod, "probe", lambda p: {"size": 4, "height": 1080})
+
+    r = client.post("/api/encoder/test", json={"path": str(candidate)})
+    assert r.status_code == 200, r.json()
+    assert r.json()["target"] == "skip"  # no rules configured
+
+
+def test_test_endpoint_still_refuses_a_path_outside_every_root(
+    client, monkeypatch, tmp_path
+):
+    """Widening to BASE_PATHS must not become "anything on the filesystem"."""
+    media = tmp_path / "media"
+    media.mkdir()
+    outside = tmp_path / "elsewhere.mkv"
+    outside.write_bytes(b"data")
+
+    probed = []
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(media)])
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [])
+    monkeypatch.setattr(routes_mod, "probe", lambda p: probed.append(p) or {})
+
+    r = client.post("/api/encoder/test", json={"path": str(outside)})
+    assert r.status_code == 400
+    assert r.json()["code"] == "invalid_path"
+    assert probed == []

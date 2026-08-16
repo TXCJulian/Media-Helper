@@ -132,16 +132,17 @@ class EncoderWatcher:
     def scan_existing(self) -> None:
         """Walk every watch path once, feeding candidates to the tracker.
 
-        Fetches the active-source-paths set once for the whole scan rather
-        than once per file: on a 10k-file library that was 10k SQL queries
-        every scan for no benefit, since nothing in the loop below changes
-        which sources are active partway through a single walk.
+        Fetches the active-source-paths set and the observed-sizes map once
+        for the whole scan rather than once per file: on a 10k-file library
+        that was 10k SQL queries every scan for no benefit, since nothing in
+        the loop below changes either partway through a single walk.
         """
         active = self._store.active_source_paths()
+        observed = self._store.observed_sizes()
         for root in self._paths:
             for dirpath, _dirs, files in os.walk(root):
                 for name in files:
-                    self._consider(os.path.join(dirpath, name), active)
+                    self._consider(os.path.join(dirpath, name), active, observed)
 
     def _scan_loop(self) -> None:
         while not self._stopping.wait(timeout=_SCAN_INTERVAL):
@@ -150,15 +151,20 @@ class EncoderWatcher:
             except Exception:
                 logger.exception("Watch rescan failed")
 
-    def _consider(self, path: str, active: set[str] | None = None) -> None:
+    def _consider(
+        self,
+        path: str,
+        active: set[str] | None = None,
+        observed: dict[str, set[int]] | None = None,
+    ) -> None:
         """Consider *path* for dispatch.
 
-        *active* lets `scan_existing()` pass in one shared
-        `active_source_paths()` result for the whole walk. Event-driven calls
-        (from the watchdog handler) have no such batch to share and fall back
-        to a fresh, single-file query -- events are comparatively rare next
-        to a full rescan, so that per-call query is not the hot path this
-        exists to fix.
+        *active* and *observed* let `scan_existing()` pass in one shared
+        `active_source_paths()` / `observed_sizes()` result for the whole walk.
+        Event-driven calls (from the watchdog handler) have no such batch to
+        share and fall back to fresh, single-file queries -- events are
+        comparatively rare next to a full rescan, so those per-call queries
+        are not the hot path this exists to fix.
         """
         if os.path.splitext(path)[1].lower() not in self._extensions:
             return
@@ -178,6 +184,16 @@ class EncoderWatcher:
         if active is None:
             active = self._store.active_source_paths()
         if path in active:
+            return
+        if observed is None:
+            observed = self._store.observed_sizes()
+        if size in observed.get(path, ()):
+            # We have already decided about this exact file. A job that
+            # reached a terminal stage is in neither `active` nor the tracker,
+            # so without this the next rescan would treat it as a new arrival
+            # and re-probe it -- one ffprobe subprocess and one job row per
+            # file per scan, indefinitely. Comparing the size (rather than
+            # just the path) keeps a genuinely replaced file detectable.
             return
         if not self._tracker.saw(path, size):
             return
