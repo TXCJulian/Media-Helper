@@ -216,12 +216,28 @@ def _as_float(value: object) -> float | None:
         return None
 
 
+# FFmpeg's semi-planar family: p<chroma><depth><endianness>, where the FIRST
+# digit is chroma subsampling (0 = 4:2:0, 2 = 4:2:2, 4 = 4:4:4) and the last
+# two are the bit depth. So p010le, p210le and p410le are all 10-bit, and
+# p016le/p216le/p416le are all 16-bit.
+#
+# Reading these left-to-right as one number is the trap: it makes p210le
+# "210-bit" and p216le "216-bit". Only p0NN happens to come out right, which
+# is why the hardware-encoder case (p010le) looked correct in testing while
+# every 4:2:2 and 4:4:4 variant was silently wrong.
+_SEMI_PLANAR_PIX_FMT = re.compile(r"^p[024](?P<depth>\d{2})(?:le|be)?$")
+
+# The conventional family: depth digits trail a 'p' at the END of the name --
+# yuv420p10le, yuv422p12le, gbrp10le. Anchored so it cannot pick up the
+# subsampling digits earlier in the name.
+_PLANAR_PIX_FMT = re.compile(r"p(?P<depth>\d{1,2})(?:le|be)?$")
+
+
 def _bit_depth(pix_fmt: str) -> int | None:
     """Bit depth from the pixel format name, e.g. yuv420p10le -> 10.
 
-    Handles both naming conventions:
-    - yuv420p10le, yuv420p9le, yuv422p12le → depth follows a 'p'
-    - p010le, p016le → zero-padded depth follows a leading 'p'
+    - p010le, p210le, p410le → 10; p016le, p216le, p416le → 16
+    - yuv420p10le, yuv420p9le, yuv422p12le → depth trails the final 'p'
     - yuv420p, nv12, rgb24 → 8 (no depth digits)
 
     Read from pix_fmt rather than bits_per_raw_sample because the latter is
@@ -229,11 +245,9 @@ def _bit_depth(pix_fmt: str) -> int | None:
     """
     if not pix_fmt:
         return None
-    match = re.search(r"p(\d{1,3})", pix_fmt)
+    match = _SEMI_PLANAR_PIX_FMT.match(pix_fmt) or _PLANAR_PIX_FMT.search(pix_fmt)
     if match:
-        depth_str = match.group(1)
-        depth_int = int(depth_str)
-        return depth_int
+        return int(match.group("depth"))
     return 8
 
 

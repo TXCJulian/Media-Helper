@@ -65,6 +65,14 @@ def get_store() -> EncoderStore:
 
 def get_client() -> EncoderClient:
     global _client
+    if _startup_failed:
+        # Guarded like the store and the queue. Without this, /health probed
+        # the remote encoder and cheerfully reported "ok" while the local
+        # database and dispatch queue were dead -- the one screen an operator
+        # checks first, showing green during the failure it exists to reveal.
+        raise RuntimeError(
+            "Encoder failed to start; check the server logs for the cause"
+        )
     if _client is None:
         _client = EncoderClient(config.ENCODER_URL)
     return _client
@@ -443,13 +451,18 @@ def test_against_file(payload: TestIn) -> dict | JSONResponse:
     resolved = _resolve_probe_path(payload.path)
     if resolved is None:
         return _error(400, "invalid_path",
-                      "Path is not within a configured watch root")
+                      "Path is not within a configured readable root")
     if not os.path.isfile(resolved):
         return _error(400, "invalid_path", "No such file")
     try:
         facts = probe(resolved)
     except ProbeError as exc:
-        return _error(400, "probe_failed", str(exc))
+        # ffprobe's stderr goes to the log, not to the caller: it quotes the
+        # path and distinguishes "no such file" from "permission denied",
+        # which turns this endpoint into a filesystem oracle for anyone who
+        # can reach it -- and auth is off unless credentials are configured.
+        logger.warning("Probe of %s failed: %s", resolved, exc)
+        return _error(400, "probe_failed", "Could not probe this file")
     rules = store.list_rules()
     fallback = store.get_setting("fallback_target", SKIP)
     try:
@@ -463,6 +476,25 @@ def test_against_file(payload: TestIn) -> dict | JSONResponse:
         "evaluated": match.evaluated,
         "not_evaluated": [r.id for r in rules if r.id not in match.evaluated],
     }
+
+
+@router.post("/reprocess", response_model=None)
+def reprocess(payload: TestIn) -> dict | JSONResponse:
+    """Clear the dedup record for a file so the watcher considers it again.
+
+    The escape hatch for "I changed my rules, encode this one again". The
+    watcher deliberately decides about each file once, so without an explicit
+    way back in, the only recourse was to touch the file on disk or edit the
+    database. Dropping the record is all this does -- the next rescan probes
+    the file and applies whatever the rules now say, including `skip`.
+    """
+    resolved = _resolve_probe_path(payload.path)
+    if resolved is None:
+        return _error(400, "invalid_path",
+                      "Path is not within a configured readable root")
+    if not os.path.isfile(resolved):
+        return _error(400, "invalid_path", "No such file")
+    return {"path": resolved, "cleared": get_store().forget_seen(resolved)}
 
 
 @router.get("/jobs")

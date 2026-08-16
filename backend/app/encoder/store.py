@@ -81,6 +81,26 @@ CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT NOT NULL
 );
+
+-- Files the watcher has already decided about, so a rescan does not re-probe
+-- the whole library every interval.
+--
+-- Deliberately NOT derived from the jobs table and deliberately NOT purged by
+-- ENCODER_JOB_TTL: job rows are history and expire, whereas "have I already
+-- looked at this exact file" must outlive them. Deriving it from jobs meant
+-- that seven days after an encode the published output became eligible for
+-- processing all over again.
+--
+-- The fingerprint is (size, mtime_ns) rather than size alone. Re-copying a
+-- file restores its byte count but not its mtime, so a size-only check
+-- silently ignored a genuine replacement -- observed in testing, where a
+-- recopied original was never picked up again.
+CREATE TABLE IF NOT EXISTS seen_files (
+    path      TEXT PRIMARY KEY,
+    size      INTEGER NOT NULL,
+    mtime_ns  INTEGER NOT NULL,
+    seen_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -215,43 +235,57 @@ class EncoderStore:
             ).fetchall()
         return {r["source_path"] for r in rows}
 
-    def observed_sizes(self) -> dict[str, set[int]]:
-        """Every file size we have already made a decision about, by path.
+    def seen_fingerprints(self) -> dict[str, tuple[int, int]]:
+        """`{path: (size, mtime_ns)}` for every file already decided about.
 
-        The watcher uses this to stop reconsidering files it has already
-        judged. Without it, a job reaching a *terminal* stage leaves its path
-        in neither `active_source_paths()` nor the settle tracker, so the next
+        The watcher uses this to stop reconsidering files it has judged.
+        Without it, a job reaching a *terminal* stage leaves its path in
+        neither `active_source_paths()` nor the settle tracker, so the next
         rescan treats the file as a brand-new arrival: an ffprobe subprocess
-        and a fresh job row per file per scan interval, forever. On a library
-        of any size that is a permanent load, not a transient one.
+        and a fresh job row per file per scan interval, forever.
 
-        Both sizes are recorded per job on purpose. `original_size` suppresses
-        the re-probe of a file we skipped or failed on; `encoded_size`
-        suppresses it for a file we *published*, whose size on disk is now the
-        encoded one -- otherwise a successful encode would be re-detected and,
-        under a rule that still matches, re-encoded on every pass.
-
-        A size we have never seen for that path still gets through, so a
-        genuinely replaced file (a re-rip, a manual overwrite) is picked up.
+        Lives in its own table rather than being derived from job rows, which
+        `purge_expired()` deletes -- otherwise the whole library became
+        eligible for reprocessing again one job-TTL after it was encoded.
         """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT source_path, output_path, original_size, encoded_size "
-                "FROM jobs"
+                "SELECT path, size, mtime_ns FROM seen_files"
             ).fetchall()
+        return {r["path"]: (r["size"], r["mtime_ns"]) for r in rows}
 
-        sizes: dict[str, set[int]] = {}
-        for row in rows:
-            for path, size in (
-                (row["source_path"], row["original_size"]),
-                (row["source_path"], row["encoded_size"]),
-                # A container change publishes under a different name; that
-                # path is our own output too and must not be re-detected.
-                (row["output_path"], row["encoded_size"]),
-            ):
-                if path and size is not None:
-                    sizes.setdefault(path, set()).add(size)
-        return sizes
+    def mark_seen(self, path: str, size: int, mtime_ns: int) -> None:
+        """Record that *path* has been decided about at this exact fingerprint.
+
+        Called for the source when the watcher dispatches it, and again for
+        the published file after a successful swap -- the swap replaces the
+        file, so its fingerprint changes and the stale row would otherwise
+        make it look like a new arrival.
+        """
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO seen_files (path, size, mtime_ns, seen_at) "
+                "VALUES (?, ?, ?, datetime('now')) "
+                "ON CONFLICT(path) DO UPDATE SET "
+                "size = excluded.size, mtime_ns = excluded.mtime_ns, "
+                "seen_at = excluded.seen_at",
+                (path, size, mtime_ns),
+            )
+            self._conn.commit()
+
+    def forget_seen(self, path: str) -> bool:
+        """Drop the dedup record for *path* so the watcher reconsiders it.
+
+        The explicit escape hatch behind `POST /reprocess`: without one, a
+        file the user wants re-encoded under a changed rule set has no way
+        back into the queue short of touching it on disk.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM seen_files WHERE path = ?", (path,)
+            )
+            self._conn.commit()
+        return cur.rowcount > 0
 
     def reset_active_for_recovery(self) -> list[Job]:
         """Requeue jobs a restart interrupted, and return them."""

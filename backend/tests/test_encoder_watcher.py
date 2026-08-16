@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from app.encoder.store import EncoderStore
@@ -279,13 +281,24 @@ def test_start_with_no_paths_does_not_start_threads(store):
 
 
 def _finish_job(store, path, size, stage, output_path=None, encoded_size=None):
-    """Record a job for *path* the way the queue would, ending at *stage*."""
+    """Record a job for *path* the way the queue would, ending at *stage*.
+
+    The dedup record itself is written by the watcher at dispatch (and by the
+    queue after a publish); this only builds the job history alongside it, so
+    that tests which purge that history still exercise the real code path.
+    """
     job = store.create_job(path)
     store.set_plan(job.id, None, None, {"size": size}, size)
     if output_path is not None:
         store.set_result(job.id, output_path, encoded_size)
     store.set_stage(job.id, stage)
     return job
+
+
+def _publish(store, path, source_path=None):
+    """Record what the queue records after a successful swap."""
+    st = os.stat(path)
+    store.mark_seen(path, st.st_size, st.st_mtime_ns)
 
 
 @pytest.mark.parametrize("stage", ["skipped", "failed", "done", "cancelled"])
@@ -349,6 +362,7 @@ def test_our_own_published_output_is_not_rejobbed(store, tmp_path):
     target.write_bytes(b"encoded" * 10)
     _finish_job(store, str(target), original_size, "done",
                 output_path=str(target), encoded_size=target.stat().st_size)
+    _publish(store, str(target))
 
     for _ in range(6):
         watcher.scan_existing()
@@ -373,7 +387,85 @@ def test_output_published_under_a_new_extension_is_not_rejobbed(store, tmp_path)
     _finish_job(store, str(source), 800, "done",
                 output_path=str(published),
                 encoded_size=published.stat().st_size)
+    _publish(store, str(published))
 
     for _ in range(6):
         watcher.scan_existing()
     assert settled == [str(source)]
+
+
+def test_dedup_survives_job_history_expiry(store, tmp_path):
+    """Job rows are history and expire; "have I looked at this file" must not.
+
+    Deriving the dedup state from the jobs table meant that one ENCODER_JOB_TTL
+    after an encode, `purge_expired()` removed the evidence and the whole
+    library became eligible for reprocessing again -- re-encoding published
+    output under any rule that still matched.
+    """
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"data" * 100)
+    settled = []
+    watcher = make_watcher(store, tmp_path, settled.append)
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert settled == [str(target)]
+    _finish_job(store, str(target), target.stat().st_size, "done",
+                output_path=str(target), encoded_size=target.stat().st_size)
+
+    # Expire every job row, exactly as the maintenance loop does.
+    assert store.purge_expired(0) >= 1
+    assert store.list_jobs() == []
+
+    for _ in range(6):
+        watcher.scan_existing()
+    assert settled == [str(target)], "re-detected once its job history expired"
+
+
+def test_a_same_size_replacement_is_detected(store, tmp_path):
+    """Re-copying a file restores its byte count but not its mtime.
+
+    Found in live testing: the original had been copied back over a completed
+    encode, the size matched the historical source size, and a size-only check
+    meant the watcher never looked at it again.
+    """
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"A" * 4096)
+    settled = []
+    watcher = make_watcher(store, tmp_path, settled.append)
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert settled == [str(target)]
+
+    os.utime(target, ns=(1_000_000_000, 1_000_000_000))
+    watcher.scan_existing()
+
+    target.write_bytes(b"B" * 4096)
+    os.utime(target, ns=(2_000_000_000, 2_000_000_000))
+    assert target.stat().st_size == 4096  # same size, new mtime
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert settled == [str(target), str(target)]
+
+
+def test_reprocess_clears_the_record_so_the_file_is_seen_again(store, tmp_path):
+    """The explicit escape hatch: a rule change must not require touching the
+    file on disk or editing the database to get it re-considered."""
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"data" * 100)
+    settled = []
+    watcher = make_watcher(store, tmp_path, settled.append)
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert settled == [str(target)]
+
+    watcher.scan_existing()
+    assert settled == [str(target)]  # suppressed
+
+    assert store.forget_seen(str(target)) is True
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert settled == [str(target), str(target)]

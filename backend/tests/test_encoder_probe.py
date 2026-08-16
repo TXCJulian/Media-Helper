@@ -270,3 +270,20 @@ def test_side_data_is_requested(monkeypatch, video):
     assert "-show_streams" in seen["cmd"]
     assert "-show_format" in seen["cmd"]
     assert seen["cmd"][-1] == path
+
+
+@pytest.mark.parametrize("pix_fmt,depth", [
+    # Semi-planar: the FIRST digit is chroma subsampling, the last two are the
+    # depth. Reading them as one number made p210le "210-bit" and p216le
+    # "216-bit"; only the 4:2:0 variants came out right by luck, which is why
+    # the hardware-encoder case looked correct while 4:2:2 and 4:4:4 did not.
+    ("p010le", 10), ("p210le", 10), ("p410le", 10),
+    ("p016le", 16), ("p216le", 16), ("p416le", 16),
+    # Conventional planar: depth trails the final 'p'.
+    ("yuv420p10le", 10), ("yuv422p10le", 10), ("yuv444p12le", 12),
+    ("yuv420p9le", 9), ("gbrp10le", 10), ("yuv420p10", 10),
+    # No depth digits at all.
+    ("yuv420p", 8), ("yuvj420p", 8), ("nv12", 8), ("rgb24", 8),
+])
+def test_bit_depth_matches_the_ffmpeg_pixel_format_definitions(pix_fmt, depth):
+    assert probe_mod._bit_depth(pix_fmt) == depth

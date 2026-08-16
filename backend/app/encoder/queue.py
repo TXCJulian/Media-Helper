@@ -445,6 +445,21 @@ class EncodeQueue:
             return
 
         self._store.set_result(job_id, result.final_path, result.encoded_size)
+        # Re-fingerprint what we just published. The swap replaced the file, so
+        # the watcher's record for this path is now stale and the next rescan
+        # would see the encode as a new arrival -- and under a rule that still
+        # matches, re-encode our own output. Recording the published file's
+        # fingerprint (which the swap gave a new mtime) closes that loop; a
+        # container change publishes under a different name, hence final_path
+        # rather than source_path.
+        try:
+            published = os.stat(result.final_path)
+            self._store.mark_seen(
+                result.final_path, published.st_size, published.st_mtime_ns
+            )
+        except OSError:
+            logger.warning("Could not fingerprint the published file %s",
+                           result.final_path, exc_info=True)
         if result.kept_path:
             self._store.set_retention(
                 job_id, result.kept_path, time.time() + self._original_ttl

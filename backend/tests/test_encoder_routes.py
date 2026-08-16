@@ -553,3 +553,73 @@ def test_test_endpoint_still_refuses_a_path_outside_every_root(
     assert r.status_code == 400
     assert r.json()["code"] == "invalid_path"
     assert probed == []
+
+
+def test_health_fails_loud_after_a_contained_startup_failure(client):
+    """/health is the first screen an operator checks. Probing only the remote
+    encoder let it report "ok" while the local store and queue were dead --
+    green during exactly the failure it exists to reveal."""
+    routes_mod.mark_startup_failed()
+    with pytest.raises(RuntimeError):
+        client.get("/api/encoder/health")
+
+
+def test_probe_failures_do_not_leak_ffprobe_output_to_the_caller(
+    client, monkeypatch, tmp_path
+):
+    """ffprobe's stderr quotes the path and distinguishes "no such file" from
+    "permission denied", which turns this endpoint into a filesystem oracle --
+    and auth is off unless credentials are configured. The detail belongs in
+    the server log, not the response."""
+    from app.encoder.probe import ProbeError
+
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    candidate = watch_root / "x.mkv"
+    candidate.write_bytes(b"")
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+
+    secret = "/etc/shadow: Permission denied"
+    monkeypatch.setattr(
+        routes_mod, "probe",
+        lambda _p: (_ for _ in ()).throw(ProbeError(secret)),
+    )
+
+    r = client.post("/api/encoder/test", json={"path": str(candidate)})
+    assert r.status_code == 400
+    assert r.json()["code"] == "probe_failed"
+    assert "shadow" not in r.text
+    assert "Permission denied" not in r.text
+
+
+def test_reprocess_clears_the_dedup_record(client, monkeypatch, tmp_path):
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    candidate = watch_root / "x.mkv"
+    candidate.write_bytes(b"data")
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+
+    store = routes_mod.get_store()
+    st = candidate.stat()
+    store.mark_seen(str(candidate), st.st_size, st.st_mtime_ns)
+    assert str(candidate) in store.seen_fingerprints()
+
+    r = client.post("/api/encoder/reprocess", json={"path": str(candidate)})
+    assert r.status_code == 200
+    assert r.json()["cleared"] is True
+    assert str(candidate) not in store.seen_fingerprints()
+
+    # Idempotent: clearing again is not an error, it just clears nothing.
+    assert client.post("/api/encoder/reprocess",
+                       json={"path": str(candidate)}).json()["cleared"] is False
+
+
+def test_reprocess_refuses_a_path_outside_every_root(client, monkeypatch, tmp_path):
+    outside = tmp_path / "elsewhere.mkv"
+    outside.write_bytes(b"data")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [])
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [])
+
+    r = client.post("/api/encoder/reprocess", json={"path": str(outside)})
+    assert r.status_code == 400
+    assert r.json()["code"] == "invalid_path"

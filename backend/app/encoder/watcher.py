@@ -132,17 +132,17 @@ class EncoderWatcher:
     def scan_existing(self) -> None:
         """Walk every watch path once, feeding candidates to the tracker.
 
-        Fetches the active-source-paths set and the observed-sizes map once
+        Fetches the active-source-paths set and the seen-fingerprints map once
         for the whole scan rather than once per file: on a 10k-file library
         that was 10k SQL queries every scan for no benefit, since nothing in
         the loop below changes either partway through a single walk.
         """
         active = self._store.active_source_paths()
-        observed = self._store.observed_sizes()
+        seen = self._store.seen_fingerprints()
         for root in self._paths:
             for dirpath, _dirs, files in os.walk(root):
                 for name in files:
-                    self._consider(os.path.join(dirpath, name), active, observed)
+                    self._consider(os.path.join(dirpath, name), active, seen)
 
     def _scan_loop(self) -> None:
         while not self._stopping.wait(timeout=_SCAN_INTERVAL):
@@ -155,14 +155,14 @@ class EncoderWatcher:
         self,
         path: str,
         active: set[str] | None = None,
-        observed: dict[str, set[int]] | None = None,
+        seen: dict[str, tuple[int, int]] | None = None,
     ) -> None:
         """Consider *path* for dispatch.
 
-        *active* and *observed* let `scan_existing()` pass in one shared
-        `active_source_paths()` / `observed_sizes()` result for the whole walk.
-        Event-driven calls (from the watchdog handler) have no such batch to
-        share and fall back to fresh, single-file queries -- events are
+        *active* and *seen* let `scan_existing()` pass in one shared
+        `active_source_paths()` / `seen_fingerprints()` result for the whole
+        walk. Event-driven calls (from the watchdog handler) have no such batch
+        to share and fall back to fresh, single-file queries -- events are
         comparatively rare next to a full rescan, so those per-call queries
         are not the hot path this exists to fix.
         """
@@ -172,7 +172,8 @@ class EncoderWatcher:
             # Our own in-progress output, not a new arrival.
             return
         try:
-            size = os.path.getsize(path)
+            stat = os.stat(path)
+            size, mtime_ns = stat.st_size, stat.st_mtime_ns
         except OSError:
             # The file vanished between being listed and being stat'd (a
             # cancelled rip cleaned up, a failed copy removed). Without this,
@@ -185,19 +186,28 @@ class EncoderWatcher:
             active = self._store.active_source_paths()
         if path in active:
             return
-        if observed is None:
-            observed = self._store.observed_sizes()
-        if size in observed.get(path, ()):
-            # We have already decided about this exact file. A job that
-            # reached a terminal stage is in neither `active` nor the tracker,
-            # so without this the next rescan would treat it as a new arrival
-            # and re-probe it -- one ffprobe subprocess and one job row per
-            # file per scan, indefinitely. Comparing the size (rather than
-            # just the path) keeps a genuinely replaced file detectable.
+        if seen is None:
+            seen = self._store.seen_fingerprints()
+        if seen.get(path) == (size, mtime_ns):
+            # Already decided about this exact file. A job that reached a
+            # terminal stage is in neither `active` nor the tracker, so
+            # without this the next rescan would treat it as a new arrival and
+            # re-probe it -- one ffprobe subprocess and one job row per file
+            # per scan, indefinitely.
+            #
+            # Matching on (size, mtime_ns) rather than size alone is what makes
+            # a *replacement* visible: re-copying a file restores its byte
+            # count but gives it a new mtime, and a size-only check silently
+            # ignored exactly that case.
             return
         if not self._tracker.saw(path, size):
             return
         self._tracker.forget(path)
+        # Recorded before dispatch, not after: if planning raises we still
+        # decided about this file, and retrying it every 30s forever is the
+        # behaviour this exists to prevent. A genuine replacement changes the
+        # fingerprint and gets through regardless.
+        self._store.mark_seen(path, size, mtime_ns)
         try:
             self._on_settled(path)
         except Exception:
