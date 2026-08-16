@@ -326,6 +326,133 @@ class TestDownloaderEndpoints:
                 assert all(not obs.is_alive() for obs in main_mod._observers)
 
 
+class TestEncoderLifespan:
+    def test_encoder_routes_absent_when_feature_disabled(self, tmp_path):
+        """The feature flag gates route registration, not just the handler --
+        mirrors test_download_routes_absent_when_feature_disabled."""
+        import importlib
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(tmp_path),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes",
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.encoder.routes as encoder_routes_mod
+            importlib.reload(encoder_routes_mod)
+            import app.main as main_mod
+            importlib.reload(main_mod)
+
+            with TestClient(main_mod.app) as c:
+                paths = c.get("/openapi.json").json()["paths"]
+                assert not any(p.startswith("/api/encoder") for p in paths)
+                assert c.get("/api/encoder/config").status_code == 404
+                # No store or worker pool was built either.
+                assert encoder_routes_mod._store is None
+                assert encoder_routes_mod._queue is None
+
+    def test_encoder_routes_present_when_feature_enabled(self, tmp_path):
+        """The counterpart of the above: the flag being on actually mounts
+        the routes, not just leaves them absent either way."""
+        import importlib
+
+        media = tmp_path / "media"
+        media.mkdir(parents=True)
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(media),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes,encoder",
+            "ENCODER_DATA_DIR": str(tmp_path / "enc-data"),
+            "ENCODER_DB": str(tmp_path / "enc-data" / "encoder.db"),
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.encoder.routes as encoder_routes_mod
+            importlib.reload(encoder_routes_mod)
+            import app.main as main_mod
+            importlib.reload(main_mod)
+
+            with TestClient(main_mod.app) as c:
+                paths = c.get("/openapi.json").json()["paths"]
+                assert any(p.startswith("/api/encoder") for p in paths)
+                assert c.get("/api/encoder/config").status_code == 200
+
+    def test_encoder_failing_to_start_does_not_kill_the_app(self, tmp_path):
+        """A failure that happens *after* the queue has already started its
+        dispatch worker thread must not leak that thread, and must not take
+        the rest of the app down with it -- mirrors
+        test_downloader_failing_to_start_does_not_kill_the_app. Without the
+        try/except around the encoder startup block, the exception aborts
+        the lifespan generator before the `finally` that would stop the
+        queue is ever entered, and `TestClient(...)` itself would raise
+        instead of the app coming up.
+        """
+        import importlib
+        import threading
+
+        media = tmp_path / "media"
+        media.mkdir(parents=True)
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir(parents=True)
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(media),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes,encoder",
+            "ENCODER_DATA_DIR": str(tmp_path / "enc-data"),
+            "ENCODER_DB": str(tmp_path / "enc-data" / "encoder.db"),
+            "ENCODER_WATCH_PATHS": str(watch_dir),
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.encoder.routes as encoder_routes_mod
+            importlib.reload(encoder_routes_mod)
+            import app.encoder.watcher as encoder_watcher_mod
+            import app.main as main_mod
+            importlib.reload(main_mod)
+
+            # EncoderWatcher is constructed *after* encoder_queue.start(), so
+            # forcing the failure here (rather than earlier) proves the
+            # worker thread genuinely existed before the induced failure.
+            with patch.object(
+                encoder_watcher_mod, "EncoderWatcher",
+                side_effect=RuntimeError("boom"),
+            ):
+                with TestClient(main_mod.app) as c:
+                    # The app serves, and the untouched features still work.
+                    assert c.get("/health").status_code == 200
+                    assert c.get("/directories/tvshows").status_code == 200
+
+                    # The queue really was started (non-vacuous: this thread
+                    # only exists if `encoder_queue.start()` ran before the
+                    # induced EncoderWatcher failure).
+                    queue = encoder_routes_mod.get_queue()
+                    assert queue is not None
+
+                # No leaked dispatch worker thread survives the failure.
+                assert not any(
+                    t.name == "encoder-dispatch" and t.is_alive()
+                    for t in threading.enumerate()
+                )
+
+
 class TestCutterStreamValidation:
     def test_cutter_stream_rejects_invalid_audio_index(self, client, tmp_path, monkeypatch):
         import app.main as main_mod

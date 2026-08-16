@@ -1,6 +1,7 @@
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 from app.encoder import routes as routes_mod
 
@@ -31,6 +32,7 @@ def client(tmp_path, monkeypatch):
     routes_mod.reset_state_for_tests()
     app = FastAPI()
     app.include_router(routes_mod.router)
+    routes_mod.register_error_handlers(app)
     with TestClient(app) as c:
         yield c
     routes_mod.reset_state_for_tests()
@@ -230,3 +232,47 @@ def test_approving_an_encoder_unavailable_job_still_works(client):
     r = client.post(f"/api/encoder/jobs/{job.id}/approve")
     assert r.status_code == 200
     assert store.get_job(job.id).stage == "queued"
+
+
+# ---- Review item 1: FastAPI-native validation errors must use the flat ----
+# ---- {code, reason} envelope too, not just the ones routed through -------
+# ---- _error(). ------------------------------------------------------------
+
+
+def test_a_malformed_body_missing_a_required_field_gets_the_flat_envelope(client):
+    """A body that fails Pydantic validation (e.g. missing `document`) never
+    reaches an endpoint function, so it never goes through `_error()` --
+    without `register_error_handlers`, FastAPI's default handler would
+    return `{"detail": [...]}` instead, a different shape than every other
+    error path in this module."""
+    r = client.post("/api/encoder/presets", json={})
+    assert r.status_code == 422
+    body = r.json()
+    assert body["code"] == "invalid_request"
+    assert "document" in body["reason"]
+    assert "detail" not in body
+
+
+def test_the_flat_envelope_does_not_leak_into_other_routes():
+    """The handler is necessarily registered app-wide (FastAPI cannot attach
+    an exception handler to a bare APIRouter), so it must check the request
+    path itself and leave every other route's validation-error shape alone
+    -- otherwise turning this on for the encoder would silently change the
+    downloader's (or any other feature's) error responses too."""
+    app = FastAPI()
+    routes_mod.register_error_handlers(app)
+
+    class _Body(BaseModel):
+        required_field: str
+
+    @app.post("/api/other/thing")
+    def _other(body: _Body) -> dict:
+        return {"ok": True}
+
+    with TestClient(app) as c:
+        r = c.post("/api/other/thing", json={})
+        assert r.status_code == 422
+        body = r.json()
+        # FastAPI's untouched default shape: a "detail" list, no "code".
+        assert "detail" in body
+        assert "code" not in body

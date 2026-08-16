@@ -72,7 +72,10 @@ from app.downloader.routes import (
     shutdown_downloader,
     get_store as get_downloader_store,
 )
-from app.encoder.routes import router as encoder_router
+from app.encoder.routes import (
+    router as encoder_router,
+    register_error_handlers as register_encoder_error_handlers,
+)
 from app.cutter import (
     get_ffmpeg_info,
     probe_file,
@@ -260,26 +263,56 @@ async def lifespan(app: FastAPI):
         from app.encoder.swap import sweep_orphans
         from app.encoder.watcher import EncoderWatcher
 
-        encoder_store = encoder_routes.get_store()
-        encoder_queue = encoder_routes.get_queue()
-        # Sweep before recovering: a crash mid-encode leaves partials no live
-        # job owns, and they are invisible to the user because the name is
-        # dotted.
-        active = {j.id for j in encoder_store.list_jobs()}
-        for watch_path in ENCODER_WATCH_PATHS:
-            sweep_orphans(watch_path, active)
-        encoder_queue.start()
-        encoder_queue.recover()
-        encoder_watcher = EncoderWatcher(
-            encoder_store,
-            on_settled=lambda path: encoder_queue.plan(
-                encoder_store.create_job(path).id
-            ),
-            paths=ENCODER_WATCH_PATHS,
-            settle_seconds=ENCODER_SETTLE_SECONDS,
-            valid_extensions=VALID_VIDEO_EXT,
-        )
-        encoder_watcher.start()
+        try:
+            encoder_store = encoder_routes.get_store()
+            encoder_queue = encoder_routes.get_queue()
+            # Sweep before recovering: a crash mid-encode leaves partials no
+            # live job owns, and they are invisible to the user because the
+            # name is dotted.
+            active = {j.id for j in encoder_store.list_jobs()}
+            for watch_path in ENCODER_WATCH_PATHS:
+                sweep_orphans(watch_path, active)
+            encoder_queue.start()
+            encoder_queue.recover()
+            encoder_watcher = EncoderWatcher(
+                encoder_store,
+                on_settled=lambda path: encoder_queue.plan(
+                    encoder_store.create_job(path).id
+                ),
+                paths=ENCODER_WATCH_PATHS,
+                settle_seconds=ENCODER_SETTLE_SECONDS,
+                valid_extensions=VALID_VIDEO_EXT,
+            )
+            encoder_watcher.start()
+        except Exception:
+            # This whole block runs before `try: yield` below, so a failure
+            # here (a bad ENCODER_DB path, a permissions error in
+            # sweep_orphans) would otherwise abort the lifespan generator
+            # before the `finally` that stops the queue/watcher is ever
+            # entered -- leaking the dispatch worker thread `encoder_queue
+            # .start()` may have already spawned. Mirrors the downloader's
+            # containment immediately above: log it, tear down whatever
+            # partially started, and let the rest of the app come up
+            # normally rather than take every feature down with it.
+            logger.exception(
+                "Encoder failed to start; the feature will be unavailable"
+            )
+            if encoder_watcher is not None:
+                try:
+                    encoder_watcher.stop()
+                except Exception:
+                    logger.exception(
+                        "Encoder watcher cleanup after a failed start failed"
+                    )
+                encoder_watcher = None
+            if encoder_queue is not None:
+                try:
+                    encoder_queue.stop()
+                except Exception:
+                    logger.exception(
+                        "Encoder queue cleanup after a failed start failed"
+                    )
+                encoder_queue = None
 
     try:
         yield
@@ -318,6 +351,7 @@ if "download" in ENABLED_FEATURES_SET:
 
 if "encoder" in ENABLED_FEATURES_SET:
     app.include_router(encoder_router)
+    register_encoder_error_handlers(app)
 
 _AUTH_EXEMPT_EXACT = {"/health", "/openapi.json"}
 _AUTH_EXEMPT_PREFIXES = ("/auth/", "/docs", "/redoc")

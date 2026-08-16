@@ -7,7 +7,9 @@ import queue as queue_mod
 import time
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -118,6 +120,46 @@ def _error(status: int, code: str, reason: str) -> JSONResponse:
     HTTPException, keeps the wire shape flat.
     """
     return JSONResponse(status_code=status, content={"code": code, "reason": reason})
+
+
+async def _validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Reshape FastAPI's own validation-error response to match `_error()`.
+
+    A malformed body (a missing required field, a wrong JSON type) never
+    reaches `_error()` -- Pydantic rejects it before an endpoint function
+    runs, and FastAPI's default handler for that returns
+    ``{"detail": [...]}``. Every other error path in this module returns
+    ``{"code", "reason"}`` at the top level, so leaving this one alone would
+    give plan 2b's UI a different shape for this entire class of error.
+
+    Registered globally (exception handlers can only be attached to a
+    ``FastAPI`` app, not a bare ``APIRouter``), but scoped by path prefix so
+    it only changes behaviour for the encoder's own routes -- any other
+    feature's validation errors fall through to FastAPI's unmodified
+    default handler.
+    """
+    if not request.url.path.startswith(router.prefix):
+        return await request_validation_exception_handler(request, exc)
+    errors = exc.errors()
+    reason = "; ".join(
+        f"{'.'.join(str(p) for p in e.get('loc', ()) if p != 'body')}: {e.get('msg', '')}"
+        for e in errors
+    ) or "Invalid request body"
+    return JSONResponse(
+        status_code=422, content={"code": "invalid_request", "reason": reason}
+    )
+
+
+def register_error_handlers(app: FastAPI) -> None:
+    """Attach the encoder's validation-error reshaping to *app*.
+
+    Must be called explicitly (from `main.py`'s app setup, and from this
+    module's own test fixtures) because FastAPI has no mechanism to carry an
+    `APIRouter`'s exception handlers along when it is `include_router()`-ed.
+    """
+    app.add_exception_handler(RequestValidationError, _validation_exception_handler)
 
 
 def _vendor(encoders: list[str]) -> str:
