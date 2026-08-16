@@ -124,6 +124,45 @@ def test_purge_expired_removes_only_old_terminal_jobs(store):
     assert store.get_job(running.id) is not None
 
 
+def test_purge_expired_also_purges_a_retained_original(store, tmp_path):
+    """`original_kept_path` is the only pointer to a preserved original --
+    purging the row without also purging the file it points at leaks that
+    file in the holding area forever."""
+    kept = tmp_path / "hold" / "old-original.mkv"
+    kept.parent.mkdir()
+    kept.write_bytes(b"x")
+    job = store.create_job("/media3/old.mkv")
+    store.set_stage(job.id, "done")
+    store.set_retention(job.id, str(kept), expires_at=time.time() + 3600)
+    store._conn.execute(
+        "UPDATE jobs SET updated_at = datetime('now', '-10 days') WHERE id = ?",
+        (job.id,))
+
+    assert store.purge_expired(ttl_seconds=86400) == 1
+    assert store.get_job(job.id) is None
+    assert not kept.exists()
+
+
+def test_delete_job_also_purges_a_retained_original(store, tmp_path):
+    kept = tmp_path / "hold" / "deleted-original.mkv"
+    kept.parent.mkdir()
+    kept.write_bytes(b"x")
+    job = store.create_job("/media3/gone.mkv")
+    store.set_stage(job.id, "done")
+    store.set_retention(job.id, str(kept), expires_at=time.time() + 3600)
+
+    assert store.delete_job(job.id) is True
+    assert not kept.exists()
+
+
+def test_delete_job_with_no_retained_original_is_unaffected(store):
+    """A job that never retained anything must delete cleanly with no
+    filesystem side effect attempted."""
+    job = store.create_job("/media3/plain.mkv")
+    assert store.delete_job(job.id) is True
+    assert store.get_job(job.id) is None
+
+
 def test_due_retentions_returns_only_elapsed_ones(store):
     a, b = store.create_job("/media3/a.mkv"), store.create_job("/media3/b.mkv")
     now = time.time()

@@ -18,6 +18,7 @@ from typing import Any
 
 from app.encoder.presets import NamedPreset
 from app.encoder.rules import Condition, Rule
+from app.encoder.swap import purge_original
 
 STAGES = frozenset(
     {"settling", "pending", "queued", "encoding", "swapping", "done", "failed",
@@ -186,10 +187,24 @@ class EncoderStore:
         self._update(job_id, original_kept_path=None, original_expires_at=None)
 
     def delete_job(self, job_id: str) -> bool:
+        """Delete a job row, purging any original it retained.
+
+        ``original_kept_path`` is the *only* pointer to a preserved original
+        in the holding area -- once the row is gone, nothing else knows that
+        file exists. Purging it here as part of the delete (rather than
+        refusing to delete jobs with a retained original) keeps `DELETE
+        /jobs/{id}` simple for callers while guaranteeing a deleted job never
+        leaks its holding-area file permanently.
+        """
         with self._lock:
+            row = self._conn.execute(
+                "SELECT original_kept_path FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
             cur = self._conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
             self._conn.commit()
-            return cur.rowcount > 0
+        if row is not None and row["original_kept_path"]:
+            purge_original(row["original_kept_path"])
+        return cur.rowcount > 0
 
     def active_source_paths(self) -> set[str]:
         placeholders = ",".join("?" * len(TERMINAL_STAGES))
@@ -217,15 +232,31 @@ class EncoderStore:
         return [_to_job(r) for r in rows]
 
     def purge_expired(self, ttl_seconds: int) -> int:
+        """Delete job rows past their TTL, purging any originals they retained.
+
+        Same reasoning as `delete_job`: `original_kept_path` is the only
+        pointer to a preserved original, so a row purged here without also
+        purging its file would leak that file in the holding area forever
+        (or, with a job TTL shorter than the original TTL, guarantee the
+        leak rather than merely risk it).
+        """
         placeholders = ",".join("?" * len(TERMINAL_STAGES))
         with self._lock:
+            rows = self._conn.execute(
+                f"SELECT original_kept_path FROM jobs WHERE stage IN ({placeholders}) "
+                f"AND updated_at <= datetime('now', ?)",
+                (*TERMINAL_STAGES, f"-{int(ttl_seconds)} seconds"),
+            ).fetchall()
             cur = self._conn.execute(
                 f"DELETE FROM jobs WHERE stage IN ({placeholders}) "
                 f"AND updated_at <= datetime('now', ?)",
                 (*TERMINAL_STAGES, f"-{int(ttl_seconds)} seconds"),
             )
             self._conn.commit()
-            return cur.rowcount
+        for row in rows:
+            if row["original_kept_path"]:
+                purge_original(row["original_kept_path"])
+        return cur.rowcount
 
     def due_retentions(self, now: float) -> list[Job]:
         with self._lock:
