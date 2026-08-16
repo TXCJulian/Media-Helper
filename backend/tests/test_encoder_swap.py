@@ -269,9 +269,153 @@ def test_sweep_tolerates_a_missing_directory():
     assert sweep_orphans("/nonexistent/path", active_job_ids=set()) == []
 
 
+def test_sweep_finds_orphans_in_nested_per_title_folders(tmp_path):
+    """Movies live in per-title subfolders in a normal library layout
+    (`Movies/Film (2019)/Film (2019).mkv`), and EncoderWatcher schedules
+    itself with `recursive=True`. A flat `os.listdir` sweep -- called only on
+    the watch-path roots -- would find nothing at all in that layout,
+    silently disabling orphan cleanup in every real deployment."""
+    movies = tmp_path / "Movies"
+    title_dir = movies / "Film (2019)"
+    title_dir.mkdir(parents=True)
+    (title_dir / ".hbenc-dead1.mkv").write_bytes(b"x")
+    (title_dir / ".hbenc-dead2-9f3a1c.mkv").write_bytes(b"x")
+
+    other_title = movies / "Other Film (2020)"
+    other_title.mkdir()
+    (other_title / ".hbenc-alive.mkv").write_bytes(b"x")
+
+    removed = sweep_orphans(str(movies), active_job_ids={"alive"})
+
+    assert sorted(os.path.basename(p) for p in removed) == [
+        ".hbenc-dead1.mkv", ".hbenc-dead2-9f3a1c.mkv"
+    ]
+    assert (other_title / ".hbenc-alive.mkv").exists()
+
+
 def test_purge_original_removes_a_kept_file(tmp_path):
     kept = tmp_path / "kept.mkv"
     kept.write_bytes(b"x")
     assert purge_original(str(kept)) is True
     assert not kept.exists()
     assert purge_original(str(kept)) is False
+
+
+# ---- Important 11: holding-area names must not collide at 1s granularity --
+
+
+def test_two_same_basename_preserves_in_the_same_second_both_survive(tmp_path, monkeypatch):
+    """`f"{int(time.time())}-{base}"` with `shutil.move` silently overwrites.
+    Two sources sharing a basename (common with disc-rip naming) preserved
+    in the same second must not destroy the earlier retained original."""
+    import app.encoder.swap as swap_mod
+
+    # Freeze time so both preserves land in the same second deterministically
+    # -- the bug is specifically about same-second collisions, and relying on
+    # real timing would make this test flaky.
+    monkeypatch.setattr(swap_mod.time, "time", lambda: 1000.0)
+
+    movie_a_dir = tmp_path / "Movies" / "A"
+    movie_b_dir = tmp_path / "Movies" / "B"
+    movie_a_dir.mkdir(parents=True)
+    movie_b_dir.mkdir(parents=True)
+    source_a = movie_a_dir / "movie.mkv"
+    source_b = movie_b_dir / "movie.mkv"
+    source_a.write_bytes(b"A" * 10)
+    source_b.write_bytes(b"B" * 10)
+
+    holding = tmp_path / "hold"
+    target_a = swap_mod._preserve(str(source_a), str(holding))
+    target_b = swap_mod._preserve(str(source_b), str(holding))
+
+    assert target_a != target_b
+    assert os.path.exists(target_a)
+    assert os.path.exists(target_b)
+    assert open(target_a, "rb").read() == b"A" * 10
+    assert open(target_b, "rb").read() == b"B" * 10
+
+
+# ---- Important 7: cross-device holding directory should warn, not fail ----
+
+
+def test_a_cross_device_holding_dir_logs_a_warning_on_first_use(tmp_path, monkeypatch, caplog):
+    import app.encoder.swap as swap_mod
+
+    swap_mod._cross_device_warned.clear()
+    source = tmp_path / "Movies" / "movie.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"O" * 10)
+    holding = tmp_path / "hold"
+    holding.mkdir()
+
+    class _FakeStat:
+        def __init__(self, st_dev):
+            self.st_dev = st_dev
+
+    def _fake_stat(path, *a, **k):
+        # Report the holding directory as living on a different device than
+        # everything else, regardless of what the real filesystem says --
+        # tmp_path is a single filesystem in the test environment, so this is
+        # the only way to exercise the cross-device branch deterministically.
+        if os.path.abspath(path) == os.path.abspath(str(holding)):
+            return _FakeStat(999)
+        return _FakeStat(1)
+
+    monkeypatch.setattr(swap_mod, "_stat", _fake_stat)
+
+    with caplog.at_level("WARNING", logger=swap_mod.logger.name):
+        swap_mod._preserve(str(source), str(holding))
+
+    assert any("different filesystem" in r.message for r in caplog.records)
+
+
+def test_the_cross_device_warning_fires_only_once_per_holding_dir(tmp_path, monkeypatch, caplog):
+    import app.encoder.swap as swap_mod
+
+    swap_mod._cross_device_warned.clear()
+    holding = tmp_path / "hold"
+    holding.mkdir()
+
+    class _FakeStat:
+        def __init__(self, st_dev):
+            self.st_dev = st_dev
+
+    def _fake_stat(path, *a, **k):
+        if os.path.abspath(path) == os.path.abspath(str(holding)):
+            return _FakeStat(999)
+        return _FakeStat(1)
+
+    monkeypatch.setattr(swap_mod, "_stat", _fake_stat)
+
+    for i in range(2):
+        source = tmp_path / f"movie{i}.mkv"
+        source.write_bytes(b"O")
+        with caplog.at_level("WARNING", logger=swap_mod.logger.name):
+            swap_mod._preserve(str(source), str(holding))
+
+    warnings = [r for r in caplog.records if "different filesystem" in r.message]
+    assert len(warnings) == 1
+
+
+# ---- Trivial: _copy_ownership must not run before the collision check -----
+
+
+def test_ownership_is_not_touched_when_the_swap_aborts_on_collision(library, tmp_path, monkeypatch):
+    """An aborting job (destination collision) must not chmod/chown the
+    encoded file it is refusing to publish."""
+    movies, source, _ = library
+    encoded = movies / ".hbenc-job1.mp4"
+    encoded.write_bytes(b"E" * 1024)
+    unrelated = movies / "Film (2019).mp4"
+    unrelated.write_bytes(b"U" * 2048)
+
+    import app.encoder.swap as swap_mod
+
+    chmod_calls = []
+    monkeypatch.setattr(swap_mod.os, "chmod", lambda *a, **k: chmod_calls.append(a))
+
+    with pytest.raises(SwapError):
+        swap_in(str(source), str(encoded), original_ttl=0,
+                holding_dir=str(tmp_path / "hold"))
+
+    assert chmod_calls == []

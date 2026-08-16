@@ -22,9 +22,25 @@ import os
 import re
 import shutil
 import time
+import uuid
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+# Holding directories already warned about being on a different filesystem
+# than a source they preserved from. Keyed so the warning fires once per
+# holding directory rather than on every swap -- the condition is a
+# deployment fact, not a per-file surprise, so repeating it would just be
+# log noise.
+_cross_device_warned: set[str] = set()
+
+# A separate alias for `_warn_if_cross_device`'s stat calls, rather than
+# calling `os.stat` directly. `shutil.move` (used by `_preserve` right after)
+# relies on the real `os.stat` internally to decide rename-vs-copy and to
+# preserve metadata, so a test that needs to fake device ids for the warning
+# check must be able to do so without also breaking that call -- patching
+# this alias instead of `os.stat` itself keeps the two independent.
+_stat = os.stat
 
 OUTPUT_PREFIX = ".hbenc-"
 """Fixed convention shared with the encoder service.
@@ -89,8 +105,6 @@ def swap_in(
         raise SwapError(f"Source vanished before the swap: {source}") from exc
     original_size = source_stat.st_size
 
-    _copy_ownership(source_stat, encoded)
-
     # The container can differ from the source's: a preset may transcode mkv
     # to mp4. Publishing under the old extension would leave a file whose name
     # lies about its contents.
@@ -106,10 +120,15 @@ def swap_in(
         # touched yet, so aborting here is free. This is a name collision a
         # human should see, not something to route through _preserve and
         # silently retitle -- that file was never part of this job.
+        #
+        # Checked *before* _copy_ownership below: an aborting job must not
+        # chmod/chown the encoded file it is refusing to publish.
         raise SwapError(
             f"Refusing to publish {encoded} over {final_path}: a file "
             f"already exists there and was never part of this job."
         )
+
+    _copy_ownership(source_stat, encoded)
 
     # Preserve the original *before* publishing, so that if retention was
     # requested we never reach a state where the encode is live but the
@@ -204,8 +223,16 @@ def _preserve(source: str, holding_dir: str) -> str:
     except OSError as exc:
         raise SwapError(f"Could not create the holding area {holding_dir}: {exc}") from exc
 
+    _warn_if_cross_device(source, holding_dir)
+
     base = os.path.basename(source)
-    target = os.path.join(holding_dir, f"{int(time.time())}-{base}")
+    # A bare `<timestamp>-<base>` collides at one-second granularity: two
+    # sources sharing a basename (`Movies/A/movie.mkv`, `Movies/B/movie.mkv`
+    # -- common with disc-rip naming) preserved in the same second would have
+    # the second shutil.move() silently overwrite the first's *retained
+    # original*, destroying it rather than merely losing GPU time. The uuid4
+    # suffix makes every preserve's target name unique regardless of timing.
+    target = os.path.join(holding_dir, f"{int(time.time())}-{uuid.uuid4().hex[:8]}-{base}")
     try:
         shutil.move(source, target)
     except OSError as exc:
@@ -215,6 +242,34 @@ def _preserve(source: str, holding_dir: str) -> str:
         # user who set a TTL would never want.
         raise SwapError(f"Could not preserve the original {source}: {exc}") from exc
     return target
+
+
+def _warn_if_cross_device(source: str, holding_dir: str) -> None:
+    """Log once if *holding_dir* is on a different filesystem than *source*.
+
+    Cross-device degrades ``shutil.move`` to copy-then-unlink: minutes of I/O
+    inside the swap window plus a transient 2x space requirement on
+    (typically) the smaller holding volume. Safety is unaffected -- the copy
+    completes before the unlink either way -- so this exists purely to make
+    the cost visible to whoever configured ``ENCODER_DATA_DIR``, not to
+    change behaviour or pick a different default.
+    """
+    if holding_dir in _cross_device_warned:
+        return
+    _cross_device_warned.add(holding_dir)
+    try:
+        source_dev = _stat(os.path.dirname(source) or ".").st_dev
+        holding_dev = _stat(holding_dir).st_dev
+    except OSError:
+        return
+    if source_dev != holding_dev:
+        logger.warning(
+            "Holding directory %s is on a different filesystem than the "
+            "media library. Preserving an original there will copy rather "
+            "than rename it, costing extra I/O time and requiring roughly "
+            "double the disk space during the swap.",
+            holding_dir,
+        )
 
 
 def _is_protected(id_portion: str, active_job_ids: set[str]) -> bool:
@@ -233,28 +288,31 @@ def _is_protected(id_portion: str, active_job_ids: set[str]) -> bool:
 
 
 def sweep_orphans(directory: str, active_job_ids: set[str]) -> list[str]:
-    """Delete `.hbenc-` partials in *directory* not belonging to a live job.
+    """Delete `.hbenc-` partials under *directory* not belonging to a live job.
 
     Run at startup: a crash mid-encode leaves a partial no one will collect,
     and it is invisible to the user because the name is dot-prefixed.
+
+    Walks recursively, matching ``EncoderWatcher``'s ``recursive=True`` and
+    ``scan_existing()``'s ``os.walk``. A flat ``os.listdir`` here would find
+    nothing at all in a normal library layout, where movies live in
+    per-title subfolders -- ``os.walk`` on a directory that does not exist
+    simply yields nothing, so a missing root still degrades to an empty
+    result rather than raising.
     """
     removed: list[str] = []
-    try:
-        entries = os.listdir(directory)
-    except OSError:
-        return removed
-
-    for name in entries:
-        match = _ORPHAN_RE.match(name)
-        if not match or _is_protected(match.group("id_portion"), active_job_ids):
-            continue
-        path = os.path.join(directory, name)
-        try:
-            if os.path.isfile(path):
-                os.remove(path)
-                removed.append(path)
-        except OSError:
-            logger.warning("Could not remove orphaned partial %s", path, exc_info=True)
+    for dirpath, _dirs, files in os.walk(directory):
+        for name in files:
+            match = _ORPHAN_RE.match(name)
+            if not match or _is_protected(match.group("id_portion"), active_job_ids):
+                continue
+            path = os.path.join(dirpath, name)
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+                    removed.append(path)
+            except OSError:
+                logger.warning("Could not remove orphaned partial %s", path, exc_info=True)
     return removed
 
 
