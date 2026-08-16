@@ -196,9 +196,15 @@ class EncodeQueue:
         job = self._store.create_job(source_path, size, mtime_ns)
         try:
             return self.plan(job.id)
-        except Exception as exc:
+        except Exception:
+            # The message reaches the API and the panel, and an *unexpected*
+            # exception carries whatever internal state it happened to hold --
+            # filesystem paths, SQL, driver text. The anticipated failures in
+            # `plan()` set their own curated messages; this one only says that
+            # something broke and where to look.
             logger.exception("Planning %s failed unexpectedly", source_path)
-            self._fail(job.id, f"Planning failed: {exc}", "plan_failed")
+            self._fail(job.id, "Internal planning error; see server logs",
+                       "plan_failed")
             return "failed"
 
     def plan(self, job_id: str) -> str:

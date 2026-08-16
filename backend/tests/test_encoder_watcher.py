@@ -679,3 +679,73 @@ def test_an_unreadable_subtree_does_not_prune_its_root(store, tmp_path):
 
     assert set(store.seen_fingerprints()) == {str(target)}, \
         "fingerprints were pruned after a walk error"
+
+
+def test_a_fingerprint_updated_during_the_scan_is_not_pruned(store, tmp_path):
+    """The retention workflow makes the same path vanish and come back.
+
+    Reproduced by review: retention moves the original into holding, a scan
+    in progress catches the path in that gap, the queue then publishes the
+    encode at that same path with a fresh fingerprint -- and a delete keyed on
+    the path alone removes the new record because the old one was in the
+    scan's opening snapshot. The next scan re-encodes our own output.
+
+    Deleting on (path, size, mtime_ns) makes that delete a no-op instead.
+    """
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"original" * 100)
+
+    planner = Planner(store)
+    watcher = make_watcher(store, tmp_path, planner)
+    watcher.scan_existing()
+    watcher.scan_existing()
+    _finish(store, planner.job_ids[0], "done")
+
+    old_fingerprint = store.seen_fingerprints()[str(target)]
+
+    real_walk = os.walk
+
+    def walk_then_swap(top, **kwargs):
+        # The scan observes the path missing (retention moved it aside)...
+        target.unlink()
+        for entry in real_walk(top, **kwargs):
+            yield entry
+        # ...and the swap publishes the encode there before the prune runs.
+        target.write_bytes(b"encoded" * 10)
+        st = target.stat()
+        store.mark_seen(str(target), st.st_size, st.st_mtime_ns)
+
+    import app.encoder.watcher as watcher_mod
+    original = watcher_mod.os.walk
+    watcher_mod.os.walk = walk_then_swap
+    try:
+        watcher.scan_existing()
+    finally:
+        watcher_mod.os.walk = original
+
+    current = store.seen_fingerprints().get(str(target))
+    assert current is not None, "the freshly published fingerprint was pruned"
+    assert current != old_fingerprint, "test did not actually update the record"
+
+    # And so the published output is never mistaken for a new arrival.
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert planner.paths == [str(target)]
+
+
+def test_pruning_removes_a_record_whose_fingerprint_is_unchanged(store, tmp_path):
+    """The control: a genuinely deleted file is still pruned."""
+    keep = tmp_path / "keep.mkv"
+    gone = tmp_path / "gone.mkv"
+    keep.write_bytes(b"data" * 100)
+    gone.write_bytes(b"data" * 200)
+
+    planner = Planner(store)
+    watcher = make_watcher(store, tmp_path, planner)
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert set(store.seen_fingerprints()) == {str(keep), str(gone)}
+
+    gone.unlink()
+    watcher.scan_existing()
+    assert set(store.seen_fingerprints()) == {str(keep)}

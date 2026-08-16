@@ -177,22 +177,26 @@ class EncoderWatcher:
         # Drop records for files that have since been deleted or renamed;
         # otherwise the table grows with library churn forever.
         #
-        # Only records that existed when this scan STARTED are eligible. The
-        # queue fingerprints a file the moment it publishes it, which can land
-        # after that file's directory was walked -- so a fresh record would be
-        # absent from `present` and get pruned, and the next scan would treat
-        # our own published output as a new arrival and re-encode it. Scoping
-        # to the opening snapshot makes anything created mid-scan untouchable.
-        stale = {
-            path
-            for path in seen
+        # Only records that existed when this scan STARTED are eligible, and
+        # each delete carries the fingerprint it saw. Both halves matter: the
+        # queue writes a fingerprint the moment it publishes, which can land
+        # after that file's directory was walked. Scoping to the opening
+        # snapshot keeps a brand-new path safe; carrying the fingerprint keeps
+        # an *updated* one safe, for the case where retention moves the
+        # original aside, the scan catches the path mid-gap, and the encode is
+        # then published at that same path. Without the fingerprint in the
+        # WHERE clause that delete removes the fresh record, and the next scan
+        # re-encodes our own output.
+        stale = [
+            (path, *fingerprint)
+            for path, fingerprint in seen.items()
             if path not in present
             and any(
                 path == root or path.startswith(root + os.sep) for root in walked
             )
-        }
+        ]
         if stale:
-            removed = self._store.forget_seen_paths(stale)
+            removed = self._store.forget_seen_entries(stale)
             logger.info("Pruned %d dedup record(s) for files no longer present",
                         removed)
 

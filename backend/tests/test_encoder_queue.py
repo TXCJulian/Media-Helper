@@ -609,6 +609,10 @@ def test_plan_new_fails_the_job_when_planning_throws_unexpectedly(env, monkeypat
     assert len(jobs) == 1
     assert jobs[0].stage == "failed"
     assert jobs[0].error_code == "plan_failed"
+    # The message reaches the API, so an unexpected exception must not
+    # carry its internal detail into it.
+    assert jobs[0].error == "Internal planning error; see server logs"
+    assert "unanticipated" not in (jobs[0].error or "")
     # The fingerprint is still recorded, so the file is not re-probed forever.
     assert str(source) in store.seen_fingerprints()
 

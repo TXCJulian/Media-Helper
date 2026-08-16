@@ -302,25 +302,35 @@ class EncoderStore:
             )
             self._conn.commit()
 
-    def forget_seen_paths(self, paths: Iterable[str]) -> int:
-        """Drop the dedup records for exactly *paths*.
+    def forget_seen_entries(self, entries: Iterable[tuple[str, int, int]]) -> int:
+        """Drop dedup records matching exactly these `(path, size, mtime_ns)`.
 
-        Deliberately dumb: it deletes what it is given and never re-derives
-        the set itself. Choosing what is stale needs the caller's knowledge of
-        which roots were walked cleanly and which records existed before the
-        walk began -- deciding it here, against the table as it stands now,
-        deleted fingerprints written mid-scan by a job that had just published
-        its output.
+        The fingerprint is part of the WHERE clause, not just the path. A
+        delete keyed on the path alone races the queue: retention moves the
+        original out of the way, a scan in progress sees the path briefly
+        missing, the queue publishes the encode at that same path with a fresh
+        fingerprint, and the scan then deletes that *new* record because the
+        *old* one was in its opening snapshot. The next scan treats the
+        published output as a new arrival and re-encodes it.
+
+        Matching on the fingerprint makes that delete affect zero rows, which
+        is the correct outcome: the row it wanted to remove no longer exists.
+
+        Deliberately dumb otherwise -- it deletes what it is given and never
+        re-derives the set, because choosing what is stale needs the caller's
+        knowledge of which roots were walked cleanly.
         """
-        rows = [(p,) for p in paths]
+        rows = [(path, size, mtime_ns) for path, size, mtime_ns in entries]
         if not rows:
             return 0
         with self._lock:
-            self._conn.executemany(
-                "DELETE FROM seen_files WHERE path = ?", rows
+            cur = self._conn.executemany(
+                "DELETE FROM seen_files "
+                "WHERE path = ? AND size = ? AND mtime_ns = ?",
+                rows,
             )
             self._conn.commit()
-        return len(rows)
+        return cur.rowcount
 
     def forget_seen(self, path: str) -> bool:
         """Drop the dedup record for *path* so the watcher reconsiders it.
