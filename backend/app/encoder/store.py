@@ -175,20 +175,28 @@ class EncoderStore:
         """
         job_id = uuid.uuid4().hex
         with self._lock:
-            self._conn.execute(
-                "INSERT INTO jobs (id, source_path, stage) VALUES (?, ?, 'settling')",
-                (job_id, source_path),
-            )
-            if size is not None and mtime_ns is not None:
+            # `with self._conn` commits on success and ROLLS BACK on any
+            # exception. Committing at the end instead left the job insert
+            # sitting in the open transaction when the fingerprint insert
+            # raised, and the next unrelated commit persisted it: an orphan
+            # job stuck in `settling`, holding the active-source index and
+            # suppressing every retry -- precisely the state this method's
+            # atomicity exists to prevent.
+            with self._conn:
                 self._conn.execute(
-                    "INSERT INTO seen_files (path, size, mtime_ns, seen_at) "
-                    "VALUES (?, ?, ?, datetime('now')) "
-                    "ON CONFLICT(path) DO UPDATE SET "
-                    "size = excluded.size, mtime_ns = excluded.mtime_ns, "
-                    "seen_at = excluded.seen_at",
-                    (source_path, size, mtime_ns),
+                    "INSERT INTO jobs (id, source_path, stage) "
+                    "VALUES (?, ?, 'settling')",
+                    (job_id, source_path),
                 )
-            self._conn.commit()
+                if size is not None and mtime_ns is not None:
+                    self._conn.execute(
+                        "INSERT INTO seen_files (path, size, mtime_ns, seen_at) "
+                        "VALUES (?, ?, ?, datetime('now')) "
+                        "ON CONFLICT(path) DO UPDATE SET "
+                        "size = excluded.size, mtime_ns = excluded.mtime_ns, "
+                        "seen_at = excluded.seen_at",
+                        (source_path, size, mtime_ns),
+                    )
             row = self._conn.execute(
                 "SELECT * FROM jobs WHERE id = ?", (job_id,)
             ).fetchone()
@@ -415,7 +423,7 @@ class EncoderStore:
     def replace_presets(self, presets: list[NamedPreset]) -> None:
         """Upsert by name. Additive across imports: a second preset file must
         not discard the first, but re-importing a name updates it."""
-        with self._lock:
+        with self._lock, self._conn:
             self._conn.executemany(
                 "INSERT INTO presets (name, encoder, video_preset, file_format, body) "
                 "VALUES (?, ?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET "
@@ -424,7 +432,6 @@ class EncoderStore:
                 [(p.name, p.encoder, p.video_preset, p.file_format,
                   json.dumps(p.body)) for p in presets],
             )
-            self._conn.commit()
 
     def list_presets(self) -> list[StoredPreset]:
         with self._lock:
@@ -450,8 +457,13 @@ class EncoderStore:
         Rule order *is* the semantics -- first match wins -- so merging would
         make the effective order depend on insertion history rather than on
         what the user arranged.
+
+        The transaction is real, not just intended: `with self._conn` rolls
+        back on any exception. Committing at the end instead meant a failing
+        insert left the DELETE to be persisted by the next unrelated commit,
+        silently wiping every rule the user had.
         """
-        with self._lock:
+        with self._lock, self._conn:
             self._conn.execute("DELETE FROM rules")
             self._conn.executemany(
                 "INSERT INTO rules (id, position, conditions, target) "
@@ -464,7 +476,6 @@ class EncoderStore:
                     for i, r in enumerate(rules)
                 ],
             )
-            self._conn.commit()
 
     def list_rules(self) -> list[Rule]:
         with self._lock:

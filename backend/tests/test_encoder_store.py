@@ -225,3 +225,141 @@ def test_schema_survives_reopening(store, tmp_path):
         assert [r.id for r in reopened.list_rules()] == ["r1"]
     finally:
         reopened.close()
+
+
+# ---------------------------------------------------------------------------
+# Atomicity of the multi-write methods.
+#
+# Each of these writes more than one row and then commits. Committing at the
+# end is not a transaction: an exception between the writes leaves the earlier
+# ones sitting in the connection's open transaction, and the next unrelated
+# commit persists them. Every test here reopens the database, because state
+# that survived only in the live connection would hide exactly that bug.
+# ---------------------------------------------------------------------------
+
+
+class _FailingConnection:
+    """Delegates to a real connection but raises on one statement.
+
+    `sqlite3.Connection.execute` is read-only, so the failure is injected by
+    wrapping rather than by patching. `__enter__`/`__exit__` forward to the
+    real connection so the transaction semantics under test are the genuine
+    ones.
+    """
+
+    def __init__(self, real, failing_sql):
+        self._real = real
+        self._failing_sql = failing_sql
+
+    def _guard(self, sql):
+        if self._failing_sql in sql:
+            raise sqlite3.IntegrityError("injected failure")
+
+    def execute(self, sql, *args, **kwargs):
+        self._guard(sql)
+        return self._real.execute(sql, *args, **kwargs)
+
+    def executemany(self, sql, *args, **kwargs):
+        self._guard(sql)
+        return self._real.executemany(sql, *args, **kwargs)
+
+    def __enter__(self):
+        return self._real.__enter__()
+
+    def __exit__(self, *exc_info):
+        return self._real.__exit__(*exc_info)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_create_job_rolls_back_when_the_fingerprint_write_fails(tmp_path):
+    """A half-written job is worse than no job: it holds the active-source
+    unique index, `settling` is skipped by restart recovery, and the watcher
+    will not reconsider a file whose job already exists. It drops out of the
+    system entirely, while looking like work in progress."""
+    db = tmp_path / "encoder.db"
+    store = EncoderStore(str(db))
+    real = store._conn
+    store._conn = _FailingConnection(real, "INSERT INTO seen_files")
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.create_job("/media/movie.mkv", 4096, 1_700_000_000_000_000_000)
+
+    store._conn = real
+    # Force a later, unrelated commit: this is what used to persist the
+    # orphaned job insert left behind in the open transaction.
+    store.set_setting("unrelated", "value")
+    store.close()
+
+    reopened = EncoderStore(str(db))
+    try:
+        assert reopened.list_jobs() == [], "an orphaned job survived"
+        assert reopened.seen_fingerprints() == {}
+    finally:
+        reopened.close()
+
+
+def test_replace_rules_rolls_back_when_the_insert_fails(tmp_path):
+    """The DELETE and the INSERT must stand or fall together, or a failed save
+    silently discards every rule the user had."""
+    db = tmp_path / "encoder.db"
+    store = EncoderStore(str(db))
+    store.replace_rules([
+        Rule(id="keep", conditions=[Condition("height", ">=", 1080)],
+             target="skip"),
+    ])
+    assert [r.id for r in store.list_rules()] == ["keep"]
+
+    real = store._conn
+    store._conn = _FailingConnection(real, "INSERT INTO rules")
+    with pytest.raises(sqlite3.IntegrityError):
+        store.replace_rules([
+            Rule(id="new", conditions=[Condition("width", ">=", 1920)],
+                 target="skip"),
+        ])
+
+    store._conn = real
+    store.set_setting("unrelated", "value")
+    store.close()
+
+    reopened = EncoderStore(str(db))
+    try:
+        assert [r.id for r in reopened.list_rules()] == ["keep"], \
+            "a failed save wiped the existing rules"
+    finally:
+        reopened.close()
+
+
+def test_create_job_without_a_fingerprint_still_commits(tmp_path):
+    """Control: the fingerprint arguments are optional, and omitting them must
+    not change the job's own durability."""
+    db = tmp_path / "encoder.db"
+    store = EncoderStore(str(db))
+    job = store.create_job("/media/movie.mkv")
+    store.close()
+
+    reopened = EncoderStore(str(db))
+    try:
+        assert [j.id for j in reopened.list_jobs()] == [job.id]
+        assert reopened.seen_fingerprints() == {}
+    finally:
+        reopened.close()
+
+
+def test_create_job_commits_both_rows_together(tmp_path):
+    """Control for the success path: both rows must be durable, not just the
+    job -- the fingerprint is what stops the file being re-probed forever."""
+    db = tmp_path / "encoder.db"
+    store = EncoderStore(str(db))
+    store.create_job("/media/movie.mkv", 4096, 1_700_000_000_000_000_000)
+    store.close()
+
+    reopened = EncoderStore(str(db))
+    try:
+        assert len(reopened.list_jobs()) == 1
+        assert reopened.seen_fingerprints() == {
+            "/media/movie.mkv": (4096, 1_700_000_000_000_000_000)
+        }
+    finally:
+        reopened.close()
