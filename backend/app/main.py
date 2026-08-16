@@ -180,6 +180,32 @@ async def _cleanup_downloader_jobs():
             logger.exception("Error during download job cleanup")
 
 
+async def _cleanup_encoder_jobs(encoder_queue, encoder_store):
+    """Periodically purge expired retained originals and encoder job history.
+
+    Retentions run first: `run_retentions()` is what actually reclaims disk
+    (purging a retained original once its TTL has elapsed), and
+    `purge_expired()` deletes job rows -- including, as of the fix for the
+    retained-original-leak finding, any original a deleted row was still
+    pointing at. Running retentions first means a job whose original TTL and
+    job TTL happen to land in the same sweep gets the "purge on schedule"
+    behaviour rather than the "purge as a side effect of row deletion"
+    fallback.
+    """
+    from app.config import ENCODER_JOB_TTL
+
+    while True:
+        await asyncio.sleep(600)  # every 10 minutes
+        try:
+            encoder_queue.run_retentions()
+        except Exception:
+            logger.exception("Error during encoder retention purge")
+        try:
+            encoder_store.purge_expired(ENCODER_JOB_TTL)
+        except Exception:
+            logger.exception("Error during encoder job cleanup")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan with startup and shutdown events."""
@@ -258,6 +284,7 @@ async def lifespan(app: FastAPI):
     # that backs those routes.
     encoder_watcher = None
     encoder_queue = None
+    encoder_cleanup_task = None
     if "encoder" in ENABLED_FEATURES_SET:
         from app.encoder import routes as encoder_routes
         from app.encoder.swap import sweep_orphans
@@ -269,7 +296,15 @@ async def lifespan(app: FastAPI):
             # Sweep before recovering: a crash mid-encode leaves partials no
             # live job owns, and they are invisible to the user because the
             # name is dotted.
-            active = {j.id for j in encoder_store.list_jobs()}
+            #
+            # `.hbenc-<id>` filenames carry the *encoder service's* job id
+            # (swap.py's OUTPUT_PREFIX docstring), stored on each row as
+            # `remote_job_id` -- not `j.id`, which is this renamer's own
+            # local uuid4. The two namespaces never intersect, so passing
+            # `j.id` here would make every live partial look orphaned and
+            # delete it on every restart, wiping out in-progress GPU work.
+            active = {j.remote_job_id for j in encoder_store.list_jobs()
+                      if j.remote_job_id}
             for watch_path in ENCODER_WATCH_PATHS:
                 sweep_orphans(watch_path, active)
             encoder_queue.start()
@@ -284,6 +319,14 @@ async def lifespan(app: FastAPI):
                 valid_extensions=VALID_VIDEO_EXT,
             )
             encoder_watcher.start()
+            # Mirrors the downloader's cleanup task: without it, nothing ever
+            # calls run_retentions() or purge_expired() in production, so
+            # ENCODER_ORIGINAL_TTL and ENCODER_JOB_TTL are documented but
+            # inert -- retained originals and job history accumulate
+            # unbounded.
+            encoder_cleanup_task = asyncio.create_task(
+                _cleanup_encoder_jobs(encoder_queue, encoder_store)
+            )
         except Exception:
             # This whole block runs before `try: yield` below, so a failure
             # here (a bad ENCODER_DB path, a permissions error in
@@ -332,6 +375,8 @@ async def lifespan(app: FastAPI):
         if downloader_started:
             shutdown_downloader()
         if "encoder" in ENABLED_FEATURES_SET:
+            if encoder_cleanup_task is not None:
+                encoder_cleanup_task.cancel()
             if encoder_watcher is not None:
                 encoder_watcher.stop()
             if encoder_queue is not None:

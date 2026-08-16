@@ -467,6 +467,77 @@ class TestEncoderLifespan:
                     for t in threading.enumerate()
                 )
 
+    def test_sweep_orphans_is_wired_with_remote_job_ids_not_local_ids(self, tmp_path):
+        """`.hbenc-<id>` filenames carry the *encoder service's* job id
+        (swap.py's OUTPUT_PREFIX docstring), stored per row as
+        `remote_job_id` -- not `Job.id`, the renamer's own local uuid4. The
+        two namespaces never intersect: passing local ids here would make
+        every live partial look orphaned and delete it on every restart.
+
+        This drives the actual lifespan wiring (unlike swap.py's own unit
+        tests, which pass remote-shaped ids to `sweep_orphans` directly and
+        would never have caught main.py handing it the wrong set) -- a job
+        is seeded with deliberately different local/remote ids *before* the
+        app starts, and the id set the lifespan actually passes to
+        `sweep_orphans` is captured and asserted on.
+        """
+        import importlib
+
+        media = tmp_path / "media"
+        media.mkdir(parents=True)
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir(parents=True)
+        enc_data = tmp_path / "enc-data"
+        enc_db = enc_data / "encoder.db"
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(media),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes,encoder",
+            "ENCODER_DATA_DIR": str(enc_data),
+            "ENCODER_DB": str(enc_db),
+            "ENCODER_WATCH_PATHS": str(watch_dir),
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.encoder.routes as encoder_routes_mod
+            importlib.reload(encoder_routes_mod)
+            import app.encoder.store as encoder_store_mod
+
+            # Seed a job whose local id and remote id are deliberately
+            # different, in a non-terminal stage, before lifespan (and
+            # therefore the sweep) ever runs.
+            seed_store = encoder_store_mod.EncoderStore(str(enc_db))
+            job = seed_store.create_job(str(watch_dir / "Film.mkv"))
+            seed_store.set_remote_job(job.id, "remote-xyz")
+            seed_store.set_stage(job.id, "encoding")
+            seed_store.close()
+            assert job.id != "remote-xyz"
+
+            import app.encoder.swap as swap_mod
+            calls = []
+            original_sweep = swap_mod.sweep_orphans
+
+            def _spy(directory, active_job_ids):
+                calls.append(set(active_job_ids))
+                return original_sweep(directory, active_job_ids)
+
+            with patch.object(swap_mod, "sweep_orphans", side_effect=_spy):
+                import app.main as main_mod
+                importlib.reload(main_mod)
+                with TestClient(main_mod.app):
+                    pass
+
+            assert calls, "sweep_orphans was never called"
+            for active in calls:
+                assert active == {"remote-xyz"}
+                assert job.id not in active
+
 
 class TestCutterStreamValidation:
     def test_cutter_stream_rejects_invalid_audio_index(self, client, tmp_path, monkeypatch):
