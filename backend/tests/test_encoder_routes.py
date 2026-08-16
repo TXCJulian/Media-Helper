@@ -114,9 +114,15 @@ def test_a_rule_targeting_an_unknown_preset_is_rejected(client):
     assert client.put("/api/encoder/rules", json=payload).status_code == 400
 
 
-def test_test_endpoint_reports_the_match_without_encoding(client, monkeypatch):
+def test_test_endpoint_reports_the_match_without_encoding(client, monkeypatch, tmp_path):
     """Rule-ordering mistakes are otherwise invisible until an hour of 4K
     encoding has been spent."""
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    candidate = watch_root / "x.mkv"
+    candidate.write_bytes(b"")
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+
     client.post("/api/encoder/presets", json={"document": PRESET_DOC})
     client.put("/api/encoder/rules", json={
         "rules": [
@@ -129,21 +135,104 @@ def test_test_endpoint_reports_the_match_without_encoding(client, monkeypatch):
     })
     monkeypatch.setattr(routes_mod, "probe",
                         lambda _p: {"height": 1080, "size": 1, "video_codec": "h264"})
-    body = client.post("/api/encoder/test", json={"path": "/media3/x.mkv"}).json()
+    body = client.post("/api/encoder/test", json={"path": str(candidate)}).json()
     assert body["matched_rule"] == "r2"
     assert body["target"] == "NVENC"
     assert body["evaluated"] == ["r1", "r2"]
     assert body["facts"]["height"] == 1080
 
 
-def test_test_endpoint_reports_a_probe_failure_as_a_400(client, monkeypatch):
+def test_test_endpoint_reports_a_probe_failure_as_a_400(client, monkeypatch, tmp_path):
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    candidate = watch_root / "x.txt"
+    candidate.write_bytes(b"")
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+
     def _boom(_p):
         raise routes_mod.ProbeError("not a video")
 
     monkeypatch.setattr(routes_mod, "probe", _boom)
-    r = client.post("/api/encoder/test", json={"path": "/media3/x.txt"})
+    r = client.post("/api/encoder/test", json={"path": str(candidate)})
     assert r.status_code == 400
     assert r.json()["code"] == "probe_failed"
+
+
+# ---- Critical 1: /test is an unauthenticated SSRF and file-existence -----
+# ---- oracle without containment/isfile checks -----------------------------
+
+
+def test_test_endpoint_rejects_a_url_style_path(client, monkeypatch):
+    """ffprobe resolves protocols, not just paths -- `ffprobe http://...`
+    issues a real HTTP request. Without a containment check this endpoint,
+    unauthenticated by default, would let a caller make the server reach
+    anything on its network."""
+    probed = []
+    monkeypatch.setattr(routes_mod, "probe", lambda p: probed.append(p) or {})
+    r = client.post("/api/encoder/test", json={"path": "http://10.0.0.5:8080/admin"})
+    assert r.status_code == 400
+    assert r.json()["code"] == "invalid_path"
+    assert probed == []  # probe() must never have been reached
+
+
+def test_test_endpoint_rejects_a_path_outside_the_watch_roots(client, monkeypatch, tmp_path):
+    """An absolute path outside every configured root, even if it happens to
+    exist on disk, must not be probed or reveal anything about itself."""
+    outside = tmp_path / "outside" / "secret.txt"
+    outside.parent.mkdir()
+    outside.write_bytes(b"shhh")
+    probed = []
+    monkeypatch.setattr(routes_mod, "probe", lambda p: probed.append(p) or {})
+    r = client.post("/api/encoder/test", json={"path": str(outside)})
+    assert r.status_code == 400
+    assert r.json()["code"] == "invalid_path"
+    assert probed == []
+
+
+def test_test_endpoint_rejects_a_symlink_escaping_the_watch_root(client, monkeypatch, tmp_path):
+    """realpath must run before the containment check, or a symlink inside
+    the watch root pointing outside it would bypass the allow-list."""
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    outside = tmp_path / "outside.mkv"
+    outside.write_bytes(b"real content")
+    link = watch_root / "innocent.mkv"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks not supported in this environment")
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+    probed = []
+    monkeypatch.setattr(routes_mod, "probe", lambda p: probed.append(p) or {})
+    r = client.post("/api/encoder/test", json={"path": str(link)})
+    assert r.status_code == 400
+    assert r.json()["code"] == "invalid_path"
+    assert probed == []
+
+
+def test_test_endpoint_accepts_a_legitimate_in_root_file(client, monkeypatch, tmp_path):
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    candidate = watch_root / "Film.mkv"
+    candidate.write_bytes(b"")
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+    monkeypatch.setattr(routes_mod, "probe", lambda _p: {"height": 1080})
+    r = client.post("/api/encoder/test", json={"path": str(candidate)})
+    assert r.status_code == 200
+
+
+def test_test_endpoint_rejects_a_nonexistent_path_inside_the_watch_root(client, monkeypatch, tmp_path):
+    """Containment alone is not enough: a path that resolves inside a watch
+    root but does not exist must not be handed to probe()."""
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    probed = []
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+    monkeypatch.setattr(routes_mod, "probe", lambda p: probed.append(p) or {})
+    r = client.post("/api/encoder/test", json={"path": str(watch_root / "ghost.mkv")})
+    assert r.status_code == 400
+    assert r.json()["code"] == "invalid_path"
+    assert probed == []
 
 
 def test_jobs_list_is_empty_initially(client):
@@ -334,3 +423,50 @@ def test_a_contained_startup_failure_surfaces_at_the_route_not_a_fake_200(client
 
     with pytest.raises(RuntimeError):
         client.get("/api/encoder/jobs")
+
+
+# ---- Important 10: /events was the one unguarded accessor -----------------
+
+
+def test_events_endpoint_fails_loud_after_a_contained_startup_failure(client):
+    """`get_events()` had no `_startup_failed` check, and `get_store()` was
+    called *inside* the StreamingResponse generator -- after the 200 status
+    and SSE headers were already committed. A client hitting /events after a
+    contained startup failure got a successful-looking stream that died
+    mid-body instead of a normal error status."""
+    routes_mod.mark_startup_failed()
+
+    with pytest.raises(RuntimeError):
+        client.get("/api/encoder/events")
+
+
+def test_events_endpoint_resolves_the_store_before_the_streaming_response(client, monkeypatch):
+    """get_store() must be called before StreamingResponse is constructed --
+    otherwise a failure surfaces after 200 + SSE headers are already sent.
+
+    Calls the route coroutine directly rather than through TestClient: the
+    event stream is deliberately endless, and TestClient runs the whole ASGI
+    call to completion before returning, so `client.get(...)` here would
+    block forever (see test_downloader_routes.py's `_first_sse_chunk`).
+    """
+    import asyncio
+
+    calls = []
+    original_get_store = routes_mod.get_store
+
+    def _spy():
+        calls.append(1)
+        return original_get_store()
+
+    monkeypatch.setattr(routes_mod, "get_store", _spy)
+
+    async def _drive():
+        response = await routes_mod.events()
+        # get_store() must already have run by the time the coroutine
+        # returns the response -- before any body iteration -- which is
+        # exactly what distinguishes "resolved before the StreamingResponse"
+        # from "resolved on first read inside the generator".
+        assert calls, "get_store() must be called before the response is built"
+        await response.body_iterator.aclose()
+
+    asyncio.run(_drive())

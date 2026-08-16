@@ -42,30 +42,64 @@ def _fake_run(payload, returncode=0, stderr=""):
     return _run
 
 
-def test_extracts_the_fields_rules_evaluate(monkeypatch):
+@pytest.fixture
+def video(tmp_path):
+    """A real (empty) file for `probe()`'s isfile guard -- ffprobe itself is
+    always mocked in this module, so the content never matters, only that the
+    path exists."""
+    def _make(name="movie.mkv"):
+        path = tmp_path / name
+        path.write_bytes(b"")
+        return str(path)
+    return _make
+
+
+def test_probe_rejects_a_path_that_does_not_exist(tmp_path):
+    """Closes the SSRF/oracle hazard at the source: ffprobe resolves
+    protocols, not just paths, so probe() must never be handed something
+    that hasn't already been confirmed to be a real file."""
+    with pytest.raises(ProbeError, match="No such file"):
+        probe(str(tmp_path / "does-not-exist.mkv"))
+
+
+def test_extracts_the_fields_rules_evaluate(monkeypatch, video):
     monkeypatch.setattr(probe_mod.subprocess, "run", _fake_run(DOVI_JSON))
-    facts = probe("/media3/movie.mkv")
+    facts = probe(video())
     assert facts["height"] == 2160
     assert facts["video_codec"] == "hevc"
     assert facts["size"] == 21902137344
     assert facts["bit_rate"] == 24000000
 
 
-def test_detects_dolby_vision_and_hdr_from_side_data(monkeypatch):
+def test_a_float_formatted_bit_rate_is_still_coerced_to_int(monkeypatch, video):
+    """Some ffprobe builds emit float-formatted integers. Before the fix,
+    `_as_int("24000000.0")` returned None, coerced to 0 -- a bitrate rule
+    would silently never fire."""
+    payload = {
+        "format": {"size": "800", "bit_rate": "24000000.0", "duration": "10"},
+        "streams": [{"codec_type": "video", "codec_name": "h264",
+                     "width": 1920, "height": 1080, "pix_fmt": "yuv420p",
+                     "r_frame_rate": "24/1"}],
+    }
+    monkeypatch.setattr(probe_mod.subprocess, "run", _fake_run(payload))
+    assert probe(video())["bit_rate"] == 24000000
+
+
+def test_detects_dolby_vision_and_hdr_from_side_data(monkeypatch, video):
     """The rule that matters most: DoVi must not go to a GPU encoder, which
     would silently drop the profile and leave standard HDR."""
     monkeypatch.setattr(probe_mod.subprocess, "run", _fake_run(DOVI_JSON))
-    facts = probe("/media3/movie.mkv")
+    facts = probe(video())
     assert facts["dolby_vision"] is True
     assert facts["hdr"] is True
 
 
-def test_bit_depth_comes_from_pix_fmt(monkeypatch):
+def test_bit_depth_comes_from_pix_fmt(monkeypatch, video):
     monkeypatch.setattr(probe_mod.subprocess, "run", _fake_run(DOVI_JSON))
-    assert probe("/x.mkv")["bit_depth"] == 10
+    assert probe(video())["bit_depth"] == 10
 
 
-def test_eight_bit_sdr_reports_no_hdr(monkeypatch):
+def test_eight_bit_sdr_reports_no_hdr(monkeypatch, video):
     payload = {
         "format": {"size": "800", "bit_rate": "1000", "duration": "10"},
         "streams": [{"codec_type": "video", "codec_name": "h264",
@@ -73,27 +107,27 @@ def test_eight_bit_sdr_reports_no_hdr(monkeypatch):
                      "r_frame_rate": "24/1"}],
     }
     monkeypatch.setattr(probe_mod.subprocess, "run", _fake_run(payload))
-    facts = probe("/x.mkv")
+    facts = probe(video())
     assert facts["hdr"] is False
     assert facts["dolby_vision"] is False
     assert facts["bit_depth"] == 8
 
 
-def test_frame_rate_is_parsed_from_the_rational(monkeypatch):
+def test_frame_rate_is_parsed_from_the_rational(monkeypatch, video):
     monkeypatch.setattr(probe_mod.subprocess, "run", _fake_run(DOVI_JSON))
-    assert probe("/x.mkv")["frame_rate"] == pytest.approx(23.976, abs=0.001)
+    assert probe(video())["frame_rate"] == pytest.approx(23.976, abs=0.001)
 
 
-def test_audio_and_subtitle_tracks_are_listed(monkeypatch):
+def test_audio_and_subtitle_tracks_are_listed(monkeypatch, video):
     monkeypatch.setattr(probe_mod.subprocess, "run", _fake_run(DOVI_JSON))
-    facts = probe("/x.mkv")
+    facts = probe(video())
     assert facts["audio"] == [
         {"codec": "truehd", "channels": 8, "language": "eng", "title": "Atmos"}
     ]
     assert facts["subtitles"] == [{"codec": "subrip", "language": "eng"}]
 
 
-def test_cover_art_is_not_mistaken_for_the_video_stream(monkeypatch):
+def test_cover_art_is_not_mistaken_for_the_video_stream(monkeypatch, video):
     """An attached_pic stream is a thumbnail; treating it as the video track
     would report a 600x600 'resolution' and match the wrong rule."""
     payload = {
@@ -106,10 +140,10 @@ def test_cover_art_is_not_mistaken_for_the_video_stream(monkeypatch):
         ],
     }
     monkeypatch.setattr(probe_mod.subprocess, "run", _fake_run(payload))
-    assert probe("/x.mkv")["height"] == 1080
+    assert probe(video())["height"] == 1080
 
 
-def test_a_makemkv_rip_is_identified_by_its_tags(monkeypatch):
+def test_a_makemkv_rip_is_identified_by_its_tags(monkeypatch, video):
     """The signal that says "nothing has re-muxed this yet". Note it is HEVC:
     a codec check would call this already-encoded and skip a 92Mbps rip."""
     payload = {
@@ -122,13 +156,13 @@ def test_a_makemkv_rip_is_identified_by_its_tags(monkeypatch):
                               "SOURCE_ID-eng": "001011"}}],
     }
     monkeypatch.setattr(probe_mod.subprocess, "run", _fake_run(payload))
-    facts = probe("/media3/rip.mkv")
+    facts = probe(video("rip.mkv"))
     assert facts["source_tool"] == "makemkv"
     assert "libmakemkv" in facts["encoder_tag"]
     assert facts["video_codec"] == "hevc"   # ...and still needs encoding
 
 
-def test_an_encoded_file_reports_the_lavf_muxer(monkeypatch):
+def test_an_encoded_file_reports_the_lavf_muxer(monkeypatch, video):
     """HandBrake muxes through libavformat, so its output says Lavf, not
     HandBrake. The MakeMKV statistics tags are gone."""
     payload = {
@@ -139,11 +173,11 @@ def test_an_encoded_file_reports_the_lavf_muxer(monkeypatch):
                      "tags": {"DURATION": "02:56:11"}}],
     }
     monkeypatch.setattr(probe_mod.subprocess, "run", _fake_run(payload))
-    facts = probe("/media3/done.mkv")
+    facts = probe(video("done.mkv"))
     assert facts["source_tool"] == "lavf"
 
 
-def test_the_encoder_tag_key_is_matched_case_insensitively(monkeypatch):
+def test_the_encoder_tag_key_is_matched_case_insensitively(monkeypatch, video):
     """MakeMKV writes `encoder`; libav writes `ENCODER`."""
     for key in ("encoder", "ENCODER", "Encoder"):
         payload = {"format": {"size": "1", "bit_rate": "1", "duration": "1",
@@ -151,49 +185,49 @@ def test_the_encoder_tag_key_is_matched_case_insensitively(monkeypatch):
                    "streams": [{"codec_type": "video", "codec_name": "hevc",
                                 "width": 100, "height": 100}]}
         monkeypatch.setattr(probe_mod.subprocess, "run", _fake_run(payload))
-        assert probe("/x.mkv")["source_tool"] == "makemkv"
+        assert probe(video())["source_tool"] == "makemkv"
 
 
-def test_a_file_with_no_tags_is_unknown_not_an_error(monkeypatch):
+def test_a_file_with_no_tags_is_unknown_not_an_error(monkeypatch, video):
     payload = {"format": {"size": "1", "bit_rate": "1", "duration": "1"},
                "streams": [{"codec_type": "video", "codec_name": "h264",
                             "width": 100, "height": 100}]}
     monkeypatch.setattr(probe_mod.subprocess, "run", _fake_run(payload))
-    facts = probe("/x.mkv")
+    facts = probe(video())
     assert facts["source_tool"] == "unknown"
     assert facts["encoder_tag"] == ""
 
 
-def test_a_file_with_no_video_stream_raises(monkeypatch):
+def test_a_file_with_no_video_stream_raises(monkeypatch, video):
     payload = {"format": {"size": "1", "bit_rate": "1", "duration": "1"},
                "streams": [{"codec_type": "audio", "codec_name": "mp3"}]}
     monkeypatch.setattr(probe_mod.subprocess, "run", _fake_run(payload))
     with pytest.raises(ProbeError, match="no video stream"):
-        probe("/x.mp3")
+        probe(video("x.mp3"))
 
 
-def test_ffprobe_failure_raises_probe_error(monkeypatch):
+def test_ffprobe_failure_raises_probe_error(monkeypatch, video):
     monkeypatch.setattr(
         probe_mod.subprocess, "run", _fake_run({}, returncode=1, stderr="boom")
     )
     with pytest.raises(ProbeError, match="boom"):
-        probe("/x.mkv")
+        probe(video())
 
 
-def test_malformed_json_raises_probe_error(monkeypatch):
+def test_malformed_json_raises_probe_error(monkeypatch, video):
     def _run(*_a, **_k):
         return subprocess.CompletedProcess(["ffprobe"], 0, stdout="not json", stderr="")
     monkeypatch.setattr(probe_mod.subprocess, "run", _run)
     with pytest.raises(ProbeError):
-        probe("/x.mkv")
+        probe(video())
 
 
-def test_timeout_raises_probe_error(monkeypatch):
+def test_timeout_raises_probe_error(monkeypatch, video):
     def _run(*_a, **_k):
         raise subprocess.TimeoutExpired(cmd="ffprobe", timeout=30)
     monkeypatch.setattr(probe_mod.subprocess, "run", _run)
     with pytest.raises(ProbeError, match="timed out"):
-        probe("/x.mkv")
+        probe(video())
 
 
 def test_bit_depth_detection_for_p010le_format():
@@ -222,16 +256,17 @@ def test_bit_depth_detection_for_empty_format():
     assert probe_mod._bit_depth("") is None
 
 
-def test_side_data_is_requested(monkeypatch):
+def test_side_data_is_requested(monkeypatch, video):
     """HDR/DoVi detection depends on it, and it is not in ffprobe's defaults."""
     seen = {}
+    path = video()
 
     def _run(cmd, *_a, **_k):
         seen["cmd"] = cmd
         return subprocess.CompletedProcess(cmd, 0, json.dumps(DOVI_JSON), "")
 
     monkeypatch.setattr(probe_mod.subprocess, "run", _run)
-    probe("/x.mkv")
+    probe(path)
     assert "-show_streams" in seen["cmd"]
     assert "-show_format" in seen["cmd"]
-    assert seen["cmd"][-1] == "/x.mkv"
+    assert seen["cmd"][-1] == path

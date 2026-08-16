@@ -12,6 +12,7 @@ change a shape the Cutter's tests pin.
 
 import json
 import logging
+import os
 import re
 import subprocess
 
@@ -45,7 +46,19 @@ class ProbeError(RuntimeError):
 
 
 def probe(path: str) -> dict:
-    """Inspect *path*, returning the facts rules and the UI need."""
+    """Inspect *path*, returning the facts rules and the UI need.
+
+    Requires *path* to already be a real, existing file. ffprobe resolves
+    protocols, not just paths -- handing it a URL makes it issue a real
+    network request -- so this guard closes that hazard at the source rather
+    than relying on every caller to have checked first. Callers that accept a
+    path from outside this process (routes.py's ``/test``) must still resolve
+    and containment-check it *before* calling in, since this check alone
+    can't tell "legitimate library file" from "any other file on disk".
+    """
+    if not os.path.isfile(path):
+        raise ProbeError(f"No such file: {path}")
+
     cmd = [
         "ffprobe",
         "-loglevel", "warning",
@@ -186,8 +199,12 @@ def _source_tool(encoder_tag: str) -> str:
 
 
 def _as_int(value: object) -> int | None:
+    # Some ffprobe builds emit float-formatted integers (e.g. bit_rate as
+    # "24000000.0"); routing through float() first handles both that and the
+    # plain-integer-string case in one path instead of silently coercing the
+    # float form to None.
     try:
-        return int(str(value))
+        return int(float(str(value)))
     except (TypeError, ValueError):
         return None
 

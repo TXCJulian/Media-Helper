@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import queue as queue_mod
 import time
 from typing import Any
@@ -71,6 +72,10 @@ def get_client() -> EncoderClient:
 
 def get_events() -> EventBroadcaster:
     global _events
+    if _startup_failed:
+        raise RuntimeError(
+            "Encoder failed to start; check the server logs for the cause"
+        )
     if _events is None:
         _events = EventBroadcaster()
     return _events
@@ -366,11 +371,46 @@ def replace_rules(payload: RulesIn) -> dict | JSONResponse:
     return {"saved": len(rules)}
 
 
+def _resolve_watch_path(path: str) -> str | None:
+    """Resolve *path* against the watch-path allow-list, or None if it escapes.
+
+    Mirrors `resolve_cutter_path`/`validate_path` in main.py: realpath first
+    so a symlink cannot point outside the configured roots, then require
+    containment under one of them. Kept as a plain absolute-path check --
+    rather than adopting the cutter's `{path, base}` + label shape -- because
+    `ENCODER_WATCH_PATHS` has no label system the way `BASE_PATH_LABELS`
+    does; every entry is already a full in-container path.
+    """
+    resolved = os.path.realpath(path)
+    roots = [os.path.realpath(p) for p in config.ENCODER_WATCH_PATHS]
+    for root in roots:
+        if resolved == root or resolved.startswith(root + os.sep):
+            return resolved
+    return None
+
+
 @router.post("/test", response_model=None)
 def test_against_file(payload: TestIn) -> dict | JSONResponse:
+    """Probe a candidate file against the stored rules, without encoding it.
+
+    Unauthenticated by default (auth is off unless AUTH_USERNAME/PASSWORD are
+    set) and ffprobe resolves protocols, not just paths -- so without this
+    containment check this endpoint would let any caller who can reach the
+    API make the server issue outbound requests (`{"path":
+    "http://internal-host/..."}` ) or use the probe-failure message as a
+    file-existence/permission oracle for arbitrary paths on the container.
+    Requiring the resolved path to be a real file under a configured watch
+    root closes both.
+    """
     store = get_store()
+    resolved = _resolve_watch_path(payload.path)
+    if resolved is None:
+        return _error(400, "invalid_path",
+                      "Path is not within a configured watch root")
+    if not os.path.isfile(resolved):
+        return _error(400, "invalid_path", "No such file")
     try:
-        facts = probe(payload.path)
+        facts = probe(resolved)
     except ProbeError as exc:
         return _error(400, "probe_failed", str(exc))
     rules = store.list_rules()
@@ -436,12 +476,19 @@ def delete_job(job_id: str):
 @router.get("/events")
 async def events() -> StreamingResponse:
     broadcaster = get_events()
+    # Resolved *before* the StreamingResponse is constructed -- once that
+    # response starts, the 200 status and SSE headers are already committed,
+    # so a store lookup that fails inside the generator would surface as a
+    # stream that dies mid-body instead of a normal error status. Calling it
+    # here lets a contained startup failure (get_store() raising) become the
+    # ordinary 500 every other guarded route already gives.
+    store = get_store()
     subscription = broadcaster.subscribe()
 
     async def stream():
         last_beat = time.monotonic()
         try:
-            for job in get_store().list_jobs():
+            for job in store.list_jobs():
                 yield f"data: {json.dumps(job_to_payload(job))}\n\n"
             while True:
                 try:
