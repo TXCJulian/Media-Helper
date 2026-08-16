@@ -22,7 +22,13 @@ from app.encoder.store import EncoderStore
 
 logger = logging.getLogger(__name__)
 
-_SCAN_INTERVAL = 5.0
+# Ample given the settle window (ENCODER_SETTLE_SECONDS defaults to 30s): a
+# file that just started copying does not need to be rechecked every 5s, and
+# on a 10k-file library (a normal movie collection with per-title
+# subfolders) a 5s cadence meant a full os.walk plus one active_source_paths
+# query *per file* every five seconds -- a continuous stat storm made worse
+# on network-mounted libraries, which is exactly where this watcher runs.
+_SCAN_INTERVAL = 30.0
 
 
 class SettleTracker:
@@ -124,11 +130,18 @@ class EncoderWatcher:
             self._scanner = None
 
     def scan_existing(self) -> None:
-        """Walk every watch path once, feeding candidates to the tracker."""
+        """Walk every watch path once, feeding candidates to the tracker.
+
+        Fetches the active-source-paths set once for the whole scan rather
+        than once per file: on a 10k-file library that was 10k SQL queries
+        every scan for no benefit, since nothing in the loop below changes
+        which sources are active partway through a single walk.
+        """
+        active = self._store.active_source_paths()
         for root in self._paths:
             for dirpath, _dirs, files in os.walk(root):
                 for name in files:
-                    self._consider(os.path.join(dirpath, name))
+                    self._consider(os.path.join(dirpath, name), active)
 
     def _scan_loop(self) -> None:
         while not self._stopping.wait(timeout=_SCAN_INTERVAL):
@@ -137,7 +150,16 @@ class EncoderWatcher:
             except Exception:
                 logger.exception("Watch rescan failed")
 
-    def _consider(self, path: str) -> None:
+    def _consider(self, path: str, active: set[str] | None = None) -> None:
+        """Consider *path* for dispatch.
+
+        *active* lets `scan_existing()` pass in one shared
+        `active_source_paths()` result for the whole walk. Event-driven calls
+        (from the watchdog handler) have no such batch to share and fall back
+        to a fresh, single-file query -- events are comparatively rare next
+        to a full rescan, so that per-call query is not the hot path this
+        exists to fix.
+        """
         if os.path.splitext(path)[1].lower() not in self._extensions:
             return
         if os.path.basename(path).startswith(".hbenc-"):
@@ -146,8 +168,16 @@ class EncoderWatcher:
         try:
             size = os.path.getsize(path)
         except OSError:
+            # The file vanished between being listed and being stat'd (a
+            # cancelled rip cleaned up, a failed copy removed). Without this,
+            # SettleTracker._seen would keep an entry for a path that will
+            # never be observed again, growing unbounded over the watcher's
+            # lifetime.
+            self._tracker.forget(path)
             return
-        if path in self._store.active_source_paths():
+        if active is None:
+            active = self._store.active_source_paths()
+        if path in active:
             return
         if not self._tracker.saw(path, size):
             return
