@@ -44,7 +44,7 @@ const cards: {
   {
     id: 'lyrics',
     icon: '¶',
-    title: 'Lyrics Transcriber',
+    title: 'Lyric Transcriber',
     desc: 'Transcribe lyrics from audio files with whisper.',
     colorClass: 'card-lyrics',
     iconClass: 'bg-[var(--accent-3-glow)] text-[var(--accent-3)]',

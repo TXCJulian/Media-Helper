@@ -18,9 +18,9 @@ A media management tool for renaming TV shows, music files, transcribing lyrics,
 | --- | --- |
 | ![Episode Panel](docs/screenshots/episode-panel.png) | ![Music Panel](docs/screenshots/music-panel.png) |
 
-| Lyrics Transcriber | Downloader |
+| Lyric Transcriber | Downloader |
 | --- | --- |
-| ![Lyrics Panel](docs/screenshots/lyrics-panel.png) | ![Downloader Panel](docs/screenshots/downloader-panel.png) |
+| ![Lyric Panel](docs/screenshots/lyrics-panel.png) | ![Downloader Panel](docs/screenshots/downloader-panel.png) |
 
 | Media Cutter (Server) | Media Cutter (Upload) |
 | --- | --- |
@@ -46,7 +46,7 @@ Media-Helper is a dockerized tool with five modules:
 
 1. **Episode Renamer** - Renames TV show episodes using TMDB metadata
 2. **Music Renamer** - Renames music files based on ID3/audio tags
-3. **Lyrics Transcriber** - Transcribes lyrics from audio files using AI (HDemucs + Whisper + Genius)
+3. **Lyric Transcriber** - Transcribes lyrics from audio files using AI (HDemucs + Whisper + Genius)
 4. **Media Cutter** - Trim and cut audio/video files with waveform preview and per-track codec control
 5. **Downloader** - Download media via yt-dlp with codec/format/quality selection, playlist support, and cookie authentication
 
@@ -273,7 +273,7 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `TMDB_API_KEY` | TMDB API key (**required**) | - |
 | `VALID_VIDEO_EXT` | Video file extensions (CSV) | `.mp4,.mkv,.mov,.avi` |
 | `VALID_MUSIC_EXT` | Music file extensions (CSV) | `.flac,.wav,.mp3` |
-| `TRANSCRIBER_URL` | Lyrics transcriber service URL | `http://lyric-transcriber:3334` |
+| `TRANSCRIBER_URL` | Lyric transcriber service URL | `http://lyric-transcriber:3334` |
 | `ENABLED_FEATURES` | Active modules (CSV): `episodes,music,lyrics,cutter,download,encoder` | `episodes,music,cutter,download` (+ `lyrics` when `TRANSCRIBER_URL` is set) |
 | `ALLOWED_ORIGINS` | CORS allowed origins | `http://localhost:3333` |
 | `VALID_CUTTER_EXT` | Cutter file extensions (CSV) | `.mp4,.mkv,.mov,.avi,.webm,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.opus,.ogg,.aiff` |
@@ -644,7 +644,7 @@ docker network inspect helper-network
 docker exec media-helper_frontend cat /etc/nginx/conf.d/default.conf | grep proxy_pass
 ```
 
-### Lyrics transcriber shows "Offline"
+### Lyric transcriber shows "Offline"
 
 1. Ensure the GPU service is running: `docker compose --profile gpu ps`
 2. Check the transcriber health: `curl http://localhost:3334/health`

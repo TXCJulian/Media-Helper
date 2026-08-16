@@ -303,7 +303,7 @@ export default function LyricsPanel({
   )
 
   return (
-    <PanelLayout title="Lyrics Transcriber" onBack={onBack} rightElement={healthPill}>
+    <PanelLayout title="Lyric Transcriber" onBack={onBack} rightElement={healthPill}>
       <form onSubmit={handleSubmit}>
         <FormSection label="Search">
           <div className="flex gap-3">
