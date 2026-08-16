@@ -227,6 +227,21 @@ def _as_float(value: object) -> float | None:
 # every 4:2:2 and 4:4:4 variant was silently wrong.
 _SEMI_PLANAR_PIX_FMT = re.compile(r"^p[024](?P<depth>\d{2})(?:le|be)?$")
 
+# Packed 4:2:2/4:4:4 formats share the shape: y210le, y212le, y410le, y216le.
+# Same trap as above -- the first digit is subsampling.
+_PACKED_PIX_FMT = re.compile(r"^[xy][0-9](?P<depth>\d{2})(?:le|be)?$")
+
+# Float formats state their width after an 'f': gbrpf32le, gbrapf32le.
+_FLOAT_PIX_FMT = re.compile(r"f(?P<depth>\d{2})(?:le|be)?$")
+
+# Interleaved formats state TOTAL bits across all components: rgb24 is 8 bits
+# each, rgb48le is 16 each, rgba64le is 16 each. Dividing by the component
+# count is what makes these comparable to every other format's per-component
+# depth, which is what a bit_depth rule means.
+_INTERLEAVED_PIX_FMT = re.compile(
+    r"^(?P<comp>rgba|bgra|argb|abgr|rgb|bgr|ya|gray)(?P<total>\d{1,2})(?:le|be)?$"
+)
+
 # The conventional family: depth digits trail a 'p' at the END of the name --
 # yuv420p10le, yuv422p12le, gbrp10le. Anchored so it cannot pick up the
 # subsampling digits earlier in the name.
@@ -236,16 +251,36 @@ _PLANAR_PIX_FMT = re.compile(r"p(?P<depth>\d{1,2})(?:le|be)?$")
 def _bit_depth(pix_fmt: str) -> int | None:
     """Bit depth from the pixel format name, e.g. yuv420p10le -> 10.
 
+    Always *per component*, so a rule comparing bit_depth means the same thing
+    whatever the format family:
+
     - p010le, p210le, p410le → 10; p016le, p216le, p416le → 16
+    - y210le → 10, y212le → 12 (packed; first digit is subsampling)
+    - rgb24 → 8, rgb48le → 16, rgba64le → 16 (interleaved; states the total)
+    - gbrapf32le → 32 (float)
     - yuv420p10le, yuv420p9le, yuv422p12le → depth trails the final 'p'
-    - yuv420p, nv12, rgb24 → 8 (no depth digits)
+    - yuv420p, nv12 → 8 (no depth digits)
 
     Read from pix_fmt rather than bits_per_raw_sample because the latter is
     frequently absent on exactly the HDR files where depth decides the rule.
     """
     if not pix_fmt:
         return None
-    match = _SEMI_PLANAR_PIX_FMT.match(pix_fmt) or _PLANAR_PIX_FMT.search(pix_fmt)
+
+    interleaved = _INTERLEAVED_PIX_FMT.match(pix_fmt)
+    if interleaved:
+        components = len(interleaved.group("comp"))
+        if interleaved.group("comp") == "gray":
+            components = 1
+        total = int(interleaved.group("total"))
+        return total // components if total % components == 0 else total
+
+    match = (
+        _SEMI_PLANAR_PIX_FMT.match(pix_fmt)
+        or _PACKED_PIX_FMT.match(pix_fmt)
+        or _FLOAT_PIX_FMT.search(pix_fmt)
+        or _PLANAR_PIX_FMT.search(pix_fmt)
+    )
     if match:
         return int(match.group("depth"))
     return 8

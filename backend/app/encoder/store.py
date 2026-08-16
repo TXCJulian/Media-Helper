@@ -152,13 +152,41 @@ class EncoderStore:
 
     # ---- jobs ------------------------------------------------------------
 
-    def create_job(self, source_path: str) -> Job:
+    def create_job(
+        self,
+        source_path: str,
+        size: int | None = None,
+        mtime_ns: int | None = None,
+    ) -> Job:
+        """Create a job, recording the file's fingerprint in the same transaction.
+
+        The two writes are deliberately atomic. Marking the file as "seen"
+        before the job existed meant that if job creation or planning raised --
+        or the process died between them -- the fingerprint was durable with no
+        job behind it, and every later scan suppressed the file. The result was
+        a file silently never processed, which is strictly worse than the
+        retry loop the fingerprint exists to prevent.
+
+        Committing them together gives the property we actually want: the file
+        is marked decided exactly when a job exists to represent that decision.
+        A later failure in planning leaves both rows, so the job is visible as
+        `failed` and the file is not re-probed forever.
+        """
         job_id = uuid.uuid4().hex
         with self._lock:
             self._conn.execute(
                 "INSERT INTO jobs (id, source_path, stage) VALUES (?, ?, 'settling')",
                 (job_id, source_path),
             )
+            if size is not None and mtime_ns is not None:
+                self._conn.execute(
+                    "INSERT INTO seen_files (path, size, mtime_ns, seen_at) "
+                    "VALUES (?, ?, ?, datetime('now')) "
+                    "ON CONFLICT(path) DO UPDATE SET "
+                    "size = excluded.size, mtime_ns = excluded.mtime_ns, "
+                    "seen_at = excluded.seen_at",
+                    (source_path, size, mtime_ns),
+                )
             self._conn.commit()
             row = self._conn.execute(
                 "SELECT * FROM jobs WHERE id = ?", (job_id,)
@@ -272,6 +300,38 @@ class EncoderStore:
                 (path, size, mtime_ns),
             )
             self._conn.commit()
+
+    def prune_seen(self, roots: list[str], present: set[str]) -> int:
+        """Drop dedup records under *roots* for files no longer on disk.
+
+        Without this the table only grows: every file ever deleted or renamed
+        leaves a row behind, so library churn accumulates forever.
+
+        Scoped to *roots* and driven by what a completed walk actually saw.
+        The caller must skip a root it could not read -- an unmounted share
+        walks as empty, and pruning on that would discard every record it
+        holds and re-detect the whole share when it came back.
+        """
+        if not roots:
+            return 0
+        with self._lock:
+            rows = self._conn.execute("SELECT path FROM seen_files").fetchall()
+            stale = [
+                r["path"]
+                for r in rows
+                if r["path"] not in present
+                and any(
+                    r["path"] == root or r["path"].startswith(root + os.sep)
+                    for root in roots
+                )
+            ]
+            if stale:
+                self._conn.executemany(
+                    "DELETE FROM seen_files WHERE path = ?",
+                    [(p,) for p in stale],
+                )
+                self._conn.commit()
+        return len(stale)
 
     def forget_seen(self, path: str) -> bool:
         """Drop the dedup record for *path* so the watcher reconsiders it.

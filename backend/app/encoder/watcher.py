@@ -87,7 +87,10 @@ class EncoderWatcher:
     def __init__(
         self,
         store: EncoderStore,
-        on_settled: Callable[[str], None],
+        # (path, size, mtime_ns). The fingerprint is passed through so the
+        # callback can persist it atomically with the job it creates; see the
+        # note at the dispatch site.
+        on_settled: Callable[[str, int, int], None],
         paths: list[str],
         settle_seconds: int,
         valid_extensions: set[str],
@@ -139,10 +142,28 @@ class EncoderWatcher:
         """
         active = self._store.active_source_paths()
         seen = self._store.seen_fingerprints()
+        present: set[str] = set()
+        walked: list[str] = []
         for root in self._paths:
+            if not os.path.isdir(root):
+                # An unmounted share walks as empty. Recording it as "walked"
+                # would let the prune below delete every record it holds and
+                # re-detect the whole share when it returned.
+                logger.warning("Watch path %s is not readable; skipping", root)
+                continue
+            walked.append(root)
             for dirpath, _dirs, files in os.walk(root):
                 for name in files:
-                    self._consider(os.path.join(dirpath, name), active, seen)
+                    path = os.path.join(dirpath, name)
+                    present.add(path)
+                    self._consider(path, active, seen)
+
+        # Drop records for files that have since been deleted or renamed;
+        # otherwise the table grows with library churn forever.
+        removed = self._store.prune_seen(walked, present)
+        if removed:
+            logger.info("Pruned %d dedup record(s) for files no longer present",
+                        removed)
 
     def _scan_loop(self) -> None:
         while not self._stopping.wait(timeout=_SCAN_INTERVAL):
@@ -203,12 +224,13 @@ class EncoderWatcher:
         if not self._tracker.saw(path, size):
             return
         self._tracker.forget(path)
-        # Recorded before dispatch, not after: if planning raises we still
-        # decided about this file, and retrying it every 30s forever is the
-        # behaviour this exists to prevent. A genuine replacement changes the
-        # fingerprint and gets through regardless.
-        self._store.mark_seen(path, size, mtime_ns)
+        # The fingerprint travels with the dispatch rather than being written
+        # here first: the callback records it atomically with the job row, so
+        # a failure to create that row leaves the file un-suppressed and it is
+        # retried. Writing it here meant a throw between the two left a
+        # durable fingerprint with no job, and the file was never looked at
+        # again.
         try:
-            self._on_settled(path)
+            self._on_settled(path, size, mtime_ns)
         except Exception:
             logger.exception("Failed to plan a job for %s", path)

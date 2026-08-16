@@ -100,6 +100,33 @@ def store(tmp_path):
     s.close()
 
 
+class Planner:
+    """Stands in for main.py's wiring: create the job, then plan it.
+
+    Tests drive the real `create_job(path, size, mtime_ns)` rather than a bare
+    recorder, because the fingerprint that suppresses re-detection is written
+    by that call -- a fake callback would exercise none of it.
+
+    *fails* injects a throw either "before" or "after" the job row exists,
+    which is the difference between a file that must be retried and one that
+    must not.
+    """
+
+    def __init__(self, store, fails=None):
+        self._store = store
+        self._fails = fails
+        self.paths: list[str] = []
+        self.job_ids: list[str] = []
+
+    def __call__(self, path, size, mtime_ns):
+        self.paths.append(path)
+        if self._fails == "before":
+            raise RuntimeError("planning failed before the job existed")
+        self.job_ids.append(self._store.create_job(path, size, mtime_ns).id)
+        if self._fails == "after":
+            raise RuntimeError("planning failed after the job existed")
+
+
 def make_watcher(store, tmp_path, on_settled, settle_seconds=0):
     return EncoderWatcher(
         store=store,
@@ -113,7 +140,8 @@ def make_watcher(store, tmp_path, on_settled, settle_seconds=0):
 def test_scan_existing_dispatches_a_settled_file(store, tmp_path):
     (tmp_path / "movie.mkv").write_bytes(b"data")
     settled = []
-    watcher = make_watcher(store, tmp_path, settled.append)
+    watcher = make_watcher(
+        store, tmp_path, lambda path, _s, _m: settled.append(path))
 
     watcher.scan_existing()  # first sight: not settled yet
     assert settled == []
@@ -129,7 +157,8 @@ def test_a_still_growing_file_is_never_dispatched(store, tmp_path):
     target = tmp_path / "movie.mkv"
     target.write_bytes(b"data")
     settled = []
-    watcher = make_watcher(store, tmp_path, settled.append)
+    watcher = make_watcher(
+        store, tmp_path, lambda path, _s, _m: settled.append(path))
 
     watcher.scan_existing()  # first sight
     target.write_bytes(b"data" * 100)  # still growing between scans
@@ -148,7 +177,8 @@ def test_hbenc_staging_files_are_never_dispatched(store, tmp_path):
     (tmp_path / ".hbenc-abc123.mkv").write_bytes(b"data")
     (tmp_path / ".hbenc-abc123-tok.mkv").write_bytes(b"data")
     settled = []
-    watcher = make_watcher(store, tmp_path, settled.append)
+    watcher = make_watcher(
+        store, tmp_path, lambda path, _s, _m: settled.append(path))
 
     watcher.scan_existing()
     watcher.scan_existing()
@@ -161,7 +191,8 @@ def test_files_with_an_active_job_are_not_redispatched(store, tmp_path):
     target.write_bytes(b"data")
     store.create_job(str(target))  # active source path (stage "settling")
     settled = []
-    watcher = make_watcher(store, tmp_path, settled.append)
+    watcher = make_watcher(
+        store, tmp_path, lambda path, _s, _m: settled.append(path))
 
     watcher.scan_existing()
     watcher.scan_existing()
@@ -172,7 +203,8 @@ def test_files_with_an_active_job_are_not_redispatched(store, tmp_path):
 def test_non_video_extensions_are_ignored(store, tmp_path):
     (tmp_path / "notes.txt").write_bytes(b"data")
     settled = []
-    watcher = make_watcher(store, tmp_path, settled.append)
+    watcher = make_watcher(
+        store, tmp_path, lambda path, _s, _m: settled.append(path))
 
     watcher.scan_existing()
     watcher.scan_existing()
@@ -198,7 +230,8 @@ def test_a_file_vanishing_mid_settle_is_never_dispatched(store, tmp_path):
     target = tmp_path / "movie.mkv"
     target.write_bytes(b"data")
     settled = []
-    watcher = make_watcher(store, tmp_path, settled.append)
+    watcher = make_watcher(
+        store, tmp_path, lambda path, _s, _m: settled.append(path))
 
     watcher._consider(str(target))  # first sight: tracker now holds an entry
     target.unlink()
@@ -209,7 +242,7 @@ def test_a_file_vanishing_mid_settle_is_never_dispatched(store, tmp_path):
 
 
 def test_start_and_stop_leave_no_thread_running(store, tmp_path):
-    watcher = make_watcher(store, tmp_path, lambda path: None)
+    watcher = make_watcher(store, tmp_path, lambda *_a: None)
     watcher.start()
     try:
         assert watcher._scanner is not None
@@ -236,7 +269,7 @@ def test_scan_existing_queries_active_source_paths_once_per_scan(store, tmp_path
         return original()
 
     monkeypatch.setattr(store, "active_source_paths", _spy)
-    watcher = make_watcher(store, tmp_path, lambda path: None)
+    watcher = make_watcher(store, tmp_path, lambda *_a: None)
 
     watcher.scan_existing()
 
@@ -257,7 +290,7 @@ def test_the_scan_interval_is_generous_given_the_settle_window():
 def test_start_with_no_paths_does_not_start_threads(store):
     watcher = EncoderWatcher(
         store=store,
-        on_settled=lambda path: None,
+        on_settled=lambda *_a: None,
         paths=[],
         settle_seconds=0,
         valid_extensions={".mkv"},
@@ -269,33 +302,24 @@ def test_start_with_no_paths_does_not_start_threads(store):
 
 
 # ---------------------------------------------------------------------------
-# Re-detection of files we have already judged.
+# Re-detection of files already judged.
 #
-# Found in production, not by these tests: the deployed watcher created a fresh
-# job for the same file every ~60s (scan interval + settle window) forever,
-# because a job in a *terminal* stage leaves its path in neither
-# `active_source_paths()` nor the settle tracker. Each pass costs an ffprobe
-# subprocess and a job row, for every file in the library that no rule matches
-# -- which is most of them.
+# Found in production: the deployed watcher created a fresh job for the same
+# file every ~60s (scan interval + settle window) forever, because a job in a
+# *terminal* stage leaves its path in neither `active_source_paths()` nor the
+# settle tracker. Each pass costs an ffprobe subprocess and a job row, for
+# every file no rule matches -- which is most of a library.
 # ---------------------------------------------------------------------------
 
 
-def _finish_job(store, path, size, stage, output_path=None, encoded_size=None):
-    """Record a job for *path* the way the queue would, ending at *stage*.
-
-    The dedup record itself is written by the watcher at dispatch (and by the
-    queue after a publish); this only builds the job history alongside it, so
-    that tests which purge that history still exercise the real code path.
-    """
-    job = store.create_job(path)
-    store.set_plan(job.id, None, None, {"size": size}, size)
+def _finish(store, job_id, stage, output_path=None, encoded_size=None):
+    """Take an existing job to a terminal stage, as the queue would."""
     if output_path is not None:
-        store.set_result(job.id, output_path, encoded_size)
-    store.set_stage(job.id, stage)
-    return job
+        store.set_result(job_id, output_path, encoded_size)
+    store.set_stage(job_id, stage)
 
 
-def _publish(store, path, source_path=None):
+def _republish(store, path):
     """Record what the queue records after a successful swap."""
     st = os.stat(path)
     store.mark_seen(path, st.st_size, st.st_mtime_ns)
@@ -303,169 +327,254 @@ def _publish(store, path, source_path=None):
 
 @pytest.mark.parametrize("stage", ["skipped", "failed", "done", "cancelled"])
 def test_a_file_with_a_terminal_job_is_not_rejobbed(store, tmp_path, stage):
-    """The production loop: reproduces it by driving the scan repeatedly."""
     target = tmp_path / "movie.mkv"
     target.write_bytes(b"data" * 100)
-    settled = []
-    watcher = make_watcher(store, tmp_path, settled.append)
+    planner = Planner(store)
+    watcher = make_watcher(store, tmp_path, planner)
 
     watcher.scan_existing()
     watcher.scan_existing()
-    assert settled == [str(target)]  # dispatched once, as before
+    assert planner.paths == [str(target)]
 
-    _finish_job(store, str(target), target.stat().st_size, stage)
+    _finish(store, planner.job_ids[0], stage)
 
     # Ten further passes stand in for "forever". Before the fix this appended
     # one dispatch every second scan.
     for _ in range(10):
         watcher.scan_existing()
-    assert settled == [str(target)], f"re-dispatched after reaching {stage!r}"
+    assert planner.paths == [str(target)], f"re-dispatched after reaching {stage!r}"
 
 
 def test_a_replaced_file_is_reconsidered(store, tmp_path):
-    """The suppression is keyed on size, not path: a genuine re-rip must still
-    be picked up, otherwise one skipped job would blacklist a path forever."""
+    """Suppression is keyed on the file, not the path: a genuine re-rip must
+    still be picked up, or one skipped job would blacklist a path forever."""
     target = tmp_path / "movie.mkv"
     target.write_bytes(b"data" * 100)
-    settled = []
-    watcher = make_watcher(store, tmp_path, settled.append)
+    planner = Planner(store)
+    watcher = make_watcher(store, tmp_path, planner)
 
     watcher.scan_existing()
     watcher.scan_existing()
-    assert settled == [str(target)]
-    _finish_job(store, str(target), target.stat().st_size, "skipped")
+    _finish(store, planner.job_ids[0], "skipped")
 
     watcher.scan_existing()
-    assert settled == [str(target)]  # unchanged file stays suppressed
+    assert planner.paths == [str(target)]  # unchanged file stays suppressed
 
-    target.write_bytes(b"different content entirely" * 50)  # re-ripped
+    target.write_bytes(b"different content entirely" * 50)
     watcher.scan_existing()
     watcher.scan_existing()
-    assert settled == [str(target), str(target)]
-
-
-def test_our_own_published_output_is_not_rejobbed(store, tmp_path):
-    """After a successful swap the file at the source path IS the encode, at a
-    new size. Suppressing only the original size would let a still-matching
-    rule re-encode it on every pass -- silent generation loss."""
-    target = tmp_path / "movie.mkv"
-    target.write_bytes(b"original" * 100)
-    original_size = target.stat().st_size
-    settled = []
-    watcher = make_watcher(store, tmp_path, settled.append)
-
-    watcher.scan_existing()
-    watcher.scan_existing()
-    assert settled == [str(target)]
-
-    # The encode publishes over the source path, smaller than the original.
-    target.write_bytes(b"encoded" * 10)
-    _finish_job(store, str(target), original_size, "done",
-                output_path=str(target), encoded_size=target.stat().st_size)
-    _publish(store, str(target))
-
-    for _ in range(6):
-        watcher.scan_existing()
-    assert settled == [str(target)]
-
-
-def test_output_published_under_a_new_extension_is_not_rejobbed(store, tmp_path):
-    """A container change publishes beside the source under a different name.
-    That file is our own output and must not be treated as a new arrival."""
-    source = tmp_path / "movie.mkv"
-    published = tmp_path / "movie.mp4"
-    source.write_bytes(b"original" * 100)
-    settled = []
-    watcher = make_watcher(store, tmp_path, settled.append)
-
-    watcher.scan_existing()
-    watcher.scan_existing()
-    assert settled == [str(source)]
-
-    source.unlink()
-    published.write_bytes(b"encoded" * 10)
-    _finish_job(store, str(source), 800, "done",
-                output_path=str(published),
-                encoded_size=published.stat().st_size)
-    _publish(store, str(published))
-
-    for _ in range(6):
-        watcher.scan_existing()
-    assert settled == [str(source)]
-
-
-def test_dedup_survives_job_history_expiry(store, tmp_path):
-    """Job rows are history and expire; "have I looked at this file" must not.
-
-    Deriving the dedup state from the jobs table meant that one ENCODER_JOB_TTL
-    after an encode, `purge_expired()` removed the evidence and the whole
-    library became eligible for reprocessing again -- re-encoding published
-    output under any rule that still matched.
-    """
-    target = tmp_path / "movie.mkv"
-    target.write_bytes(b"data" * 100)
-    settled = []
-    watcher = make_watcher(store, tmp_path, settled.append)
-
-    watcher.scan_existing()
-    watcher.scan_existing()
-    assert settled == [str(target)]
-    _finish_job(store, str(target), target.stat().st_size, "done",
-                output_path=str(target), encoded_size=target.stat().st_size)
-
-    # Expire every job row, exactly as the maintenance loop does.
-    assert store.purge_expired(0) >= 1
-    assert store.list_jobs() == []
-
-    for _ in range(6):
-        watcher.scan_existing()
-    assert settled == [str(target)], "re-detected once its job history expired"
+    assert planner.paths == [str(target), str(target)]
 
 
 def test_a_same_size_replacement_is_detected(store, tmp_path):
     """Re-copying a file restores its byte count but not its mtime.
 
     Found in live testing: the original had been copied back over a completed
-    encode, the size matched the historical source size, and a size-only check
+    encode, its size matched the historical source size, and a size-only check
     meant the watcher never looked at it again.
     """
     target = tmp_path / "movie.mkv"
     target.write_bytes(b"A" * 4096)
-    settled = []
-    watcher = make_watcher(store, tmp_path, settled.append)
+    os.utime(target, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+    planner = Planner(store)
+    watcher = make_watcher(store, tmp_path, planner)
 
     watcher.scan_existing()
     watcher.scan_existing()
-    assert settled == [str(target)]
+    assert planner.paths == [str(target)]
+    _finish(store, planner.job_ids[0], "done")
 
-    os.utime(target, ns=(1_000_000_000, 1_000_000_000))
     watcher.scan_existing()
+    assert planner.paths == [str(target)]  # identical fingerprint, suppressed
 
     target.write_bytes(b"B" * 4096)
-    os.utime(target, ns=(2_000_000_000, 2_000_000_000))
+    os.utime(target, ns=(1_700_000_060_000_000_000, 1_700_000_060_000_000_000))
     assert target.stat().st_size == 4096  # same size, new mtime
 
     watcher.scan_existing()
     watcher.scan_existing()
-    assert settled == [str(target), str(target)]
+    assert planner.paths == [str(target), str(target)]
+
+
+def test_our_own_published_output_is_not_rejobbed(store, tmp_path):
+    """After a successful swap the file at the source path IS the encode, at a
+    new size and mtime. Without re-fingerprinting it, a still-matching rule
+    would re-encode it on every pass -- silent generation loss."""
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"original" * 100)
+    planner = Planner(store)
+    watcher = make_watcher(store, tmp_path, planner)
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert planner.paths == [str(target)]
+
+    target.write_bytes(b"encoded" * 10)  # the swap
+    _finish(store, planner.job_ids[0], "done",
+            output_path=str(target), encoded_size=target.stat().st_size)
+    _republish(store, str(target))
+
+    for _ in range(6):
+        watcher.scan_existing()
+    assert planner.paths == [str(target)]
+
+
+def test_output_published_under_a_new_extension_is_not_rejobbed(store, tmp_path):
+    """A container change publishes beside the source under a different name.
+    That file is our own output and must not look like a new arrival."""
+    source = tmp_path / "movie.mkv"
+    published = tmp_path / "movie.mp4"
+    source.write_bytes(b"original" * 100)
+    planner = Planner(store)
+    watcher = make_watcher(store, tmp_path, planner)
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert planner.paths == [str(source)]
+
+    source.unlink()
+    published.write_bytes(b"encoded" * 10)
+    _finish(store, planner.job_ids[0], "done",
+            output_path=str(published), encoded_size=published.stat().st_size)
+    _republish(store, str(published))
+
+    for _ in range(6):
+        watcher.scan_existing()
+    assert planner.paths == [str(source)]
+
+
+def test_dedup_survives_job_history_expiry(store, tmp_path):
+    """Job rows are history and expire; "have I looked at this file" must not.
+
+    Deriving dedup from the jobs table meant that one ENCODER_JOB_TTL after an
+    encode, `purge_expired()` removed the evidence and the whole library became
+    eligible for reprocessing -- re-encoding published output under any rule
+    that still matched.
+    """
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"data" * 100)
+    planner = Planner(store)
+    watcher = make_watcher(store, tmp_path, planner)
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+    _finish(store, planner.job_ids[0], "done",
+            output_path=str(target), encoded_size=target.stat().st_size)
+
+    assert store.purge_expired(0) >= 1
+    assert store.list_jobs() == []
+
+    for _ in range(6):
+        watcher.scan_existing()
+    assert planner.paths == [str(target)], "re-detected once its history expired"
+
+
+def test_a_dispatch_that_fails_before_the_job_exists_is_retried(store, tmp_path):
+    """The fingerprint must not outlive a failed dispatch.
+
+    Reproduced by review: the callback ran, no job was created, yet the
+    fingerprint was already durable -- so every later scan suppressed the file
+    and it was never processed. Writing the fingerprint with the job row makes
+    "decided" and "recorded" the same event.
+    """
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"data" * 100)
+    planner = Planner(store, fails="before")
+    watcher = make_watcher(store, tmp_path, planner)
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert planner.paths == [str(target)]      # dispatch attempted
+    assert store.list_jobs() == []             # but no job exists
+    assert store.seen_fingerprints() == {}     # so nothing may be suppressed
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert len(planner.paths) == 2, "a failed dispatch was never retried"
+
+
+def test_a_dispatch_that_fails_after_the_job_exists_is_not_retried(store, tmp_path):
+    """The converse: once the job row exists the decision is recorded, so the
+    file must not be probed again every scan even though planning threw."""
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"data" * 100)
+    planner = Planner(store, fails="after")
+    watcher = make_watcher(store, tmp_path, planner)
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert len(planner.paths) == 1
+    assert len(store.list_jobs()) == 1
+    _finish(store, planner.job_ids[0], "failed")
+
+    for _ in range(6):
+        watcher.scan_existing()
+    assert len(planner.paths) == 1
 
 
 def test_reprocess_clears_the_record_so_the_file_is_seen_again(store, tmp_path):
     """The explicit escape hatch: a rule change must not require touching the
-    file on disk or editing the database to get it re-considered."""
+    file on disk or editing the database to get it reconsidered."""
     target = tmp_path / "movie.mkv"
     target.write_bytes(b"data" * 100)
-    settled = []
-    watcher = make_watcher(store, tmp_path, settled.append)
+    planner = Planner(store)
+    watcher = make_watcher(store, tmp_path, planner)
 
     watcher.scan_existing()
     watcher.scan_existing()
-    assert settled == [str(target)]
+    _finish(store, planner.job_ids[0], "skipped")
 
     watcher.scan_existing()
-    assert settled == [str(target)]  # suppressed
+    assert planner.paths == [str(target)]  # suppressed
 
     assert store.forget_seen(str(target)) is True
     watcher.scan_existing()
     watcher.scan_existing()
-    assert settled == [str(target), str(target)]
+    assert planner.paths == [str(target), str(target)]
+
+
+def test_records_for_deleted_files_are_pruned(store, tmp_path):
+    """Otherwise the table only grows: every file ever deleted or renamed
+    leaves a row behind, so library churn accumulates without bound."""
+    keep = tmp_path / "keep.mkv"
+    gone = tmp_path / "gone.mkv"
+    keep.write_bytes(b"data" * 100)
+    gone.write_bytes(b"data" * 200)
+    planner = Planner(store)
+    watcher = make_watcher(store, tmp_path, planner)
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert set(store.seen_fingerprints()) == {str(keep), str(gone)}
+
+    gone.unlink()
+    watcher.scan_existing()
+    assert set(store.seen_fingerprints()) == {str(keep)}
+
+
+def test_an_unreadable_watch_root_does_not_prune_its_records(store, tmp_path):
+    """An unmounted share walks as empty. Pruning on that would discard every
+    record it holds and re-detect the whole share on remount."""
+    root = tmp_path / "media"
+    root.mkdir()
+    target = root / "movie.mkv"
+    target.write_bytes(b"data" * 100)
+
+    planner = Planner(store)
+    watcher = EncoderWatcher(
+        store=store,
+        on_settled=planner,
+        paths=[str(root)],
+        settle_seconds=0,
+        valid_extensions={".mkv", ".mp4"},
+    )
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert set(store.seen_fingerprints()) == {str(target)}
+
+    # Simulate the mount disappearing: the root itself is gone.
+    target.unlink()
+    root.rmdir()
+    watcher.scan_existing()
+    assert set(store.seen_fingerprints()) == {str(target)}, \
+        "records were pruned for a root that could not be read"

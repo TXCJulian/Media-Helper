@@ -287,3 +287,17 @@ def test_side_data_is_requested(monkeypatch, video):
 ])
 def test_bit_depth_matches_the_ffmpeg_pixel_format_definitions(pix_fmt, depth):
     assert probe_mod._bit_depth(pix_fmt) == depth
+
+
+@pytest.mark.parametrize("pix_fmt,depth", [
+    # Packed 4:2:2 / 4:4:4 -- first digit is subsampling, as with p010le.
+    ("y210le", 10), ("y212le", 12), ("y410le", 10), ("y216le", 16),
+    # Interleaved formats state the TOTAL across components; a bit_depth rule
+    # means per-component, so rgb48le is 16-bit, not 48-bit.
+    ("rgb24", 8), ("bgr24", 8), ("rgb48le", 16), ("rgba64le", 16),
+    ("gray", 8), ("gray10le", 10), ("gray16le", 16),
+    # Float.
+    ("gbrpf32le", 32), ("gbrapf32le", 32),
+])
+def test_bit_depth_covers_the_packed_interleaved_and_float_families(pix_fmt, depth):
+    assert probe_mod._bit_depth(pix_fmt) == depth
