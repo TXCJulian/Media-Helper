@@ -229,7 +229,18 @@ _SEMI_PLANAR_PIX_FMT = re.compile(r"^p[024](?P<depth>\d{2})(?:le|be)?$")
 
 # Packed 4:2:2/4:4:4 formats share the shape: y210le, y212le, y410le, y216le.
 # Same trap as above -- the first digit is subsampling.
-_PACKED_PIX_FMT = re.compile(r"^[xy][0-9](?P<depth>\d{2})(?:le|be)?$")
+_PACKED_PIX_FMT = re.compile(r"^y[0-9](?P<depth>\d{2})(?:le|be)?$")
+
+# Padded RGB: x2rgb10le, x2bgr10le -- two padding bits, then 10 per component.
+# The depth is stated directly, unlike the interleaved family below.
+_PADDED_RGB_PIX_FMT = re.compile(r"^x2(?:rgb|bgr)(?P<depth>\d{2})(?:le|be)?$")
+
+# XYZ and the packed 4:4:4 'v' family state TOTAL bits across three
+# components: xyz12le is 12 per component, while xv30le/v30xle are 30 bits
+# across three (10 each) and xv36le is 36 (12 each). The 'x' is padding, not
+# a component, which is why the divisor is 3 in both cases.
+_XYZ_PIX_FMT = re.compile(r"^xyz(?P<depth>\d{2})(?:le|be)?$")
+_V_PACKED_PIX_FMT = re.compile(r"^(?:xv|v)(?P<total>\d{2})x?(?:le|be)?$")
 
 # Float formats state their width after an 'f': gbrpf32le, gbrapf32le.
 _FLOAT_PIX_FMT = re.compile(r"f(?P<depth>\d{2})(?:le|be)?$")
@@ -267,6 +278,10 @@ def _bit_depth(pix_fmt: str) -> int | None:
     if not pix_fmt:
         return None
 
+    v_packed = _V_PACKED_PIX_FMT.match(pix_fmt)
+    if v_packed:
+        return int(v_packed.group("total")) // 3
+
     interleaved = _INTERLEAVED_PIX_FMT.match(pix_fmt)
     if interleaved:
         components = len(interleaved.group("comp"))
@@ -278,6 +293,8 @@ def _bit_depth(pix_fmt: str) -> int | None:
     match = (
         _SEMI_PLANAR_PIX_FMT.match(pix_fmt)
         or _PACKED_PIX_FMT.match(pix_fmt)
+        or _PADDED_RGB_PIX_FMT.match(pix_fmt)
+        or _XYZ_PIX_FMT.match(pix_fmt)
         or _FLOAT_PIX_FMT.search(pix_fmt)
         or _PLANAR_PIX_FMT.search(pix_fmt)
     )

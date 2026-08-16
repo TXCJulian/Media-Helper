@@ -301,3 +301,16 @@ def test_bit_depth_matches_the_ffmpeg_pixel_format_definitions(pix_fmt, depth):
 ])
 def test_bit_depth_covers_the_packed_interleaved_and_float_families(pix_fmt, depth):
     assert probe_mod._bit_depth(pix_fmt) == depth
+
+
+@pytest.mark.parametrize("pix_fmt,depth", [
+    # Padded RGB: two padding bits then the depth, stated directly.
+    ("x2rgb10le", 10), ("x2bgr10le", 10),
+    # XYZ states per-component depth.
+    ("xyz12le", 12),
+    # The packed 'v' family states the TOTAL across three components, with the
+    # 'x' being padding rather than a component: xv30 is 3x10, xv36 is 3x12.
+    ("xv30le", 10), ("v30xle", 10), ("xv36le", 12),
+])
+def test_bit_depth_covers_the_padded_xyz_and_v_families(pix_fmt, depth):
+    assert probe_mod._bit_depth(pix_fmt) == depth

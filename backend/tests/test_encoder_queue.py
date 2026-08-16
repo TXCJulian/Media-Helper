@@ -585,3 +585,42 @@ def _timer_alive(name):
         isinstance(t, threading.Timer) and t.name == name and t.is_alive()
         for t in threading.enumerate()
     )
+
+
+def test_plan_new_fails_the_job_when_planning_throws_unexpectedly(env, monkeypatch):
+    """An unexpected planning error must not leave the row in `settling`.
+
+    `settling` is neither terminal nor resumable: it holds the source path
+    against the unique active index forever, restart recovery skips it, and
+    the watcher will not reconsider a file whose fingerprint was written with
+    that row. The job silently drops out of the system while looking like work
+    in progress.
+    """
+    store, client, movies, source, queue_mod = env
+    q = _queue(store, client)
+
+    def _boom(_job_id):
+        raise RuntimeError("something unanticipated")
+
+    monkeypatch.setattr(q, "plan", _boom)
+    assert q.plan_new(str(source), 4096, 1_700_000_000_000_000_000) == "failed"
+
+    jobs = store.list_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].stage == "failed"
+    assert jobs[0].error_code == "plan_failed"
+    # The fingerprint is still recorded, so the file is not re-probed forever.
+    assert str(source) in store.seen_fingerprints()
+
+
+def test_plan_new_records_the_fingerprint_with_the_job(env):
+    """Both writes land together, so a file is marked decided exactly when a
+    job exists to represent that decision."""
+    store, client, movies, source, _ = env
+    q = _queue(store, client)
+
+    stage = q.plan_new(str(source), 4096, 1_700_000_000_000_000_000)
+    assert stage in {"pending", "queued", "skipped"}
+    assert len(store.list_jobs()) == 1
+    assert store.seen_fingerprints()[str(source)] == (
+        4096, 1_700_000_000_000_000_000)

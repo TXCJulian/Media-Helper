@@ -144,24 +144,55 @@ class EncoderWatcher:
         seen = self._store.seen_fingerprints()
         present: set[str] = set()
         walked: list[str] = []
+
         for root in self._paths:
             if not os.path.isdir(root):
-                # An unmounted share walks as empty. Recording it as "walked"
+                # An unmounted share walks as empty. Treating it as walked
                 # would let the prune below delete every record it holds and
-                # re-detect the whole share when it returned.
+                # re-detect the whole share when it came back.
                 logger.warning("Watch path %s is not readable; skipping", root)
                 continue
-            walked.append(root)
-            for dirpath, _dirs, files in os.walk(root):
+
+            # os.walk swallows errors by default, so an unreadable subtree is
+            # indistinguishable from an empty one -- and its files would then
+            # look deleted. Any error anywhere under a root disqualifies that
+            # root from pruning; the scan itself still proceeds.
+            failed = False
+
+            def _on_walk_error(exc: OSError, _root: str = root) -> None:
+                nonlocal failed
+                failed = True
+                logger.warning("Could not read %s under %s: %s",
+                               getattr(exc, "filename", "?"), _root, exc)
+
+            for dirpath, _dirs, files in os.walk(root, onerror=_on_walk_error):
                 for name in files:
                     path = os.path.join(dirpath, name)
                     present.add(path)
                     self._consider(path, active, seen)
 
+            if not failed:
+                walked.append(root)
+
         # Drop records for files that have since been deleted or renamed;
         # otherwise the table grows with library churn forever.
-        removed = self._store.prune_seen(walked, present)
-        if removed:
+        #
+        # Only records that existed when this scan STARTED are eligible. The
+        # queue fingerprints a file the moment it publishes it, which can land
+        # after that file's directory was walked -- so a fresh record would be
+        # absent from `present` and get pruned, and the next scan would treat
+        # our own published output as a new arrival and re-encode it. Scoping
+        # to the opening snapshot makes anything created mid-scan untouchable.
+        stale = {
+            path
+            for path in seen
+            if path not in present
+            and any(
+                path == root or path.startswith(root + os.sep) for root in walked
+            )
+        }
+        if stale:
+            removed = self._store.forget_seen_paths(stale)
             logger.info("Pruned %d dedup record(s) for files no longer present",
                         removed)
 

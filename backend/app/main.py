@@ -311,9 +311,7 @@ async def lifespan(app: FastAPI):
             encoder_queue.recover()
             encoder_watcher = EncoderWatcher(
                 encoder_store,
-                on_settled=lambda path, size, mtime_ns: encoder_queue.plan(
-                    encoder_store.create_job(path, size, mtime_ns).id
-                ),
+                on_settled=encoder_queue.plan_new,
                 paths=ENCODER_WATCH_PATHS,
                 settle_seconds=ENCODER_SETTLE_SECONDS,
                 valid_extensions=VALID_VIDEO_EXT,

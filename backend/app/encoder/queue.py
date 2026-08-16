@@ -179,6 +179,28 @@ class EncodeQueue:
 
     # ---- planning --------------------------------------------------------
 
+    def plan_new(self, source_path: str, size: int, mtime_ns: int) -> str:
+        """Create a job for a newly settled file and plan it.
+
+        The watcher's entry point, and the only place that pairs job creation
+        with planning. It exists so that an *unexpected* failure in `plan()`
+        cannot leave the row in `settling`: that stage is neither terminal nor
+        resumable, so the job would hold its source path against the unique
+        active index forever, never be retried by restart recovery, and never
+        be reconsidered by the watcher -- the file silently drops out of the
+        system with a row that looks like work in progress.
+
+        `plan()` already converts the failures it anticipates into `failed`.
+        This is the backstop for the ones it does not.
+        """
+        job = self._store.create_job(source_path, size, mtime_ns)
+        try:
+            return self.plan(job.id)
+        except Exception as exc:
+            logger.exception("Planning %s failed unexpectedly", source_path)
+            self._fail(job.id, f"Planning failed: {exc}", "plan_failed")
+            return "failed"
+
     def plan(self, job_id: str) -> str:
         """Probe the file, pick a target, and record the decision.
 

@@ -13,6 +13,7 @@ import os
 import sqlite3
 import threading
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -301,37 +302,25 @@ class EncoderStore:
             )
             self._conn.commit()
 
-    def prune_seen(self, roots: list[str], present: set[str]) -> int:
-        """Drop dedup records under *roots* for files no longer on disk.
+    def forget_seen_paths(self, paths: Iterable[str]) -> int:
+        """Drop the dedup records for exactly *paths*.
 
-        Without this the table only grows: every file ever deleted or renamed
-        leaves a row behind, so library churn accumulates forever.
-
-        Scoped to *roots* and driven by what a completed walk actually saw.
-        The caller must skip a root it could not read -- an unmounted share
-        walks as empty, and pruning on that would discard every record it
-        holds and re-detect the whole share when it came back.
+        Deliberately dumb: it deletes what it is given and never re-derives
+        the set itself. Choosing what is stale needs the caller's knowledge of
+        which roots were walked cleanly and which records existed before the
+        walk began -- deciding it here, against the table as it stands now,
+        deleted fingerprints written mid-scan by a job that had just published
+        its output.
         """
-        if not roots:
+        rows = [(p,) for p in paths]
+        if not rows:
             return 0
         with self._lock:
-            rows = self._conn.execute("SELECT path FROM seen_files").fetchall()
-            stale = [
-                r["path"]
-                for r in rows
-                if r["path"] not in present
-                and any(
-                    r["path"] == root or r["path"].startswith(root + os.sep)
-                    for root in roots
-                )
-            ]
-            if stale:
-                self._conn.executemany(
-                    "DELETE FROM seen_files WHERE path = ?",
-                    [(p,) for p in stale],
-                )
-                self._conn.commit()
-        return len(stale)
+            self._conn.executemany(
+                "DELETE FROM seen_files WHERE path = ?", rows
+            )
+            self._conn.commit()
+        return len(rows)
 
     def forget_seen(self, path: str) -> bool:
         """Drop the dedup record for *path* so the watcher reconsiders it.

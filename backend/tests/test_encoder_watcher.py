@@ -122,8 +122,14 @@ class Planner:
         self.paths.append(path)
         if self._fails == "before":
             raise RuntimeError("planning failed before the job existed")
-        self.job_ids.append(self._store.create_job(path, size, mtime_ns).id)
+        job_id = self._store.create_job(path, size, mtime_ns).id
+        self.job_ids.append(job_id)
         if self._fails == "after":
+            # Mirrors EncodeQueue.plan_new, which converts an unexpected
+            # planning failure into a `failed` job rather than leaving the row
+            # in `settling` -- a stage that is neither terminal nor resumable.
+            self._store.set_stage(job_id, "failed", error="boom",
+                                  error_code="plan_failed")
             raise RuntimeError("planning failed after the job existed")
 
 
@@ -505,7 +511,11 @@ def test_a_dispatch_that_fails_after_the_job_exists_is_not_retried(store, tmp_pa
     watcher.scan_existing()
     assert len(planner.paths) == 1
     assert len(store.list_jobs()) == 1
-    _finish(store, planner.job_ids[0], "failed")
+
+    # The job must be terminal, not left in `settling`: that stage holds the
+    # source path against the unique active index forever, is skipped by
+    # restart recovery, and is invisible to the watcher.
+    assert store.get_job(planner.job_ids[0]).stage == "failed"
 
     for _ in range(6):
         watcher.scan_existing()
@@ -578,3 +588,94 @@ def test_an_unreadable_watch_root_does_not_prune_its_records(store, tmp_path):
     watcher.scan_existing()
     assert set(store.seen_fingerprints()) == {str(target)}, \
         "records were pruned for a root that could not be read"
+
+
+def test_a_fingerprint_written_during_the_scan_is_not_pruned(store, tmp_path):
+    """The queue fingerprints a file the instant it publishes it, which can
+    land after that file's directory was already walked.
+
+    Reproduced by review: a job published movie.mp4 mid-scan, the new record
+    was absent from the walk's results, and the prune deleted it -- so the
+    next scan saw our own published output as a new arrival. For an MKV->MP4
+    job that means re-encoding the encode.
+    """
+    source = tmp_path / "movie.mkv"
+    source.write_bytes(b"data" * 100)
+    published = tmp_path / "movie.mp4"
+
+    planner = Planner(store)
+    watcher = make_watcher(store, tmp_path, planner)
+    watcher.scan_existing()
+    watcher.scan_existing()
+    _finish(store, planner.job_ids[0], "done")
+
+    real_walk = os.walk
+
+    def walk_then_publish(top, **kwargs):
+        """Publish after the directory has been walked, as the queue would."""
+        for entry in real_walk(top, **kwargs):
+            yield entry
+        published.write_bytes(b"encoded" * 10)
+        st = published.stat()
+        store.mark_seen(str(published), st.st_size, st.st_mtime_ns)
+
+    import app.encoder.watcher as watcher_mod
+    original = watcher_mod.os.walk
+    watcher_mod.os.walk = walk_then_publish
+    try:
+        watcher.scan_existing()
+    finally:
+        watcher_mod.os.walk = original
+
+    assert str(published) in store.seen_fingerprints(), \
+        "a fingerprint written mid-scan was pruned"
+
+    # And therefore the published output is never treated as a new arrival.
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert planner.paths == [str(source)]
+
+
+def test_an_unreadable_subtree_does_not_prune_its_root(store, tmp_path):
+    """os.walk swallows errors by default, so an unreadable subtree looks
+    identical to an empty one -- and every file under it looks deleted.
+    A transient read error on a mounted share must not cost its fingerprints.
+    """
+    root = tmp_path / "media"
+    sub = root / "Movies"
+    sub.mkdir(parents=True)
+    target = sub / "movie.mkv"
+    target.write_bytes(b"data" * 100)
+
+    planner = Planner(store)
+    watcher = EncoderWatcher(
+        store=store,
+        on_settled=planner,
+        paths=[str(root)],
+        settle_seconds=0,
+        valid_extensions={".mkv", ".mp4"},
+    )
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert set(store.seen_fingerprints()) == {str(target)}
+
+    real_walk = os.walk
+
+    def walk_with_error(top, onerror=None, **kwargs):
+        """Yield the root, then report the subtree as unreadable."""
+        yield (str(root), ["Movies"], [])
+        if onerror is not None:
+            err = OSError(13, "Permission denied")
+            err.filename = str(sub)
+            onerror(err)
+
+    import app.encoder.watcher as watcher_mod
+    original = watcher_mod.os.walk
+    watcher_mod.os.walk = walk_with_error
+    try:
+        watcher.scan_existing()
+    finally:
+        watcher_mod.os.walk = original
+
+    assert set(store.seen_fingerprints()) == {str(target)}, \
+        "fingerprints were pruned after a walk error"
