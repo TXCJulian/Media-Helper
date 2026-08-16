@@ -30,7 +30,7 @@ def test_defaults_match_the_spec(monkeypatch):
         ENCODER_SETTLE_SECONDS=None,
         ENCODER_JOB_TTL=None,
     )
-    assert cfg.ENCODER_URL == "http://handbrake-encoder:3335"
+    assert cfg.ENCODER_URL == "http://video-encoder:3335"
     assert cfg.ENCODER_WATCH_PATHS == []
     assert cfg.ENCODER_MODE == "review"
     assert cfg.ENCODER_ORIGINAL_TTL == 604800

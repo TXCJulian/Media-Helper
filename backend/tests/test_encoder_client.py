@@ -57,7 +57,31 @@ def test_submit_wraps_the_leaf_in_a_preset_document(client, monkeypatch):
 
     monkeypatch.setattr(client_mod.requests, "post", _post)
     client.submit("/media3/x.mkv", {"PresetName": "P"}, "P")
-    assert seen["body"]["preset_json"] == {"PresetList": [{"PresetName": "P"}]}
+    assert seen["body"]["preset_json"]["PresetList"] == [{"PresetName": "P"}]
+
+
+def test_submit_sends_the_preset_document_version(client, monkeypatch):
+    """Without the version keys HandBrake rejects the whole document.
+
+    Verified against HandBrakeCLI 1.9.2: an otherwise identical document
+    imports cleanly with these keys and fails with "invalid preset format in
+    presets_do()" without them -- after which HandBrake falls back to its
+    built-in presets and the job dies with "Invalid preset <name>". This cost
+    a full end-to-end run to find, so it is pinned here.
+    """
+    seen = {}
+
+    def _post(url, json=None, timeout=None, **_k):
+        seen["body"] = json
+        return _Response(202, {"job_id": "x"})
+
+    monkeypatch.setattr(client_mod.requests, "post", _post)
+    client.submit("/media3/x.mkv", {"PresetName": "P"}, "P")
+
+    document = seen["body"]["preset_json"]
+    for key in ("VersionMajor", "VersionMinor", "VersionMicro"):
+        assert key in document, f"{key} missing; HandBrake will reject the document"
+        assert isinstance(document[key], int)
 
 
 def test_a_4xx_becomes_a_rejection_carrying_the_code(client, monkeypatch):

@@ -286,7 +286,7 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `DOWNLOADER_WORKERS` | Number of concurrent download workers | `3` |
 | `DOWNLOADER_JOB_TTL` | Download job history retention in seconds | `604800` (7 days) |
 | `YT_DLP_COOKIES` | Path to cookies.txt for yt-dlp (optional) | `$DOWNLOADER_DATA_DIR/cookies.txt` |
-| `ENCODER_URL` | URL of the remote `HandBrake_Video-Encoder` service (**required** for the `encoder` feature) | `http://handbrake-encoder:3335` |
+| `ENCODER_URL` | URL of the remote `HandBrake_Video-Encoder` service (**required** for the `encoder` feature) | `http://video-encoder:3335` |
 | `ENCODER_WATCH_PATHS` | Folders to watch for new video files (CSV, in-container paths) | *(empty — watcher stays off)* |
 | `ENCODER_MODE` | `review` (queue for approval) or `auto` (encode unattended) | `review` |
 | `ENCODER_ORIGINAL_TTL` | Seconds to retain the original after a successful encode before purging it (`0` deletes immediately) | `604800` (7 days) |

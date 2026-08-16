@@ -78,7 +78,7 @@ DOWNLOADER_JOB_TTL = int(os.getenv("DOWNLOADER_JOB_TTL", "604800"))
 
 # --- Auto-encoder ---
 # Mirrors TRANSCRIBER_URL: the encode service is remote and optional.
-ENCODER_URL = os.getenv("ENCODER_URL", "http://handbrake-encoder:3335")
+ENCODER_URL = os.getenv("ENCODER_URL", "http://video-encoder:3335")
 ENCODER_WATCH_PATHS: list[str] = [
     p.strip() for p in os.getenv("ENCODER_WATCH_PATHS", "").split(",") if p.strip()
 ]

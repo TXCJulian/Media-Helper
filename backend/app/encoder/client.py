@@ -20,6 +20,12 @@ RETRYABLE_CODES = frozenset({"queue_full", "service_unavailable"})
 
 _DEFAULT_RETRY_AFTER = 60
 
+# HandBrake's preset-document format version. Any document it parses must carry
+# these; see the note in submit(). The values track the format, not the
+# application, and HandBrake upgrades older documents on import -- so a
+# slightly stale value here is safe, while omitting them is not.
+_PRESET_DOC_VERSION = {"VersionMajor": 72, "VersionMinor": 0, "VersionMicro": 0}
+
 
 class EncoderUnreachable(RuntimeError):
     """The service could not be contacted at all. Always retryable."""
@@ -73,8 +79,14 @@ class EncoderClient:
         """
         body = {
             "source_path": source_path,
-            # The encoder parses a preset *document*, not a bare leaf.
-            "preset_json": {"PresetList": [preset_body]},
+            # The encoder parses a preset *document*, not a bare leaf -- and the
+            # version keys are not decoration. Without them HandBrake's
+            # presets_do() rejects the whole document ("invalid preset format"),
+            # silently falls back to its built-in preset list, and then fails
+            # the job with "Invalid preset <name>". Verified against
+            # HandBrakeCLI 1.9.2: the identical document imports cleanly with
+            # these keys present and is rejected without them.
+            "preset_json": {"PresetList": [preset_body], **_PRESET_DOC_VERSION},
             "preset_name": preset_name,
         }
         response = self._request("post", "/jobs", json=body)
