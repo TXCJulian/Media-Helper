@@ -351,6 +351,51 @@ def test_importing_a_preset_document_stores_its_leaves(client):
     assert [p["name"] for p in client.get("/api/encoder/presets").json()] == ["NVENC"]
 
 
+def test_individual_preset_round_trips_the_complete_leaf(client):
+    """An edit must retain HandBrake fields the app does not model itself."""
+    body = {
+        "PresetName": "NVENC", "VideoEncoder": "nvenc_h265",
+        "VideoPreset": "slow", "FileFormat": "av_mkv",
+        "AudioCopyMask": ["copy:aac"], "Custom": {"kept": True},
+    }
+    assert client.put("/api/encoder/presets/NVENC", json={"body": body}).status_code == 200
+    assert client.get("/api/encoder/presets/NVENC").json()["body"] == body
+
+
+def test_individual_preset_requires_leaf_name_to_match_url(client):
+    """Writing the leaf under another key would make rule targets misleading."""
+    response = client.put(
+        "/api/encoder/presets/other", json={"body": PRESET_DOC["PresetList"][0]}
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_preset"
+
+
+def test_getting_a_missing_individual_preset_returns_not_found(client):
+    response = client.get("/api/encoder/presets/missing")
+    assert response.status_code == 404
+    assert response.json()["code"] == "preset_not_found"
+
+
+def test_individual_preset_rejects_an_unreported_encoder(client, monkeypatch):
+    """A one-leaf edit cannot use the import endpoint's skip semantics."""
+    monkeypatch.setattr(routes_mod, "_client", FakeClient(encoders=("x264",)))
+    response = client.put(
+        "/api/encoder/presets/NVENC", json={"body": PRESET_DOC["PresetList"][0]}
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "encoder_unavailable"
+
+
+def test_individual_preset_requires_encoder_capability_data(client, monkeypatch):
+    monkeypatch.setattr(routes_mod, "_client", FakeClient(encoders=()))
+    response = client.put(
+        "/api/encoder/presets/NVENC", json={"body": PRESET_DOC["PresetList"][0]}
+    )
+    assert response.status_code == 503
+    assert response.json()["code"] == "encoder_unreachable"
+
+
 def test_a_document_with_no_usable_preset_at_all_is_rejected(client, monkeypatch):
     """Filtering at upload keeps an unusable preset out of the system entirely,
     rather than surfacing as a failed job an hour later. With nothing left to

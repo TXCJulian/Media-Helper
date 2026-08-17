@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from app import config
 from app.encoder.client import EncoderClient
 from app.encoder.events import EventBroadcaster, job_to_payload
-from app.encoder.presets import PresetError, parse_document
+from app.encoder.presets import NamedPreset, PresetError, parse_document
 from app.encoder.probe import ProbeError, probe
 from app.encoder.queue import EncodeQueue
 from app.encoder.rules import (
@@ -157,6 +157,18 @@ def reset_state_for_tests() -> None:
 
 class PresetImport(BaseModel):
     document: dict
+
+
+class PresetLeaf(BaseModel):
+    body: dict
+
+
+class EncoderUnavailable(RuntimeError):
+    """The encoder service supplied no capability information."""
+
+
+class UnsupportedEncoder(ValueError):
+    """A preset requests an encoder absent from the connected service."""
 
 
 class ConditionIn(BaseModel):
@@ -346,6 +358,43 @@ def list_presets() -> list[dict]:
          "file_format": p.file_format}
         for p in get_store().list_presets()
     ]
+
+
+def _validate_preset_leaf(name: str, body: dict) -> NamedPreset:
+    """Parse and capability-check one editable HandBrake preset leaf."""
+    presets = parse_document({"PresetList": [body]})
+    if len(presets) != 1 or presets[0].name != name:
+        raise PresetError("PresetName must match the URL name")
+    available = set(get_client().health().get("encoders") or [])
+    if not available:
+        raise EncoderUnavailable("The encoder did not report its encoders")
+    if presets[0].encoder not in available:
+        raise UnsupportedEncoder(
+            f"The connected encoder does not provide {presets[0].encoder!r}"
+        )
+    return presets[0]
+
+
+@router.get("/presets/{name}", response_model=None)
+def get_preset(name: str) -> dict | JSONResponse:
+    preset = next((p for p in get_store().list_presets() if p.name == name), None)
+    if preset is None:
+        return _error(404, "preset_not_found", f"No preset named {name!r}")
+    return {"body": preset.body}
+
+
+@router.put("/presets/{name}", response_model=None)
+def replace_preset(name: str, payload: PresetLeaf) -> dict | JSONResponse:
+    try:
+        preset = _validate_preset_leaf(name, payload.body)
+    except PresetError as exc:
+        return _error(400, "invalid_preset", str(exc))
+    except EncoderUnavailable as exc:
+        return _error(503, "encoder_unreachable", str(exc))
+    except UnsupportedEncoder as exc:
+        return _error(400, "encoder_unavailable", str(exc))
+    get_store().replace_presets([preset])
+    return {"body": preset.body}
 
 
 @router.post("/presets", response_model=None)
