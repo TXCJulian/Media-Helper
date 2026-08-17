@@ -84,6 +84,11 @@ class RuntimeWatcher:
         self.stopped = True
 
 
+class StableRuntimeWatcher(RuntimeWatcher):
+    def start(self):
+        self.started = True
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(routes_mod.config, "ENCODER_DB", str(tmp_path / "e.db"))
@@ -181,7 +186,7 @@ def test_config_replacement_failure_uses_the_encoder_error_envelope(
 
 
 def test_runtime_restarts_old_watcher_when_rollback_persistence_fails(monkeypatch):
-    """A failed write must not leave the previous watch folder unobserved."""
+    """A failed replacement cannot split persisted and observed folders."""
     store = RuntimeStore(["/base/old"], fail_rollback=True)
     monkeypatch.setattr(runtime_mod, "EncoderWatcher", RuntimeWatcher)
     runtime = runtime_mod.EncoderRuntime(
@@ -198,12 +203,13 @@ def test_runtime_restarts_old_watcher_when_rollback_persistence_fails(monkeypatc
 
     assert runtime._watcher.paths == ["/base/old"]
     assert runtime._watcher.started is True
+    assert runtime.watch_paths == ["/base/old"]
 
 
 def test_runtime_restarts_old_watcher_when_initial_persistence_fails(monkeypatch):
     """A failed update write must also restore the active observer."""
     store = RuntimeStore(["/base/old"], fail_writes={1})
-    monkeypatch.setattr(runtime_mod, "EncoderWatcher", RuntimeWatcher)
+    monkeypatch.setattr(runtime_mod, "EncoderWatcher", StableRuntimeWatcher)
     runtime = runtime_mod.EncoderRuntime(
         store,
         type("Queue", (), {"plan_new": lambda *_args: None})(),
