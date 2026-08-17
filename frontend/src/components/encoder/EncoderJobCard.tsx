@@ -1,0 +1,242 @@
+import { useId, useState } from 'react'
+import IconButton from '@/components/ui/IconButton'
+import StatusPill from '@/components/ui/StatusPill'
+import { InfoIcon, PlayIcon, TrashIcon } from '@/components/ui/icons'
+import type { EncoderJob, EncoderJobStage } from '@/types'
+
+const PIPELINE: { stage: EncoderJobStage; label: string }[] = [
+  { stage: 'settling', label: 'Settling' },
+  { stage: 'encoding', label: 'Encoding' },
+  { stage: 'swapping', label: 'Swapping' },
+  { stage: 'done', label: 'Done' },
+]
+
+const TERMINAL_PILL: Partial<Record<EncoderJobStage, { label: string; className: string }>> = {
+  done: { label: 'Done', className: 'bg-teal-400/15 text-teal-300' },
+  failed: { label: 'Failed', className: 'bg-red-400/15 text-red-300' },
+  cancelled: { label: 'Cancelled', className: 'bg-white/10 text-white/50' },
+  skipped: { label: 'Skipped', className: 'bg-amber-400/15 text-amber-300' },
+}
+
+const REVIEW_LABEL: Partial<Record<EncoderJobStage, string>> = {
+  pending: 'Pending approval',
+  blocked: 'Blocked',
+}
+
+interface Props {
+  job: EncoderJob
+  onApprove: (jobId: string) => void
+  onDelete: (jobId: string) => void
+}
+
+function basename(path: string): string {
+  const parts = path.split(/[/\\]/).filter(Boolean)
+  return parts[parts.length - 1] ?? path
+}
+
+function formatSize(bytes: number): string {
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let value = bytes
+  let unit = 0
+  while (Math.abs(value) >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`
+}
+
+function savings(job: EncoderJob): string | null {
+  if (job.original_size === null || job.encoded_size === null || job.original_size <= 0) return null
+  const change = Math.round(
+    (Math.abs(job.original_size - job.encoded_size) / job.original_size) * 100,
+  )
+  const direction = job.encoded_size <= job.original_size ? 'smaller' : 'larger'
+  return `${formatSize(job.original_size)} → ${formatSize(job.encoded_size)} · ${change}% ${direction}`
+}
+
+function displayFact(key: string, value: unknown, facts: Record<string, unknown>): string | null {
+  if (value === null || value === undefined || value === '') return null
+  switch (key) {
+    case 'height':
+      return `${String(value)}p`
+    case 'width':
+      return facts.height == null ? `${String(value)}px wide` : null
+    case 'hdr':
+      return value ? 'HDR' : 'SDR'
+    case 'dolby_vision':
+      return value ? 'Dolby Vision' : null
+    case 'bit_depth':
+      return `${String(value)}-bit`
+    case 'frame_rate':
+      return `${String(value)} fps`
+    case 'video_codec':
+      return String(value).toUpperCase()
+    case 'bit_rate':
+      return `${(Number(value) / 1_000_000).toFixed(1)} Mbps`
+    case 'size':
+      return typeof value === 'number' ? formatSize(value) : String(value)
+    default: {
+      const label = key.replace(/_/g, ' ')
+      if (typeof value === 'boolean') return value ? label : null
+      return `${label}: ${String(value)}`
+    }
+  }
+}
+
+function stagePosition(stage: EncoderJobStage): number {
+  if (stage === 'settling') return 0
+  if (stage === 'pending' || stage === 'blocked') return 0
+  if (stage === 'queued' || stage === 'encoding') return 1
+  if (stage === 'swapping') return 2
+  if (stage === 'done') return 3
+  return -1
+}
+
+export default function EncoderJobCard({ job, onApprove, onDelete }: Props) {
+  const [showFacts, setShowFacts] = useState(false)
+  const factsId = useId()
+  const terminal = TERMINAL_PILL[job.stage]
+  const reviewLabel = REVIEW_LABEL[job.stage]
+  const currentPosition = stagePosition(job.stage)
+  const hasFacts = Object.keys(job.facts).length > 0
+  const factLabels = Object.entries(job.facts)
+    .map(([key, value]) => displayFact(key, value, job.facts))
+    .filter((value): value is string => Boolean(value))
+  const reduction = savings(job)
+
+  return (
+    <article className="glass-light rounded-[14px] p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-[0.88rem] font-medium text-[var(--text-primary)]">
+            {basename(job.source_path)}
+          </h3>
+          <p className="mt-1 truncate font-mono text-[0.68rem] text-[var(--text-tertiary)]">
+            {job.source_path}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {hasFacts && (
+            <button
+              type="button"
+              aria-label={showFacts ? 'Hide media details' : 'Show media details'}
+              title={showFacts ? 'Hide media details' : 'Show media details'}
+              aria-expanded={showFacts}
+              aria-controls={factsId}
+              onClick={() => setShowFacts((visible) => !visible)}
+              className="rounded-md p-1.5 text-white/25 transition hover:bg-teal-500/10 hover:text-teal-300"
+            >
+              <InfoIcon />
+            </button>
+          )}
+          {job.stage === 'pending' || job.stage === 'blocked' ? (
+            <button
+              type="button"
+              aria-label="Approve encoding"
+              title="Approve encoding"
+              onClick={() => onApprove(job.job_id)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-teal-400/20 bg-teal-400/10 px-2.5 py-1.5 text-[0.72rem] font-medium text-teal-300"
+            >
+              <PlayIcon size={13} />
+              Approve
+            </button>
+          ) : (
+            <IconButton label="Delete job" onClick={() => onDelete(job.job_id)} tone="danger">
+              <TrashIcon />
+            </IconButton>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {PIPELINE.map(({ stage, label }, index) => {
+          if (stage === 'done' && terminal?.label === 'Done') {
+            return (
+              <StatusPill key={stage} className={terminal.className}>
+                Done
+              </StatusPill>
+            )
+          }
+          const active = job.stage === stage || (stage === 'encoding' && job.stage === 'queued')
+          const reached = currentPosition >= index || currentPosition === -1
+          return (
+            <span
+              key={stage}
+              className={`text-[0.68rem] uppercase tracking-[0.1em] ${
+                active
+                  ? 'text-teal-300'
+                  : reached
+                    ? 'text-[var(--text-secondary)]'
+                    : 'text-[var(--text-tertiary)]/40'
+              }`}
+            >
+              {label}
+            </span>
+          )
+        })}
+        {terminal && terminal.label !== 'Done' && (
+          <StatusPill className={terminal.className} title={job.error ?? undefined}>
+            {terminal.label}
+          </StatusPill>
+        )}
+        {reviewLabel && (
+          <span className="text-[0.68rem] font-medium uppercase tracking-[0.1em] text-amber-300">
+            {reviewLabel}
+          </span>
+        )}
+      </div>
+
+      {(job.stage === 'encoding' || job.stage === 'swapping') && (
+        <div className="mt-3">
+          <div
+            role="progressbar"
+            aria-label="Encoding progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.max(0, Math.min(job.progress, 100))}
+            className="h-1.5 overflow-hidden rounded-full bg-white/6"
+          >
+            <div
+              className="h-full rounded-full bg-teal-400 transition-all duration-300"
+              style={{ width: `${Math.max(0, Math.min(job.progress, 100))}%` }}
+            />
+          </div>
+          <p className="mt-1.5 text-[0.72rem] tabular-nums text-[var(--text-secondary)]">
+            {job.progress.toFixed(1)}%
+          </p>
+        </div>
+      )}
+
+      {(job.preset_name || job.rule_id) && (
+        <p className="mt-2 text-[0.72rem] text-[var(--text-tertiary)]">
+          {job.preset_name && <span>Preset: {job.preset_name}</span>}
+          {job.preset_name && job.rule_id && <span> · </span>}
+          {job.rule_id && <span>Rule: {job.rule_id}</span>}
+        </p>
+      )}
+
+      {reduction && (
+        <p className="mt-2 text-[0.76rem] font-medium tabular-nums text-teal-300">{reduction}</p>
+      )}
+
+      {showFacts && hasFacts && (
+        <div
+          id={factsId}
+          className="mt-3 flex flex-wrap gap-2 border-t border-white/6 pt-3"
+          aria-label="Media details"
+        >
+          {factLabels.map((fact) => (
+            <span
+              key={fact}
+              className="rounded-md border border-white/8 bg-white/4 px-2 py-1 text-[0.7rem] text-[var(--text-secondary)]"
+            >
+              {fact}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {job.error && <p className="mt-2 text-[0.78rem] text-red-400">{job.error}</p>}
+    </article>
+  )
+}
