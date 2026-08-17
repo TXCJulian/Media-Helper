@@ -259,10 +259,90 @@ def test_runtime_keeps_the_old_watcher_when_retiring_it_fails(monkeypatch):
     with pytest.raises(RuntimeError, match="Could not stop"):
         runtime.replace_watch_paths(["/base/new"])
 
-    replacement = next(watcher for watcher in watchers if watcher.paths == ["/base/new"])
-    assert replacement.stopped is True
+    assert watchers == [runtime._watcher]
+    assert runtime._watcher.started is True
     assert runtime._watcher.paths == ["/base/old"]
     assert runtime.watch_paths == ["/base/old"]
+
+
+def test_runtime_never_overlaps_watchers_when_both_stop_operations_fail(
+    monkeypatch,
+):
+    """A failed update cannot depend on either live watcher stopping cleanly."""
+    watchers = []
+
+    class DoubleStopFailureWatcher:
+        def __init__(self, _store, *, paths, **_kwargs):
+            self.paths = paths
+            self.active = False
+            self.stop_attempts = 0
+            watchers.append(self)
+
+        def start(self):
+            self.active = True
+
+        def stop(self):
+            self.stop_attempts += 1
+            raise OSError(f"{self.paths} observer would not stop")
+
+    store = RuntimeStore(["/base/old"])
+    monkeypatch.setattr(runtime_mod, "EncoderWatcher", DoubleStopFailureWatcher)
+    runtime = runtime_mod.EncoderRuntime(
+        store,
+        type("Queue", (), {"plan_new": lambda *_args: None})(),
+        default_paths=["/base/old"],
+        settle_seconds=0,
+        valid_extensions={".mkv"},
+    )
+    runtime.start()
+
+    with pytest.raises(RuntimeError, match="Could not stop"):
+        runtime.replace_watch_paths(["/base/new"])
+
+    assert [watcher.paths for watcher in watchers if watcher.active] == [["/base/old"]]
+    assert runtime._watcher is watchers[0]
+    assert runtime.watch_paths == ["/base/old"]
+
+
+def test_runtime_enters_an_error_state_when_the_only_live_watcher_cannot_stop(
+    monkeypatch,
+):
+    """An uncertain sole watcher must not be presented as the durable config."""
+    watchers = []
+
+    class PartialStartFailureWatcher:
+        def __init__(self, _store, *, paths, **_kwargs):
+            self.paths = paths
+            self.active = False
+            watchers.append(self)
+
+        def start(self):
+            self.active = True
+            if self.paths == ["/base/new"]:
+                raise OSError("new observer only partly started")
+
+        def stop(self):
+            if self.paths == ["/base/new"]:
+                raise OSError("new observer would not stop")
+            self.active = False
+
+    store = RuntimeStore(["/base/old"])
+    monkeypatch.setattr(runtime_mod, "EncoderWatcher", PartialStartFailureWatcher)
+    runtime = runtime_mod.EncoderRuntime(
+        store,
+        type("Queue", (), {"plan_new": lambda *_args: None})(),
+        default_paths=["/base/old"],
+        settle_seconds=0,
+        valid_extensions={".mkv"},
+    )
+    runtime.start()
+
+    with pytest.raises(RuntimeError, match="unavailable until restart"):
+        runtime.replace_watch_paths(["/base/new"])
+
+    assert [watcher.paths for watcher in watchers if watcher.active] == [["/base/new"]]
+    with pytest.raises(RuntimeError, match="unavailable until restart"):
+        _ = runtime.watch_paths
 
 
 def test_importing_a_preset_document_stores_its_leaves(client):

@@ -25,10 +25,17 @@ class EncoderRuntime:
         self._settle_seconds = settle_seconds
         self._valid_extensions = valid_extensions
         self._watcher: EncoderWatcher | None = None
+        self._failure: str | None = None
         self._lock = threading.RLock()
 
     @property
     def watch_paths(self) -> list[str]:
+        with self._lock:
+            if self._failure is not None:
+                raise RuntimeError(self._failure)
+            return self._load_watch_paths()
+
+    def _load_watch_paths(self) -> list[str]:
         raw = self._store.get_setting(
             "watch_paths", json.dumps(self._default_paths)
         )
@@ -42,6 +49,36 @@ class EncoderRuntime:
             settle_seconds=self._settle_seconds,
             valid_extensions=self._valid_extensions,
         )
+
+    def _unavailable(
+        self, watcher: EncoderWatcher | None, reason: str
+    ) -> RuntimeError:
+        """Record an explicit state when watcher activity is uncertain."""
+        self._watcher = watcher
+        self._failure = f"{reason}; encoder watch runtime unavailable until restart"
+        return RuntimeError(self._failure)
+
+    def _discard_replacement(self, replacement: EncoderWatcher) -> None:
+        """Stop the sole candidate, or retain it in an explicit error state."""
+        try:
+            replacement.stop()
+        except Exception as exc:
+            raise self._unavailable(
+                replacement, "Could not clean up replacement watcher"
+            ) from exc
+        self._watcher = None
+
+    def _restore_watcher(self, paths: list[str]) -> None:
+        """Restore the durable configuration after the sole candidate stops."""
+        restored: EncoderWatcher | None = None
+        try:
+            restored = self._make_watcher(paths)
+            self._watcher = restored
+            restored.start()
+        except Exception as exc:
+            raise self._unavailable(
+                restored, "Could not restore previous watcher"
+            ) from exc
 
     def start(self) -> None:
         """Seed legacy installations once, then start their configured watcher."""
@@ -60,50 +97,52 @@ class EncoderRuntime:
                 self._watcher = None
 
     def replace_watch_paths(self, paths: list[str]) -> list[str]:
-        """Activate *paths* before making them the durable configuration.
+        """Replace paths without ever overlapping two active watchers.
 
-        Starting the replacement first keeps the current setting and watcher
-        paired if watchdog rejects the new paths. Retire the old watcher before
-        changing the setting, so a retirement failure can stop the candidate
-        and leave the prior configuration untouched.
+        The old watcher is retired before constructing the candidate. Once
+        there can be only one live watcher, cleanup failures can be represented
+        as an explicit unavailable state instead of an incoherent healthy one.
         """
         with self._lock:
             old_paths = self.watch_paths
             old_watcher = self._watcher
-            replacement = self._make_watcher(paths)
+            if old_watcher is None:
+                raise RuntimeError("Encoder watch runtime is unavailable")
+
             try:
+                old_watcher.stop()
+            except Exception as exc:
+                raise RuntimeError("Could not stop encoder watch paths") from exc
+            self._watcher = None
+
+            replacement: EncoderWatcher | None = None
+            try:
+                replacement = self._make_watcher(paths)
                 replacement.start()
             except Exception as exc:
-                try:
-                    replacement.stop()
-                except Exception:
-                    pass
+                if replacement is not None:
+                    self._discard_replacement(replacement)
+                self._restore_watcher(old_paths)
                 raise RuntimeError("Could not replace encoder watch paths") from exc
-
-            if old_watcher is not None:
-                try:
-                    old_watcher.stop()
-                except Exception as exc:
-                    try:
-                        replacement.stop()
-                    except Exception:
-                        pass
-                    raise RuntimeError("Could not stop encoder watch paths") from exc
 
             try:
                 self._store.set_setting("watch_paths", json.dumps(paths))
             except Exception as exc:
                 try:
-                    replacement.stop()
-                except Exception:
-                    pass
-                if old_watcher is not None:
-                    try:
-                        restored = self._make_watcher(old_paths)
-                        restored.start()
-                        self._watcher = restored
-                    except Exception:
-                        self._watcher = None
+                    durable_paths = self._load_watch_paths()
+                except Exception as read_exc:
+                    raise self._unavailable(
+                        replacement, "Could not determine persisted watch paths"
+                    ) from read_exc
+
+                if durable_paths == paths:
+                    self._watcher = replacement
+                    raise RuntimeError(
+                        "Could not confirm replacement watch-path persistence"
+                    ) from exc
+
+                self._discard_replacement(replacement)
+                self._restore_watcher(durable_paths)
                 raise RuntimeError("Could not replace encoder watch paths") from exc
 
             self._watcher = replacement
