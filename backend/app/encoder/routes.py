@@ -307,7 +307,7 @@ def _validate_watch_paths(paths: list[str]) -> list[str]:
     for path in paths:
         resolved = os.path.realpath(path)
         if not os.path.isdir(resolved) or not any(
-            resolved == base or resolved.startswith(base + os.sep) for base in bases
+            _is_within_base(resolved, base) for base in bases
         ):
             raise ValueError(
                 "Watch path is not an existing directory under BASE_PATHS: "
@@ -319,13 +319,24 @@ def _validate_watch_paths(paths: list[str]) -> list[str]:
     return validated
 
 
+def _is_within_base(path: str, base: str) -> bool:
+    """Whether *path* is contained by *base*, including filesystem roots."""
+    try:
+        return os.path.normcase(os.path.commonpath([path, base])) == os.path.normcase(base)
+    except ValueError:
+        return False
+
+
 @router.put("/config", response_model=None)
 def replace_config(payload: WatchPathsIn) -> dict | JSONResponse:
     try:
         paths = _validate_watch_paths(payload.watch_paths)
     except ValueError as exc:
         return _error(400, "invalid_watch_path", str(exc))
-    return {"watch_paths": get_runtime().replace_watch_paths(paths)}
+    try:
+        return {"watch_paths": get_runtime().replace_watch_paths(paths)}
+    except RuntimeError as exc:
+        return _error(500, "watch_paths_replace_failed", str(exc))
 
 
 @router.get("/presets")

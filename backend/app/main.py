@@ -305,10 +305,13 @@ async def lifespan(app: FastAPI):
             # delete it on every restart, wiping out in-progress GPU work.
             encoder_queue.start()
             encoder_queue.recover()
+            default_watch_paths = encoder_routes._validate_watch_paths(
+                ENCODER_WATCH_PATHS
+            )
             encoder_runtime = EncoderRuntime(
                 encoder_store,
                 encoder_queue,
-                default_paths=ENCODER_WATCH_PATHS,
+                default_paths=default_watch_paths,
                 settle_seconds=ENCODER_SETTLE_SECONDS,
                 valid_extensions=VALID_VIDEO_EXT,
             )

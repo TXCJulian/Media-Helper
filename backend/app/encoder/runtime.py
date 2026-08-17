@@ -65,7 +65,11 @@ class EncoderRuntime:
             old_paths = self.watch_paths
             old_watcher = self._watcher
             if old_watcher is not None:
-                old_watcher.stop()
+                try:
+                    old_watcher.stop()
+                except Exception as exc:
+                    raise RuntimeError("Could not stop encoder watch paths") from exc
+                self._watcher = None
 
             replacement: EncoderWatcher | None = None
             try:
@@ -80,7 +84,29 @@ class EncoderRuntime:
                         replacement.stop()
                     except Exception:
                         pass
-                self._store.set_setting("watch_paths", json.dumps(old_paths))
-                self._watcher = self._make_watcher(old_paths)
-                self._watcher.start()
+                rollback_error: Exception | None = None
+                try:
+                    self._store.set_setting("watch_paths", json.dumps(old_paths))
+                except Exception as rollback_exc:
+                    rollback_error = rollback_exc
+
+                recovery_error: Exception | None = None
+                try:
+                    restored = self._make_watcher(old_paths)
+                    restored.start()
+                    self._watcher = restored
+                except Exception as recovery_exc:
+                    self._watcher = None
+                    recovery_error = recovery_exc
+
+                if recovery_error is not None:
+                    raise RuntimeError(
+                        "Could not replace encoder watch paths; the previous "
+                        "watcher could not be restored"
+                    ) from recovery_error
+                if rollback_error is not None:
+                    raise RuntimeError(
+                        "Could not replace encoder watch paths; the previous "
+                        "configuration could not be persisted"
+                    ) from rollback_error
                 raise RuntimeError("Could not replace encoder watch paths") from exc

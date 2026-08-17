@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 from app.encoder import routes as routes_mod
+from app.encoder import runtime as runtime_mod
 
 PRESET_DOC = {
     "PresetList": [
@@ -33,6 +34,54 @@ class FakeRuntime:
         self.replacements.append(paths)
         self.watch_paths = paths
         return paths
+
+
+class FailingRuntime(FakeRuntime):
+    def replace_watch_paths(self, paths):
+        raise RuntimeError("watcher start failed")
+
+
+class RuntimeStore:
+    """Small settings store for runtime recovery tests.
+
+    The production store's SQLite implementation is exercised elsewhere; these
+    fakes isolate the watcher/store failure boundary that must recover without
+    starting watchdog threads.
+    """
+
+    def __init__(self, paths, *, fail_rollback=False, fail_writes=()):
+        import json
+
+        self._value = json.dumps(paths)
+        self._fail_rollback = fail_rollback
+        self._fail_writes = set(fail_writes)
+        self._writes = 0
+
+    def get_setting(self, _key, default):
+        return self._value if self._value is not None else default
+
+    def set_setting(self, _key, value):
+        self._writes += 1
+        if self._writes in self._fail_writes or (
+            self._fail_rollback and self._writes == 2
+        ):
+            raise OSError("database unavailable during rollback")
+        self._value = value
+
+
+class RuntimeWatcher:
+    def __init__(self, _store, *, paths, **_kwargs):
+        self.paths = paths
+        self.started = False
+        self.stopped = False
+
+    def start(self):
+        self.started = True
+        if self.paths == ["/base/new"]:
+            raise OSError("observer failed to start")
+
+    def stop(self):
+        self.stopped = True
 
 
 @pytest.fixture
@@ -95,6 +144,80 @@ def test_config_rejects_a_path_outside_base_without_replacing(client, tmp_path, 
     assert response.status_code == 400
     assert response.json()["code"] == "invalid_watch_path"
     assert runtime.replacements == []
+
+
+def test_config_accepts_a_directory_below_a_filesystem_root_base(
+    client, tmp_path, monkeypatch
+):
+    runtime = FakeRuntime([])
+    routes_mod.register_runtime(runtime)
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [tmp_path.anchor])
+
+    response = client.put(
+        "/api/encoder/config", json={"watch_paths": [str(tmp_path)]}
+    )
+
+    assert response.status_code == 200
+    assert runtime.replacements == [[str(tmp_path.resolve())]]
+
+
+def test_config_replacement_failure_uses_the_encoder_error_envelope(
+    client, tmp_path, monkeypatch
+):
+    watch_path = tmp_path / "Movies"
+    watch_path.mkdir()
+    routes_mod.register_runtime(FailingRuntime([]))
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(tmp_path)])
+
+    response = client.put(
+        "/api/encoder/config", json={"watch_paths": [str(watch_path)]}
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "code": "watch_paths_replace_failed",
+        "reason": "watcher start failed",
+    }
+
+
+def test_runtime_restarts_old_watcher_when_rollback_persistence_fails(monkeypatch):
+    """A failed write must not leave the previous watch folder unobserved."""
+    store = RuntimeStore(["/base/old"], fail_rollback=True)
+    monkeypatch.setattr(runtime_mod, "EncoderWatcher", RuntimeWatcher)
+    runtime = runtime_mod.EncoderRuntime(
+        store,
+        type("Queue", (), {"plan_new": lambda *_args: None})(),
+        default_paths=["/base/old"],
+        settle_seconds=0,
+        valid_extensions={".mkv"},
+    )
+    runtime.start()
+
+    with pytest.raises(RuntimeError, match="Could not replace"):
+        runtime.replace_watch_paths(["/base/new"])
+
+    assert runtime._watcher.paths == ["/base/old"]
+    assert runtime._watcher.started is True
+
+
+def test_runtime_restarts_old_watcher_when_initial_persistence_fails(monkeypatch):
+    """A failed update write must also restore the active observer."""
+    store = RuntimeStore(["/base/old"], fail_writes={1})
+    monkeypatch.setattr(runtime_mod, "EncoderWatcher", RuntimeWatcher)
+    runtime = runtime_mod.EncoderRuntime(
+        store,
+        type("Queue", (), {"plan_new": lambda *_args: None})(),
+        default_paths=["/base/old"],
+        settle_seconds=0,
+        valid_extensions={".mkv"},
+    )
+    runtime.start()
+
+    with pytest.raises(RuntimeError, match="Could not replace"):
+        runtime.replace_watch_paths(["/base/new"])
+
+    assert runtime._watcher.paths == ["/base/old"]
+    assert runtime._watcher.started is True
 
 
 def test_importing_a_preset_document_stores_its_leaves(client):
