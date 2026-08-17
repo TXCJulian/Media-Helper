@@ -84,14 +84,19 @@ export default function PresetEditor({ presets, onSaved, onDeleted, onError }: P
   const importInput = useRef<HTMLInputElement>(null)
   const seed = presets.find((preset) => preset.body)
 
-  const openDraft = (body: Record<string, unknown>, originalName: string | null) => {
+  const openDraft = (
+    body: Record<string, unknown>,
+    originalName: string | null,
+    initialView: 'guided' | 'raw' = 'guided',
+  ) => {
     const nextBody = cloneBody(body)
     setDraft({ originalName, body: nextBody, rawText: formatBody(nextBody), rawError: null })
-    setView('guided')
+    setView(initialView)
   }
 
   const updateGuided = (field: keyof GuidedPresetFields, value: string) => {
     if (!draft) return
+    if (field === 'name' && draft.originalName) return
     const form = { ...guidedFields(draft.body), [field]: value }
     const body = patchGuidedLeaf(draft.body, form)
     setDraft({ ...draft, body, rawText: formatBody(body), rawError: null })
@@ -102,7 +107,13 @@ export default function PresetEditor({ presets, onSaved, onDeleted, onError }: P
     try {
       const parsed: unknown = JSON.parse(rawText)
       if (!isJsonObject(parsed)) throw new Error('Preset JSON must be an object.')
-      setDraft({ ...draft, body: parsed, rawText, rawError: null })
+      const body = draft.originalName ? { ...parsed, PresetName: draft.originalName } : parsed
+      setDraft({
+        ...draft,
+        body,
+        rawText: draft.originalName ? formatBody(body) : rawText,
+        rawError: null,
+      })
     } catch (error) {
       setDraft({ ...draft, rawText, rawError: errorMessage(error) })
     }
@@ -110,7 +121,7 @@ export default function PresetEditor({ presets, onSaved, onDeleted, onError }: P
 
   const save = async () => {
     if (!draft || draft.rawError) return
-    const name = asString(draft.body.PresetName).trim()
+    const name = draft.originalName ?? asString(draft.body.PresetName).trim()
     if (!name) {
       onError('Preset JSON must include a PresetName.')
       return
@@ -183,7 +194,7 @@ export default function PresetEditor({ presets, onSaved, onDeleted, onError }: P
         >
           New guided preset
         </button>
-        <button type="button" onClick={() => openDraft({ PresetName: 'New preset' }, null)}>
+        <button type="button" onClick={() => openDraft({ PresetName: 'New preset' }, null, 'raw')}>
           New raw preset
         </button>
       </div>
@@ -231,6 +242,7 @@ export default function PresetEditor({ presets, onSaved, onDeleted, onError }: P
                 Name
                 <input
                   value={form.name}
+                  disabled={draft.originalName !== null}
                   onChange={(event) => updateGuided('name', event.target.value)}
                 />
               </label>
