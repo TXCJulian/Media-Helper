@@ -250,7 +250,6 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
             presets={presets}
             rules={rules}
             onRefresh={() => {
-              setSettingsError('')
               void refreshResources(false)
             }}
             onError={setSettingsError}

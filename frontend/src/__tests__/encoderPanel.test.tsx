@@ -285,4 +285,102 @@ describe('EncoderPanel', () => {
     )
     expect(screen.getByRole('alert').textContent).toContain('approval failed')
   })
+
+  it('keeps a settings-action failure when a different settings action refreshes', async () => {
+    const refreshedConfig = deferred<Response>()
+    let configRequests = 0
+    const fetchMock = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
+      const url = String(request)
+      if (url.includes('/encoder/health')) {
+        return jsonResponse({ status: 'ok', vendor: 'QSV', encoders: ['qsv_h265'] })
+      }
+      if (url.includes('/encoder/rules') && init?.method === 'PUT') {
+        return jsonResponse({ reason: 'rules save failed' }, 400)
+      }
+      if (url.includes('/encoder/presets/QSV') && init?.method === 'DELETE') {
+        return noContentResponse()
+      }
+      if (url.includes('/encoder/config')) {
+        configRequests += 1
+        if (configRequests === 2) return refreshedConfig.promise
+      }
+      return responseFor(url)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<EncoderPanel onBack={vi.fn()} />)
+
+    await screen.findByRole('region', { name: 'Encoder settings' })
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save rules' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('rules save failed')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Presets' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete QSV' }))
+    await waitFor(() => expect(configRequests).toBe(2))
+    await act(async () =>
+      refreshedConfig.resolve(
+        jsonResponse({
+          watch_paths: ['/media/Settings-refreshed'],
+          mode: 'review',
+          settle_seconds: 30,
+          original_ttl: 604800,
+          job_ttl: 604800,
+        }),
+      ),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Watch Folders' }))
+    expect((await screen.findByLabelText('Watch folder 1')).getAttribute('value')).toBe(
+      '/media/Settings-refreshed',
+    )
+    expect(screen.getByRole('alert').textContent).toContain('rules save failed')
+  })
+
+  it('keeps a delete-action failure when a settings refresh completes later', async () => {
+    const refreshedConfig = deferred<Response>()
+    let configRequests = 0
+    const fetchMock = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
+      const url = String(request)
+      if (url.includes('/encoder/health')) {
+        return jsonResponse({ status: 'ok', vendor: 'QSV', encoders: ['qsv_h265'] })
+      }
+      if (url.includes('/encoder/jobs/job-1') && init?.method === 'DELETE') {
+        return jsonResponse({ reason: 'delete failed' }, 409)
+      }
+      if (url.includes('/encoder/presets/QSV') && init?.method === 'DELETE') {
+        return noContentResponse()
+      }
+      if (url.includes('/encoder/config')) {
+        configRequests += 1
+        if (configRequests === 2) return refreshedConfig.promise
+      }
+      return responseFor(url, [job()])
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<EncoderPanel onBack={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete job' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('delete failed')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Presets' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete QSV' }))
+    await waitFor(() => expect(configRequests).toBe(2))
+    await act(async () =>
+      refreshedConfig.resolve(
+        jsonResponse({
+          watch_paths: ['/media/Delete-refreshed'],
+          mode: 'review',
+          settle_seconds: 30,
+          original_ttl: 604800,
+          job_ttl: 604800,
+        }),
+      ),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Watch Folders' }))
+    expect((await screen.findByLabelText('Watch folder 1')).getAttribute('value')).toBe(
+      '/media/Delete-refreshed',
+    )
+    expect(screen.getByRole('alert').textContent).toContain('delete failed')
+  })
 })
