@@ -24,12 +24,24 @@ class FakeClient:
                 "workers": 1}
 
 
+class FakeRuntime:
+    def __init__(self, watch_paths):
+        self.watch_paths = watch_paths
+        self.replacements = []
+
+    def replace_watch_paths(self, paths):
+        self.replacements.append(paths)
+        self.watch_paths = paths
+        return paths
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(routes_mod.config, "ENCODER_DB", str(tmp_path / "e.db"))
     monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", ["/media3/Movies"])
     monkeypatch.setattr(routes_mod, "_client", FakeClient())
     routes_mod.reset_state_for_tests()
+    routes_mod.register_runtime(FakeRuntime(["/media3/Movies"]))
     app = FastAPI()
     app.include_router(routes_mod.router)
     routes_mod.register_error_handlers(app)
@@ -53,6 +65,36 @@ def test_vendor_is_cpu_when_no_hardware_encoder_is_present(client, monkeypatch):
 
 def test_config_reports_the_watch_paths(client):
     assert client.get("/api/encoder/config").json()["watch_paths"] == ["/media3/Movies"]
+
+
+def test_config_saves_an_explicit_empty_list(client, tmp_path, monkeypatch):
+    """An explicit empty configuration pauses watching rather than resetting defaults."""
+    movies = tmp_path / "Movies"
+    movies.mkdir()
+    runtime = FakeRuntime([str(movies)])
+    routes_mod.register_runtime(runtime)
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(tmp_path)])
+
+    response = client.put("/api/encoder/config", json={"watch_paths": []})
+
+    assert response.status_code == 200
+    assert response.json()["watch_paths"] == []
+    assert runtime.replacements == [[]]
+
+
+def test_config_rejects_a_path_outside_base_without_replacing(client, tmp_path, monkeypatch):
+    """Rejecting an invalid update must leave the active watcher untouched."""
+    runtime = FakeRuntime(["/media/Movies"])
+    routes_mod.register_runtime(runtime)
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(tmp_path / "allowed")])
+
+    response = client.put(
+        "/api/encoder/config", json={"watch_paths": [str(tmp_path / "outside")]}
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_watch_path"
+    assert runtime.replacements == []
 
 
 def test_importing_a_preset_document_stores_its_leaves(client):

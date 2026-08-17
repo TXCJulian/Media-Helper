@@ -28,6 +28,7 @@ from app.encoder.rules import (
     RuleError,
     evaluate,
 )
+from app.encoder.runtime import EncoderRuntime
 from app.encoder.store import EncoderStore
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ _store: EncoderStore | None = None
 _client: EncoderClient | None = None
 _events: EventBroadcaster | None = None
 _queue: EncodeQueue | None = None
+_runtime: EncoderRuntime | None = None
 
 # Set by `mark_startup_failed()` when main.py's lifespan catches an exception
 # partway through building the store/queue/watcher. Without this, `get_store()`
@@ -107,6 +109,20 @@ def get_queue() -> EncodeQueue:
     return _queue
 
 
+def register_runtime(runtime: EncoderRuntime) -> None:
+    """Expose the lifespan-owned encoder runtime to request handlers."""
+    global _runtime
+    _runtime = runtime
+
+
+def get_runtime() -> EncoderRuntime:
+    if _startup_failed or _runtime is None:
+        raise RuntimeError(
+            "Encoder runtime is unavailable; check the server logs for the cause"
+        )
+    return _runtime
+
+
 def mark_startup_failed() -> None:
     """Record a contained lifespan startup failure and discard live state.
 
@@ -118,22 +134,24 @@ def mark_startup_failed() -> None:
     reconstructing (a fresh `EncodeQueue()` whose `.start()` nobody calls
     again is exactly as dead as the stopped one it would replace).
     """
-    global _store, _queue, _events, _startup_failed
+    global _store, _queue, _events, _runtime, _startup_failed
     if _store is not None:
         _store.close()
     _store = None
     _queue = None
     _events = None
+    _runtime = None
     _startup_failed = True
 
 
 def reset_state_for_tests() -> None:
-    global _store, _events, _queue, _startup_failed
+    global _store, _events, _queue, _runtime, _startup_failed
     if _store is not None:
         _store.close()
     _store = None
     _events = None
     _queue = None
+    _runtime = None
     _startup_failed = False
 
 
@@ -160,6 +178,10 @@ class RulesIn(BaseModel):
 
 class TestIn(BaseModel):
     path: str
+
+
+class WatchPathsIn(BaseModel):
+    watch_paths: list[str]
 
 
 def _error(status: int, code: str, reason: str) -> JSONResponse:
@@ -269,12 +291,41 @@ def encoder_health() -> dict:
 @router.get("/config")
 def encoder_config() -> dict:
     return {
-        "watch_paths": config.ENCODER_WATCH_PATHS,
+        "watch_paths": get_runtime().watch_paths,
         "mode": config.ENCODER_MODE,
         "settle_seconds": config.ENCODER_SETTLE_SECONDS,
         "original_ttl": config.ENCODER_ORIGINAL_TTL,
         "job_ttl": config.ENCODER_JOB_TTL,
     }
+
+
+def _validate_watch_paths(paths: list[str]) -> list[str]:
+    """Return existing, de-duplicated watch directories inside a base path."""
+    bases = [os.path.realpath(base) for base in config.BASE_PATHS]
+    validated: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        resolved = os.path.realpath(path)
+        if not os.path.isdir(resolved) or not any(
+            resolved == base or resolved.startswith(base + os.sep) for base in bases
+        ):
+            raise ValueError(
+                "Watch path is not an existing directory under BASE_PATHS: "
+                f"{path}"
+            )
+        if resolved not in seen:
+            seen.add(resolved)
+            validated.append(resolved)
+    return validated
+
+
+@router.put("/config", response_model=None)
+def replace_config(payload: WatchPathsIn) -> dict | JSONResponse:
+    try:
+        paths = _validate_watch_paths(payload.watch_paths)
+    except ValueError as exc:
+        return _error(400, "invalid_watch_path", str(exc))
+    return {"watch_paths": get_runtime().replace_watch_paths(paths)}
 
 
 @router.get("/presets")

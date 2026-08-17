@@ -282,13 +282,13 @@ async def lifespan(app: FastAPI):
     # enabled. The panel and routes stay dark without it (see the
     # conditional include_router below); this starts the background work
     # that backs those routes.
-    encoder_watcher = None
+    encoder_runtime = None
     encoder_queue = None
     encoder_cleanup_task = None
     if "encoder" in ENABLED_FEATURES_SET:
         from app.encoder import routes as encoder_routes
+        from app.encoder.runtime import EncoderRuntime
         from app.encoder.swap import sweep_orphans
-        from app.encoder.watcher import EncoderWatcher
 
         try:
             encoder_store = encoder_routes.get_store()
@@ -303,20 +303,21 @@ async def lifespan(app: FastAPI):
             # local uuid4. The two namespaces never intersect, so passing
             # `j.id` here would make every live partial look orphaned and
             # delete it on every restart, wiping out in-progress GPU work.
-            active = {j.remote_job_id for j in encoder_store.list_jobs()
-                      if j.remote_job_id}
-            for watch_path in ENCODER_WATCH_PATHS:
-                sweep_orphans(watch_path, active)
             encoder_queue.start()
             encoder_queue.recover()
-            encoder_watcher = EncoderWatcher(
+            encoder_runtime = EncoderRuntime(
                 encoder_store,
-                on_settled=encoder_queue.plan_new,
-                paths=ENCODER_WATCH_PATHS,
+                encoder_queue,
+                default_paths=ENCODER_WATCH_PATHS,
                 settle_seconds=ENCODER_SETTLE_SECONDS,
                 valid_extensions=VALID_VIDEO_EXT,
             )
-            encoder_watcher.start()
+            active = {j.remote_job_id for j in encoder_store.list_jobs()
+                      if j.remote_job_id}
+            for watch_path in encoder_runtime.watch_paths:
+                sweep_orphans(watch_path, active)
+            encoder_runtime.start()
+            encoder_routes.register_runtime(encoder_runtime)
             # Mirrors the downloader's cleanup task: without it, nothing ever
             # calls run_retentions() or purge_expired() in production, so
             # ENCODER_ORIGINAL_TTL and ENCODER_JOB_TTL are documented but
@@ -338,14 +339,14 @@ async def lifespan(app: FastAPI):
             logger.exception(
                 "Encoder failed to start; the feature will be unavailable"
             )
-            if encoder_watcher is not None:
+            if encoder_runtime is not None:
                 try:
-                    encoder_watcher.stop()
+                    encoder_runtime.stop()
                 except Exception:
                     logger.exception(
                         "Encoder watcher cleanup after a failed start failed"
                     )
-                encoder_watcher = None
+                encoder_runtime = None
             if encoder_queue is not None:
                 try:
                     encoder_queue.stop()
@@ -375,8 +376,8 @@ async def lifespan(app: FastAPI):
         if "encoder" in ENABLED_FEATURES_SET:
             if encoder_cleanup_task is not None:
                 encoder_cleanup_task.cancel()
-            if encoder_watcher is not None:
-                encoder_watcher.stop()
+            if encoder_runtime is not None:
+                encoder_runtime.stop()
             if encoder_queue is not None:
                 encoder_queue.stop()
         _stop_observers()

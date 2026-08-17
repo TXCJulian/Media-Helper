@@ -435,15 +435,15 @@ class TestEncoderLifespan:
             importlib.reload(auth_mod)
             import app.encoder.routes as encoder_routes_mod
             importlib.reload(encoder_routes_mod)
-            import app.encoder.watcher as encoder_watcher_mod
+            import app.encoder.runtime as encoder_runtime_mod
             import app.main as main_mod
             importlib.reload(main_mod)
 
-            # EncoderWatcher is constructed *after* encoder_queue.start(), so
+            # EncoderRuntime constructs its watcher *after* encoder_queue.start(), so
             # forcing the failure here (rather than earlier) proves the
             # worker thread genuinely existed before the induced failure.
             with patch.object(
-                encoder_watcher_mod, "EncoderWatcher",
+                encoder_runtime_mod, "EncoderWatcher",
                 side_effect=RuntimeError("boom"),
             ):
                 with TestClient(main_mod.app) as c:
