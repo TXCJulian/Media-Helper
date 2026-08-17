@@ -67,6 +67,9 @@
   --accent-3-glow: rgba(244, 114, 182, 0.18);
   --accent-4: #34d399;
   --accent-4-glow: rgba(52, 211, 153, 0.18);
+  --accent-5: #2dd4bf;
+  --accent-5-glow: rgba(45, 212, 191, 0.18);
+  --accent-5-glow-strong: rgba(45, 212, 191, 0.3);
   --accent-6: #22d3ee;
   --accent-6-glow: rgba(34, 211, 238, 0.18);
 
@@ -232,6 +235,12 @@
       0 0 0 3px var(--accent-6-glow),
       0 0 20px rgba(34, 211, 238, 0.08);
   }
+  .input-field.input-teal:focus {
+    border-color: var(--accent-5);
+    box-shadow:
+      0 0 0 3px var(--accent-5-glow),
+      0 0 20px rgba(45, 212, 191, 0.08);
+  }
   .input-field.input-error {
     border-color: var(--error);
   }
@@ -256,6 +265,64 @@
       inset 0 1px 0 0 rgba(255, 255, 255, 0.08),
       inset 0 0 0 1px rgba(34, 211, 238, 0.14),
       0 12px 34px rgba(0, 0, 0, 0.24);
+  }
+
+  .card-encoder {
+    border-color: var(--glass-border);
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.06),
+      inset 0 0 0 1px rgba(45, 212, 191, 0.08),
+      0 4px 24px rgba(0, 0, 0, 0.2);
+  }
+  .card-encoder:hover {
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.08),
+      inset 0 0 0 1px rgba(45, 212, 191, 0.14),
+      0 12px 34px rgba(0, 0, 0, 0.24);
+  }
+
+  .encoder-panel input:not([type='file']),
+  .encoder-panel textarea,
+  .encoder-panel select {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    background: var(--bg-input);
+    padding: 0.55rem 0.7rem;
+    font-family: Geist, sans-serif;
+    font-size: 0.78rem;
+    color: var(--text-primary);
+    outline: none;
+    transition: all 200ms;
+  }
+  .encoder-panel input:not([type='file']):focus,
+  .encoder-panel textarea:focus,
+  .encoder-panel select:focus {
+    border-color: var(--accent-5);
+    background: var(--bg-input-focus);
+    box-shadow: 0 0 0 3px var(--accent-5-glow);
+  }
+  .encoder-panel button:not([class]) {
+    cursor: pointer;
+    border: 1px solid rgba(45, 212, 191, 0.2);
+    border-radius: 0.5rem;
+    background: var(--accent-5-glow);
+    padding: 0.45rem 0.7rem;
+    font-size: 0.75rem;
+    color: var(--accent-5);
+    transition: all 200ms;
+  }
+  .encoder-panel button:not([class]):hover:not(:disabled) {
+    border-color: rgba(45, 212, 191, 0.4);
+    background: rgba(45, 212, 191, 0.24);
+  }
+  .encoder-panel button:not([class]):disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
+  .encoder-panel button:focus-visible {
+    outline: 2px solid var(--accent-5);
+    outline-offset: 2px;
   }
 
   .btn-submit {
@@ -331,6 +398,14 @@
   .btn-submit.btn-cyan:hover:not(:disabled) {
     box-shadow:
       0 0 32px rgba(34, 211, 238, 0.3),
+      0 4px 20px rgba(0, 0, 0, 0.3);
+  }
+  .btn-submit.btn-teal {
+    background: var(--accent-5);
+  }
+  .btn-submit.btn-teal:hover:not(:disabled) {
+    box-shadow:
+      0 0 32px var(--accent-5-glow-strong),
       0 4px 20px rgba(0, 0, 0, 0.3);
   }
 

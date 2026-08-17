@@ -304,6 +304,10 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 
 The `encoder` feature requires the separate `HandBrake_Video-Encoder` service to be deployed and reachable at `ENCODER_URL`. Both this renamer and the encoder service must mount the media library at identical in-container paths, since the renamer sends the encoder in-container source paths and never transfers file contents itself.
 
+`ENCODER_WATCH_PATHS` seeds the watch-folder list only on the encoder's first run. After that first seed, changes saved from **Auto Encoder → Watch Folders** are persisted in the encoder SQLite database and restored across restarts; later environment-variable changes do not overwrite them. Saving an empty list intentionally pauses the watcher. Every watch folder must already exist within one of the configured `BASE_PATHS`. Mount `ENCODER_DATA_DIR` (default `/data/encoder`) as a persistent volume if the saved configuration and job history must also survive container replacement.
+
+The preset editor always loads the complete stored HandBrake preset leaf. Guided edits update the name, encoder, speed, format, and quality fields while preserving advanced JSON keys that are not shown in the guided form. When no preset exists yet, choose **New raw preset**, enter a complete HandBrake preset leaf with at least `PresetName`, `VideoEncoder`, `VideoPreset`, and `FileFormat`, and save it. That saved leaf can then seed guided preset creation.
+
 ### Frontend Environment Variables
 
 The frontend's Nginx config proxies API calls to the backend. The target host/port is templated into `nginx-app.conf` at container startup via `docker-entrypoint.sh` — override these if the backend service is reachable under a different name (e.g. a Kubernetes Service name instead of the Docker Compose service name):
@@ -522,14 +526,20 @@ Media-Helper/
 │   │   ├── hwaccel.py                  # GPU encoder detection + ffmpeg arg mapping
 │   │   ├── get_dirs.py                 # Directory listing (cached)
 │   │   ├── fs_utils.py                 # Filesystem utilities (fsync)
-│   │   └── downloader/                 # Queue-backed yt-dlp downloads
-│   │       ├── routes.py               # FastAPI routes
-│   │       ├── store.py                # SQLite-backed job store
-│   │       ├── queue.py                # Worker pool + startup recovery
-│   │       ├── runner.py               # Per-job download/transcode orchestration
-│   │       ├── ydl.py                  # yt-dlp option building
-│   │       ├── transcode.py            # Cancellable ffmpeg re-encode stage
-│   │       └── events.py               # SSE event broadcaster
+│   │   ├── downloader/                 # Queue-backed yt-dlp downloads
+│   │   │   ├── routes.py               # FastAPI routes
+│   │   │   ├── store.py                # SQLite-backed job store
+│   │   │   ├── queue.py                # Worker pool + startup recovery
+│   │   │   ├── runner.py               # Per-job download/transcode orchestration
+│   │   │   ├── ydl.py                  # yt-dlp option building
+│   │   │   ├── transcode.py            # Cancellable ffmpeg re-encode stage
+│   │   │   └── events.py               # SSE event broadcaster
+│   │   └── encoder/                    # Watcher + remote HandBrake orchestration
+│   │       ├── routes.py               # Runtime config, presets, rules, and jobs API
+│   │       ├── runtime.py              # Persisted Watchdog lifecycle
+│   │       ├── store.py                # SQLite settings, presets, and job store
+│   │       ├── queue.py                # Encode queue + startup recovery
+│   │       └── events.py               # SSE job event broadcaster
 │   ├── tests/                          # pytest test suite (incl. hwaccel + audio-only transcode)
 │   ├── Dockerfile
 │   └── requirements.txt
@@ -543,6 +553,7 @@ Media-Helper/
 │   │   │   ├── LyricsPanel.tsx         # Lyrics transcription panel
 │   │   │   ├── CutterPanel.tsx         # Media cutting panel
 │   │   │   ├── DownloaderPanel.tsx     # Downloader panel
+│   │   │   ├── EncoderPanel.tsx        # Auto Encoder operator panel
 │   │   │   ├── downloader/             # Downloader sub-components
 │   │   │   │   ├── DownloadOptions.tsx
 │   │   │   │   └── DownloadJobCard.tsx
@@ -555,6 +566,10 @@ Media-Helper/
 │   │   │   │   ├── AudioTrackSelect.tsx
 │   │   │   │   ├── TrackModeSelect.tsx
 │   │   │   │   └── JobManager.tsx
+│   │   │   ├── encoder/                # Encoder settings, presets, and job cards
+│   │   │   │   ├── EncoderSettings.tsx
+│   │   │   │   ├── PresetEditor.tsx
+│   │   │   │   └── EncoderJobCard.tsx
 │   │   │   ├── PanelLayout.tsx         # Shared panel layout
 │   │   │   ├── LogPanel.tsx            # Output log display
 │   │   │   ├── ErrorBoundary.tsx
@@ -566,6 +581,8 @@ Media-Helper/
 │   │   ├── lib/
 │   │   │   ├── api.ts                  # API fetch utilities
 │   │   │   └── sse.ts                  # Server-Sent Events client
+│   │   ├── hooks/
+│   │   │   └── useEncoderStream.ts     # Live encoder job state
 │   │   └── __tests__/                  # Vitest test suite
 │   ├── public/fonts/                   # Self-hosted Geist + JetBrains Mono
 │   ├── nginx-app.conf                  # Nginx reverse proxy config

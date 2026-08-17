@@ -1,0 +1,304 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import PanelLayout from '@/components/PanelLayout'
+import EncoderJobCard from '@/components/encoder/EncoderJobCard'
+import EncoderSettings from '@/components/encoder/EncoderSettings'
+import { useEncoderStream } from '@/hooks/useEncoderStream'
+import {
+  approveEncoderJob,
+  deleteEncoderJob,
+  fetchEncoderConfig,
+  fetchEncoderHealth,
+  fetchEncoderJobs,
+  fetchEncoderPreset,
+  fetchEncoderPresets,
+  fetchEncoderRules,
+} from '@/lib/api'
+import type { EncoderConfig, EncoderHealth, EncoderJob, EncoderPreset, EncoderRule } from '@/types'
+
+type EncoderRules = {
+  rules: EncoderRule[]
+  fallback: string
+}
+
+type EncoderPanelProps = {
+  onBack: () => void
+}
+
+const TERMINAL_STAGES = new Set<EncoderJob['stage']>(['done', 'failed', 'cancelled', 'skipped'])
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback
+}
+
+function isAtLeastAsRecent(candidate: EncoderJob, current: EncoderJob): boolean {
+  const candidateTime = Date.parse(candidate.updated_at)
+  const currentTime = Date.parse(current.updated_at)
+  if (Number.isFinite(candidateTime) && Number.isFinite(currentTime)) {
+    return candidateTime >= currentTime
+  }
+  return candidate.updated_at >= current.updated_at
+}
+
+export default function EncoderPanel({ onBack }: EncoderPanelProps) {
+  const { jobs: streamedJobs, connected } = useEncoderStream()
+  const [health, setHealth] = useState<EncoderHealth | null>(null)
+  const [checkingHealth, setCheckingHealth] = useState(true)
+  const [config, setConfig] = useState<EncoderConfig | null>(null)
+  const [presets, setPresets] = useState<EncoderPreset[]>([])
+  const [rules, setRules] = useState<EncoderRules | null>(null)
+  const [initialJobs, setInitialJobs] = useState<EncoderJob[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [deletedJobIds, setDeletedJobIds] = useState<Set<string>>(() => new Set())
+  const [acknowledgedStages, setAcknowledgedStages] = useState<Map<string, EncoderJob['stage']>>(
+    () => new Map(),
+  )
+  const mounted = useRef(true)
+  const healthRequest = useRef(0)
+  const resourceRequest = useRef(0)
+  const approvingJobs = useRef(new Set<string>())
+
+  const checkHealth = useCallback(async () => {
+    const request = ++healthRequest.current
+    setCheckingHealth(true)
+    try {
+      const next = await fetchEncoderHealth()
+      if (mounted.current && request === healthRequest.current) setHealth(next)
+    } catch {
+      if (mounted.current && request === healthRequest.current) setHealth(null)
+    } finally {
+      if (mounted.current && request === healthRequest.current) setCheckingHealth(false)
+    }
+  }, [])
+
+  const refreshResources = useCallback(async (includeJobs: boolean) => {
+    const request = ++resourceRequest.current
+    setLoading(true)
+    try {
+      const [nextConfig, presetSummaries, nextRules, nextJobs] = await Promise.all([
+        fetchEncoderConfig(),
+        fetchEncoderPresets(),
+        fetchEncoderRules(),
+        includeJobs ? fetchEncoderJobs() : Promise.resolve<EncoderJob[] | null>(null),
+      ])
+      const completePresets = await Promise.all(
+        presetSummaries.map(async (preset) => ({
+          ...preset,
+          body: (await fetchEncoderPreset(preset.name)).body,
+        })),
+      )
+      if (!mounted.current || request !== resourceRequest.current) return
+      setConfig(nextConfig)
+      setPresets(completePresets)
+      setRules(nextRules)
+      if (nextJobs) setInitialJobs(nextJobs)
+      setError('')
+    } catch (loadError) {
+      if (mounted.current && request === resourceRequest.current) {
+        setError(errorMessage(loadError, 'Failed to load encoder settings.'))
+      }
+    } finally {
+      if (mounted.current && request === resourceRequest.current) setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    mounted.current = true
+    void checkHealth()
+    void refreshResources(true)
+    return () => {
+      mounted.current = false
+      healthRequest.current += 1
+      resourceRequest.current += 1
+    }
+  }, [checkHealth, refreshResources])
+
+  const jobs = useMemo(() => {
+    const freshest = new Map(initialJobs.map((job) => [job.job_id, job]))
+    for (const streamed of streamedJobs) {
+      const current = freshest.get(streamed.job_id)
+      if (!current || isAtLeastAsRecent(streamed, current)) freshest.set(streamed.job_id, streamed)
+    }
+
+    const seen = new Set<string>()
+    return [...streamedJobs, ...initialJobs]
+      .map((job) => freshest.get(job.job_id)!)
+      .filter((job) => {
+        if (seen.has(job.job_id) || deletedJobIds.has(job.job_id)) return false
+        seen.add(job.job_id)
+        return true
+      })
+      .map((job) => {
+        const acknowledged = acknowledgedStages.get(job.job_id)
+        return acknowledged && (job.stage === 'pending' || job.stage === 'blocked')
+          ? { ...job, stage: acknowledged }
+          : job
+      })
+  }, [acknowledgedStages, deletedJobIds, initialJobs, streamedJobs])
+  const activeJobs = jobs.filter((job) => !TERMINAL_STAGES.has(job.stage))
+  const history = jobs.filter((job) => TERMINAL_STAGES.has(job.stage))
+
+  const approve = async (jobId: string) => {
+    if (approvingJobs.current.has(jobId)) return
+    approvingJobs.current.add(jobId)
+    try {
+      const result = await approveEncoderJob(jobId)
+      if (result.stage === 'queued') {
+        setAcknowledgedStages((current) => new Map(current).set(jobId, 'queued'))
+      }
+      setError('')
+    } catch (actionError) {
+      setError(errorMessage(actionError, 'Failed to approve encoder job.'))
+    } finally {
+      approvingJobs.current.delete(jobId)
+    }
+  }
+
+  const remove = async (jobId: string) => {
+    try {
+      await deleteEncoderJob(jobId)
+      setDeletedJobIds((current) => new Set(current).add(jobId))
+      setAcknowledgedStages((current) => {
+        const next = new Map(current)
+        next.delete(jobId)
+        return next
+      })
+      setError('')
+    } catch (actionError) {
+      setError(errorMessage(actionError, 'Failed to delete encoder job.'))
+    }
+  }
+
+  const healthy = health?.status === 'ok'
+  const healthLabel = checkingHealth
+    ? 'Checking…'
+    : healthy
+      ? (health.vendor ?? 'Online')
+      : 'Offline'
+  const healthPill = (
+    <button
+      type="button"
+      onClick={() => void checkHealth()}
+      disabled={checkingHealth}
+      title={healthy ? 'Click to re-check encoder connection' : 'Click to retry encoder connection'}
+      className="ml-auto inline-flex cursor-pointer items-center gap-[0.4rem] rounded-[20px] border border-[var(--border)] bg-[var(--bg-input)] px-[0.7rem] py-[0.3rem] text-[0.7rem] font-medium text-[var(--text-tertiary)] transition-all duration-200 hover:border-[var(--accent-5)]/40 hover:text-[var(--text-secondary)] disabled:cursor-not-allowed disabled:opacity-70"
+    >
+      <span
+        className={`h-[7px] w-[7px] shrink-0 rounded-full transition-colors duration-200 ${
+          checkingHealth
+            ? 'animate-pulse bg-yellow-500'
+            : healthy
+              ? 'bg-[var(--accent-5)] shadow-[0_0_8px_var(--accent-5-glow)]'
+              : 'bg-[var(--error)]'
+        }`}
+      />
+      {healthLabel}
+    </button>
+  )
+
+  return (
+    <div className="encoder-panel">
+      <PanelLayout title="Auto Encoder" onBack={onBack} rightElement={healthPill} maxWidth="920px">
+        {error && (
+          <div
+            role="alert"
+            className="mb-5 flex items-center justify-between rounded-lg border border-red-500/15 bg-red-500/[0.06] px-4 py-2.5"
+          >
+            <p className="text-[0.8rem] text-red-400">{error}</p>
+            <button
+              type="button"
+              aria-label="Dismiss error"
+              onClick={() => setError('')}
+              className="ml-3 shrink-0 text-[0.7rem] text-red-400/60"
+            >
+              dismiss
+            </button>
+          </div>
+        )}
+
+        {loading && (!config || !rules) ? (
+          <p className="py-8 text-center text-[0.82rem] text-[var(--text-tertiary)]">
+            Loading encoder configuration…
+          </p>
+        ) : config && rules ? (
+          <EncoderSettings
+            config={config}
+            presets={presets}
+            rules={rules}
+            onRefresh={() => void refreshResources(false)}
+            onError={setError}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => void refreshResources(true)}
+            className="mb-6 w-full rounded-xl border border-[var(--accent-5)]/30 bg-[var(--accent-5-glow)] px-4 py-3 text-[0.8rem] font-medium text-[var(--accent-5)]"
+          >
+            Retry loading encoder configuration
+          </button>
+        )}
+
+        <section aria-label="Active encoder jobs" className="mt-6">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-[0.72rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">
+              Active {activeJobs.length > 0 && `— ${activeJobs.length}`}
+            </h3>
+            <span className="text-[0.68rem] text-[var(--text-tertiary)]">
+              {connected ? 'Live updates' : 'Reconnecting…'}
+            </span>
+          </div>
+          <div className="space-y-3">
+            {activeJobs.length > 0 ? (
+              activeJobs.map((job) => (
+                <EncoderJobCard
+                  key={job.job_id}
+                  job={job}
+                  onApprove={(id) => void approve(id)}
+                  onDelete={(id) => void remove(id)}
+                />
+              ))
+            ) : (
+              <p className="rounded-[14px] border border-white/6 bg-white/[0.02] py-5 text-center text-[0.8rem] text-[var(--text-tertiary)]">
+                No files are being processed right now.
+              </p>
+            )}
+          </div>
+        </section>
+
+        <section aria-label="Encoder job history" className="mt-6">
+          <button
+            type="button"
+            aria-expanded={historyOpen}
+            onClick={() => setHistoryOpen((open) => !open)}
+            className={`flex w-full items-center gap-2 border border-[var(--glass-border)] bg-[var(--glass-bg)] px-4 py-2.5 text-left text-[0.8rem] font-medium text-white/70 backdrop-blur-sm transition hover:border-[var(--accent-5)]/30 hover:text-white/90 ${historyOpen ? 'rounded-t-xl' : 'rounded-xl'}`}
+          >
+            <span className={`inline-block transition-transform ${historyOpen ? 'rotate-90' : ''}`}>
+              &#9654;
+            </span>
+            History {history.length > 0 && `(${history.length})`}
+          </button>
+
+          {historyOpen && (
+            <div className="space-y-3 rounded-b-xl border border-t-0 border-[var(--glass-border)] bg-black/20 p-4">
+              {history.length > 0 ? (
+                history.map((job) => (
+                  <EncoderJobCard
+                    key={job.job_id}
+                    job={job}
+                    onApprove={(id) => void approve(id)}
+                    onDelete={(id) => void remove(id)}
+                  />
+                ))
+              ) : (
+                <p className="py-3 text-center text-[0.8rem] text-[var(--text-tertiary)]">
+                  Completed and stopped jobs will be listed here.
+                </p>
+              )}
+            </div>
+          )}
+        </section>
+      </PanelLayout>
+    </div>
+  )
+}
