@@ -395,6 +395,22 @@ export function saveEncoderConfig(watchPaths: string[]): Promise<{ watch_paths: 
   })
 }
 
+export function fetchEncoderDirectories(
+  search?: string,
+): Promise<{ directories: import('@/types').EncoderDirectory[] }> {
+  return fetchJson('/api/encoder/directories', search ? { search } : undefined)
+}
+
+export function fetchEncoderFiles(
+  directory: string,
+  search?: string,
+): Promise<{ files: import('@/types').EncoderFile[] }> {
+  return fetchJson('/api/encoder/files', {
+    directory,
+    ...(search ? { search } : {}),
+  })
+}
+
 export function fetchEncoderPresets(): Promise<import('@/types').EncoderPreset[]> {
   return fetchJson('/api/encoder/presets')
 }

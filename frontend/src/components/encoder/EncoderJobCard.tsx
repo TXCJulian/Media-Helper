@@ -100,6 +100,7 @@ export default function EncoderJobCard({ job, onApprove, onDelete }: Props) {
   const currentPosition = stagePosition(job.stage)
   const canApprove =
     (job.stage === 'pending' || job.stage === 'blocked') && job.error_code !== 'swap_interrupted'
+  const canDelete = job.stage !== 'swapping'
   const hasFacts = Object.keys(job.facts).length > 0
   const factLabels = Object.entries(job.facts)
     .map(([key, value]) => displayFact(key, value, job.facts))
@@ -142,10 +143,12 @@ export default function EncoderJobCard({ job, onApprove, onDelete }: Props) {
               <PlayIcon size={13} />
               Approve
             </button>
-          ) : (
+          ) : canDelete ? (
             <IconButton label="Delete job" onClick={() => onDelete(job.job_id)} tone="danger">
               <TrashIcon />
             </IconButton>
+          ) : (
+            <span className="text-[0.68rem] text-[var(--text-tertiary)]">Publishing…</span>
           )}
         </div>
       </div>

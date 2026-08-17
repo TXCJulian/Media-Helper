@@ -2,6 +2,7 @@
 
 import json
 import threading
+from collections.abc import Callable
 
 from app.encoder.store import EncoderStore
 from app.encoder.watcher import EncoderWatcher
@@ -18,14 +19,17 @@ class EncoderRuntime:
         default_paths: list[str],
         settle_seconds: int,
         valid_extensions: set[str],
+        validate_paths: Callable[[list[str]], list[str]] | None = None,
     ) -> None:
         self._store = store
         self._queue = queue
         self._default_paths = list(default_paths)
         self._settle_seconds = settle_seconds
         self._valid_extensions = valid_extensions
+        self._validate_paths = validate_paths or (lambda paths: list(paths))
         self._watcher: EncoderWatcher | None = None
         self._failure: str | None = None
+        self._resolved_paths: list[str] | None = None
         self._lock = threading.RLock()
 
     @property
@@ -33,13 +37,39 @@ class EncoderRuntime:
         with self._lock:
             if self._failure is not None:
                 raise RuntimeError(self._failure)
-            return self._load_watch_paths()
+            if self._resolved_paths is None:
+                self._resolved_paths = self._resolve_paths()
+            return list(self._resolved_paths)
 
     def _load_watch_paths(self) -> list[str]:
-        raw = self._store.get_setting(
-            "watch_paths", json.dumps(self._default_paths)
-        )
-        return json.loads(raw)
+        raw = self._store.get_setting("watch_paths", None)
+        if raw is None:
+            return list(self._default_paths)
+        try:
+            paths = json.loads(raw)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                "Persisted encoder watch paths are not valid JSON"
+            ) from exc
+        if not isinstance(paths, list) or any(
+            not isinstance(path, str) for path in paths
+        ):
+            raise RuntimeError("Persisted encoder watch paths are not a string list")
+        return paths
+
+    def _resolve_paths(self) -> list[str]:
+        persisted = self._store.get_setting("watch_paths", None)
+        paths = self._load_watch_paths()
+        try:
+            validated = self._validate_paths(paths)
+        except Exception as exc:
+            # Do not rewrite a bad persisted value. Keeping it intact lets an
+            # operator correct the roots and retry instead of silently falling
+            # back to an environment default (or watching outside BASE_PATHS).
+            raise RuntimeError(f"Encoder watch paths are unavailable: {exc}") from exc
+        if persisted is None:
+            self._store.set_setting("watch_paths", json.dumps(validated))
+        return validated
 
     def _make_watcher(self, paths: list[str]) -> EncoderWatcher:
         return EncoderWatcher(
@@ -50,9 +80,7 @@ class EncoderRuntime:
             valid_extensions=self._valid_extensions,
         )
 
-    def _unavailable(
-        self, watcher: EncoderWatcher | None, reason: str
-    ) -> RuntimeError:
+    def _unavailable(self, watcher: EncoderWatcher | None, reason: str) -> RuntimeError:
         """Record an explicit state when watcher activity is uncertain."""
         self._watcher = watcher
         self._failure = f"{reason}; encoder watch runtime unavailable until restart"
@@ -83,11 +111,8 @@ class EncoderRuntime:
     def start(self) -> None:
         """Seed legacy installations once, then start their configured watcher."""
         with self._lock:
-            if self._store.get_setting("watch_paths", None) is None:
-                self._store.set_setting(
-                    "watch_paths", json.dumps(self._default_paths)
-                )
-            self._watcher = self._make_watcher(self.watch_paths)
+            paths = self.watch_paths
+            self._watcher = self._make_watcher(paths)
             self._watcher.start()
 
     def stop(self) -> None:
@@ -95,6 +120,7 @@ class EncoderRuntime:
             if self._watcher is not None:
                 self._watcher.stop()
                 self._watcher = None
+            self._resolved_paths = None
 
     def replace_watch_paths(self, paths: list[str]) -> list[str]:
         """Replace paths without ever overlapping two active watchers.
@@ -146,4 +172,5 @@ class EncoderRuntime:
                 raise RuntimeError("Could not replace encoder watch paths") from exc
 
             self._watcher = replacement
+            self._resolved_paths = list(paths)
             return paths

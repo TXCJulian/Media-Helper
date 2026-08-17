@@ -75,6 +75,24 @@ describe('applyEncoderStreamEvent', () => {
 
     expect(applyEncoderStreamEvent(before, JSON.stringify({ job_id: 'incomplete' }))).toBe(before)
   })
+
+  it('replaces stale state with the authoritative snapshot', () => {
+    const next = applyEncoderStreamEvent(
+      [job({ job_id: 'stale' })],
+      JSON.stringify({ type: 'snapshot', jobs: [job({ job_id: 'current' })] }),
+    )
+
+    expect(next.map((item) => item.job_id)).toEqual(['current'])
+  })
+
+  it('removes a job from a deletion delta', () => {
+    const next = applyEncoderStreamEvent(
+      [job(), job({ job_id: 'keep' })],
+      JSON.stringify({ type: 'deleted', job_id: 'job-1' }),
+    )
+
+    expect(next.map((item) => item.job_id)).toEqual(['keep'])
+  })
 })
 
 describe('useEncoderStream', () => {
@@ -82,7 +100,7 @@ describe('useEncoderStream', () => {
     const { result, unmount } = renderHook(() => useEncoderStream())
 
     expect(openEncoderStream).toHaveBeenCalledTimes(1)
-    expect(result.current).toEqual({ jobs: [], connected: false })
+    expect(result.current).toEqual({ jobs: [], connected: false, snapshotReceived: false })
 
     act(() => {
       stream.onStateChange?.(true)
@@ -91,8 +109,18 @@ describe('useEncoderStream', () => {
 
     expect(result.current.connected).toBe(true)
     expect(result.current.jobs).toEqual([job()])
+    expect(result.current.snapshotReceived).toBe(false)
 
     unmount()
     expect(stream.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks the stream authoritative after receiving a snapshot envelope', () => {
+    const { result } = renderHook(() => useEncoderStream())
+    act(() => {
+      stream.onEvent?.(JSON.stringify({ type: 'snapshot', jobs: [job()] }))
+    })
+    expect(result.current.snapshotReceived).toBe(true)
+    expect(result.current.jobs).toEqual([job()])
   })
 })

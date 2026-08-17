@@ -79,7 +79,7 @@ describe('PresetEditor', () => {
     })
   })
 
-  it('requires a seed before guided creation', () => {
+  it('requires a seed or encoder capability before guided creation', () => {
     render(<PresetEditor presets={[]} onSaved={vi.fn()} onDeleted={vi.fn()} onError={vi.fn()} />)
 
     expect(screen.getByText(/Import a preset or create one in raw JSON/i)).toBeTruthy()

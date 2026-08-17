@@ -221,7 +221,9 @@ def _preserve(source: str, holding_dir: str) -> str:
     try:
         os.makedirs(holding_dir, exist_ok=True)
     except OSError as exc:
-        raise SwapError(f"Could not create the holding area {holding_dir}: {exc}") from exc
+        raise SwapError(
+            f"Could not create the holding area {holding_dir}: {exc}"
+        ) from exc
 
     _warn_if_cross_device(source, holding_dir)
 
@@ -232,7 +234,9 @@ def _preserve(source: str, holding_dir: str) -> str:
     # the second shutil.move() silently overwrite the first's *retained
     # original*, destroying it rather than merely losing GPU time. The uuid4
     # suffix makes every preserve's target name unique regardless of timing.
-    target = os.path.join(holding_dir, f"{int(time.time())}-{uuid.uuid4().hex[:8]}-{base}")
+    target = os.path.join(
+        holding_dir, f"{int(time.time())}-{uuid.uuid4().hex[:8]}-{base}"
+    )
     try:
         shutil.move(source, target)
     except OSError as exc:
@@ -312,7 +316,9 @@ def sweep_orphans(directory: str, active_job_ids: set[str]) -> list[str]:
                     os.remove(path)
                     removed.append(path)
             except OSError:
-                logger.warning("Could not remove orphaned partial %s", path, exc_info=True)
+                logger.warning(
+                    "Could not remove orphaned partial %s", path, exc_info=True
+                )
     return removed
 
 

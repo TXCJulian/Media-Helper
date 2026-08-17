@@ -248,9 +248,11 @@ export interface DownloaderStatus {
 
 export interface EncoderHealth {
   status: string
-  vendor?: 'NVENC' | 'QSV' | 'VCE' | 'CPU' | string
+  vendor?: 'NVENC' | 'QSV' | 'VCE' | 'CPU'
+  gpu_name?: string | null
   handbrake_version?: string
   encoders?: string[]
+  encoder_presets?: Record<string, string[]>
   allowed_roots?: string[]
   workers?: number
   error?: string
@@ -262,6 +264,16 @@ export interface EncoderConfig {
   settle_seconds: number
   original_ttl: number
   job_ttl: number
+}
+
+export interface EncoderDirectory {
+  path: string
+  base: string
+}
+
+export interface EncoderFile {
+  path: string
+  name: string
 }
 
 export interface EncoderPreset {

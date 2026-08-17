@@ -30,6 +30,11 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
 
+function shortGpuName(gpu: string | null | undefined): string {
+  if (!gpu) return ''
+  return gpu.replace(/^NVIDIA GeForce /i, '')
+}
+
 function isAtLeastAsRecent(candidate: EncoderJob, current: EncoderJob): boolean {
   const candidateTime = Date.parse(candidate.updated_at)
   const currentTime = Date.parse(current.updated_at)
@@ -40,7 +45,7 @@ function isAtLeastAsRecent(candidate: EncoderJob, current: EncoderJob): boolean 
 }
 
 export default function EncoderPanel({ onBack }: EncoderPanelProps) {
-  const { jobs: streamedJobs, connected } = useEncoderStream()
+  const { jobs: streamedJobs, connected, snapshotReceived } = useEncoderStream()
   const [health, setHealth] = useState<EncoderHealth | null>(null)
   const [checkingHealth, setCheckingHealth] = useState(true)
   const [config, setConfig] = useState<EncoderConfig | null>(null)
@@ -117,14 +122,14 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
   }, [checkHealth, refreshResources])
 
   const jobs = useMemo(() => {
-    const freshest = new Map(initialJobs.map((job) => [job.job_id, job]))
+    const freshest = new Map((snapshotReceived ? [] : initialJobs).map((job) => [job.job_id, job]))
     for (const streamed of streamedJobs) {
       const current = freshest.get(streamed.job_id)
       if (!current || isAtLeastAsRecent(streamed, current)) freshest.set(streamed.job_id, streamed)
     }
 
     const seen = new Set<string>()
-    return [...streamedJobs, ...initialJobs]
+    return [...streamedJobs, ...(snapshotReceived ? [] : initialJobs)]
       .map((job) => freshest.get(job.job_id)!)
       .filter((job) => {
         if (seen.has(job.job_id) || deletedJobIds.has(job.job_id)) return false
@@ -137,7 +142,8 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
           ? { ...job, stage: acknowledged }
           : job
       })
-  }, [acknowledgedStages, deletedJobIds, initialJobs, streamedJobs])
+      .filter((job) => job.stage !== 'skipped')
+  }, [acknowledgedStages, deletedJobIds, initialJobs, snapshotReceived, streamedJobs])
   const activeJobs = jobs.filter((job) => !TERMINAL_STAGES.has(job.stage))
   const history = jobs.filter((job) => TERMINAL_STAGES.has(job.stage))
 
@@ -185,9 +191,9 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
 
   const healthy = health?.status === 'ok'
   const healthLabel = checkingHealth
-    ? 'Checking…'
+    ? 'Checking...'
     : healthy
-      ? (health.vendor ?? 'Online')
+      ? shortGpuName(health.gpu_name) || health.vendor || 'Online'
       : 'Offline'
   const healthPill = (
     <button
@@ -195,14 +201,14 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
       onClick={() => void checkHealth()}
       disabled={checkingHealth}
       title={healthy ? 'Click to re-check encoder connection' : 'Click to retry encoder connection'}
-      className="ml-auto inline-flex cursor-pointer items-center gap-[0.4rem] rounded-[20px] border border-[var(--border)] bg-[var(--bg-input)] px-[0.7rem] py-[0.3rem] text-[0.7rem] font-medium text-[var(--text-tertiary)] transition-all duration-200 hover:border-[var(--accent-5)]/40 hover:text-[var(--text-secondary)] disabled:cursor-not-allowed disabled:opacity-70"
+      className="ml-auto inline-flex cursor-pointer items-center gap-[0.4rem] rounded-[20px] border border-[var(--border)] bg-[var(--bg-input)] px-[0.7rem] py-[0.3rem] text-[0.7rem] font-medium text-[var(--text-tertiary)] transition-all duration-200 hover:border-[var(--glass-border-hover)] hover:bg-[var(--bg-glass-hover)] hover:text-[var(--text-secondary)] disabled:cursor-not-allowed disabled:opacity-70"
     >
       <span
         className={`h-[7px] w-[7px] shrink-0 rounded-full transition-colors duration-200 ${
           checkingHealth
             ? 'animate-pulse bg-yellow-500'
             : healthy
-              ? 'bg-[var(--accent-5)] shadow-[0_0_8px_var(--accent-5-glow)]'
+              ? 'bg-[var(--success)] shadow-[0_0_8px_var(--success-glow)]'
               : 'bg-[var(--error)]'
         }`}
       />
@@ -247,6 +253,7 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
         ) : config && rules ? (
           <EncoderSettings
             config={config}
+            health={health}
             presets={presets}
             rules={rules}
             onRefresh={() => {

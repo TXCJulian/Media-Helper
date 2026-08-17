@@ -1,6 +1,8 @@
-import { useRef, useState } from 'react'
+import { type UIEvent, useRef, useState } from 'react'
 import { deleteEncoderPreset, importEncoderPresets, saveEncoderPreset } from '@/lib/api'
-import type { EncoderPreset } from '@/types'
+import IconButton from '@/components/ui/IconButton'
+import { PencilIcon, SaveIcon, TrashIcon } from '@/components/ui/icons'
+import type { EncoderHealth, EncoderPreset } from '@/types'
 
 type GuidedPresetFields = {
   name: string
@@ -20,6 +22,7 @@ type Draft = {
 
 export type PresetEditorProps = {
   presets: EncoderPreset[]
+  health?: EncoderHealth | null
   onSaved: (preset?: EncoderPreset) => void
   onDeleted: (name?: string) => void
   onError: (message: string) => void
@@ -77,12 +80,82 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-export default function PresetEditor({ presets, onSaved, onDeleted, onError }: PresetEditorProps) {
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => {
+    const entities: Record<string, string> = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#039;',
+    }
+    return entities[character]!
+  })
+}
+
+function highlightJson(value: string): string {
+  return escapeHtml(value).replace(
+    /(&quot;.*?&quot;)(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?/g,
+    (token, quoted: string, colon: string | undefined) => {
+      if (quoted) {
+        return `<span class="text-cyan-300">${quoted}</span>${colon ?? ''}`
+      }
+      if (token === 'true' || token === 'false' || token === 'null') {
+        return `<span class="text-amber-300">${token}</span>`
+      }
+      return `<span class="text-teal-300">${token}</span>`
+    },
+  )
+}
+
+function completeLeafError(body: Record<string, unknown>): string | null {
+  for (const field of ['PresetName', 'VideoEncoder', 'VideoPreset', 'FileFormat']) {
+    if (typeof body[field] !== 'string' || !String(body[field]).trim()) {
+      return `Preset JSON must include a non-empty ${field}.`
+    }
+  }
+  return null
+}
+
+const COMMON_SPEEDS = [
+  'ultrafast',
+  'superfast',
+  'veryfast',
+  'faster',
+  'fast',
+  'medium',
+  'slow',
+  'slower',
+  'veryslow',
+  'placebo',
+  'speed',
+  'balanced',
+  'quality',
+]
+
+const COMMON_QUALITY_VALUES = ['16', '18', '20', '22', '24', '26', '28', '30', '32']
+
+export default function PresetEditor({
+  presets,
+  health,
+  onSaved,
+  onDeleted,
+  onError,
+}: PresetEditorProps) {
   const [draft, setDraft] = useState<Draft | null>(null)
   const [view, setView] = useState<'guided' | 'raw'>('guided')
   const [saving, setSaving] = useState(false)
+  const [importSummary, setImportSummary] = useState<{
+    imported: string[]
+    skipped: { name: string; encoder: string; reason: string }[]
+  } | null>(null)
   const importInput = useRef<HTMLInputElement>(null)
+  const rawHighlightRef = useRef<HTMLPreElement>(null)
+  const rawLineNumbersRef = useRef<HTMLPreElement>(null)
   const seed = presets.find((preset) => preset.body)
+  const availableEncoders = Array.from(
+    new Set([...(health?.encoders ?? []), ...presets.map((preset) => preset.encoder)]),
+  )
 
   const openDraft = (
     body: Record<string, unknown>,
@@ -92,14 +165,17 @@ export default function PresetEditor({ presets, onSaved, onDeleted, onError }: P
     const nextBody = cloneBody(body)
     setDraft({ originalName, body: nextBody, rawText: formatBody(nextBody), rawError: null })
     setView(initialView)
+    if (rawHighlightRef.current) rawHighlightRef.current.style.transform = 'translate(0, 0)'
+    if (rawLineNumbersRef.current) rawLineNumbersRef.current.style.transform = 'translateY(0)'
   }
 
   const updateGuided = (field: keyof GuidedPresetFields, value: string) => {
-    if (!draft) return
-    if (field === 'name' && draft.originalName) return
-    const form = { ...guidedFields(draft.body), [field]: value }
-    const body = patchGuidedLeaf(draft.body, form)
-    setDraft({ ...draft, body, rawText: formatBody(body), rawError: null })
+    setDraft((current) => {
+      if (!current || (field === 'name' && current.originalName)) return current
+      const form = { ...guidedFields(current.body), [field]: value }
+      const body = patchGuidedLeaf(current.body, form)
+      return { ...current, body, rawText: formatBody(body), rawError: null }
+    })
   }
 
   const updateRaw = (rawText: string) => {
@@ -119,11 +195,26 @@ export default function PresetEditor({ presets, onSaved, onDeleted, onError }: P
     }
   }
 
+  const syncRawScroll = (event: UIEvent<HTMLTextAreaElement>) => {
+    const { scrollLeft, scrollTop } = event.currentTarget
+    if (rawHighlightRef.current) {
+      rawHighlightRef.current.style.transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`
+    }
+    if (rawLineNumbersRef.current) {
+      rawLineNumbersRef.current.style.transform = `translateY(${-scrollTop}px)`
+    }
+  }
+
   const save = async () => {
     if (!draft || draft.rawError) return
     const name = draft.originalName ?? asString(draft.body.PresetName).trim()
     if (!name) {
       onError('Preset JSON must include a PresetName.')
+      return
+    }
+    const leafError = completeLeafError({ ...draft.body, PresetName: name })
+    if (leafError) {
+      onError(leafError)
       return
     }
 
@@ -159,7 +250,8 @@ export default function PresetEditor({ presets, onSaved, onDeleted, onError }: P
     try {
       const parsed: unknown = JSON.parse(await file.text())
       if (!isJsonObject(parsed)) throw new Error('Imported preset document must be a JSON object.')
-      await importEncoderPresets(parsed)
+      const summary = await importEncoderPresets(parsed)
+      setImportSummary(summary)
       onSaved()
     } catch (error) {
       onError(errorMessage(error))
@@ -167,11 +259,31 @@ export default function PresetEditor({ presets, onSaved, onDeleted, onError }: P
   }
 
   const form = draft ? guidedFields(draft.body) : null
+  const speedOptions = form
+    ? Array.from(
+        new Set([
+          ...((health?.encoder_presets?.[form.encoder]?.length ?? 0) > 0
+            ? (health?.encoder_presets?.[form.encoder] ?? [])
+            : COMMON_SPEEDS),
+          ...(form.videoPreset ? [form.videoPreset] : []),
+        ]),
+      )
+    : []
+  const encoderOptions = Array.from(
+    new Set([...(availableEncoders ?? []), form?.encoder ?? '']),
+  ).filter(Boolean)
+  const qualityOptions = form
+    ? Array.from(new Set([...COMMON_QUALITY_VALUES, ...(form.quality ? [form.quality] : [])]))
+    : []
 
   return (
     <section aria-label="Preset editor" className="space-y-4">
       <div className="flex flex-wrap gap-2">
-        <button type="button" onClick={() => importInput.current?.click()}>
+        <button
+          type="button"
+          onClick={() => importInput.current?.click()}
+          className="rounded-lg border border-teal-400/25 bg-teal-400/10 px-3 py-2 text-[0.75rem] font-medium text-teal-300"
+        >
           Import presets
         </button>
         <input
@@ -187,19 +299,70 @@ export default function PresetEditor({ presets, onSaved, onDeleted, onError }: P
         />
         <button
           type="button"
-          disabled={!seed?.body}
+          disabled={!seed?.body && availableEncoders.length === 0}
           onClick={() => {
-            if (seed?.body) openDraft({ ...cloneBody(seed.body), PresetName: 'New preset' }, null)
+            const body = seed?.body
+              ? cloneBody(seed.body)
+              : {
+                  PresetName: 'New preset',
+                  VideoEncoder: availableEncoders[0] || '',
+                  VideoPreset: '',
+                  FileFormat: 'av_mkv',
+                }
+            const encoder = asString(body.VideoEncoder) || availableEncoders[0] || ''
+            body.PresetName = 'New preset'
+            body.VideoEncoder = encoder
+            body.VideoPreset =
+              asString(health?.encoder_presets?.[encoder]?.[0]) ||
+              asString(body.VideoPreset) ||
+              COMMON_SPEEDS[5]
+            body.FileFormat = asString(body.FileFormat) || 'av_mkv'
+            openDraft(body, null)
           }}
         >
           New guided preset
         </button>
-        <button type="button" onClick={() => openDraft({ PresetName: 'New preset' }, null, 'raw')}>
+        <button
+          type="button"
+          onClick={() => {
+            const encoder = availableEncoders[0] || ''
+            openDraft(
+              {
+                PresetName: 'New preset',
+                VideoEncoder: encoder,
+                VideoPreset: health?.encoder_presets?.[encoder]?.[0] || '',
+                FileFormat: 'av_mkv',
+              },
+              null,
+              'raw',
+            )
+          }}
+          className="rounded-lg border border-white/10 px-3 py-2 text-[0.75rem] text-[var(--text-secondary)]"
+        >
           New raw preset
         </button>
       </div>
 
-      {!seed?.body && (
+      {importSummary && (
+        <div
+          role="status"
+          className={`rounded-lg border px-3 py-2 text-[0.75rem] ${importSummary.skipped.length ? 'border-amber-400/30 bg-amber-400/10 text-amber-200' : 'border-teal-400/25 bg-teal-400/10 text-teal-200'}`}
+        >
+          Imported {importSummary.imported.length} preset
+          {importSummary.imported.length === 1 ? '' : 's'}.
+          {importSummary.skipped.length > 0 && (
+            <ul className="mt-1 list-disc pl-4">
+              {importSummary.skipped.map((item) => (
+                <li key={`${item.name}-${item.encoder}`}>
+                  {item.name}: {item.reason}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {!seed?.body && availableEncoders.length === 0 && (
         <p role="status">Import a preset or create one in raw JSON before using guided creation.</p>
       )}
 
@@ -207,16 +370,22 @@ export default function PresetEditor({ presets, onSaved, onDeleted, onError }: P
         {presets.map((preset) => (
           <li key={preset.name} className="flex items-center gap-2">
             <span>{preset.name}</span>
-            <button
-              type="button"
-              disabled={!preset.body}
+            <IconButton
+              label={`Edit ${preset.name}`}
+              disabled={!preset.body || saving}
               onClick={() => preset.body && openDraft(preset.body, preset.name)}
+              tone="accent"
             >
-              Edit {preset.name}
-            </button>
-            <button type="button" onClick={() => void remove(preset.name)}>
-              Delete {preset.name}
-            </button>
+              <PencilIcon />
+            </IconButton>
+            <IconButton
+              label={`Delete ${preset.name}`}
+              disabled={saving}
+              onClick={() => void remove(preset.name)}
+              tone="danger"
+            >
+              <TrashIcon />
+            </IconButton>
           </li>
         ))}
       </ul>
@@ -248,61 +417,132 @@ export default function PresetEditor({ presets, onSaved, onDeleted, onError }: P
               </label>
               <label>
                 Video encoder
-                <input
+                <select
                   value={form.encoder}
-                  onChange={(event) => updateGuided('encoder', event.target.value)}
-                />
+                  onChange={(event) => {
+                    const encoder = event.target.value
+                    updateGuided('encoder', encoder)
+                    const firstSpeed = health?.encoder_presets?.[encoder]?.[0]
+                    if (firstSpeed) updateGuided('videoPreset', firstSpeed)
+                  }}
+                  className="input-field input-teal"
+                >
+                  {encoderOptions.map((encoder) => (
+                    <option key={encoder} value={encoder}>
+                      {encoder}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 Speed preset
-                <input
+                <select
                   value={form.videoPreset}
                   onChange={(event) => updateGuided('videoPreset', event.target.value)}
-                />
+                  className="input-field input-teal"
+                >
+                  {speedOptions.map((speed) => (
+                    <option key={speed} value={speed}>
+                      {speed}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 File format
-                <input
+                <select
                   value={form.fileFormat}
                   onChange={(event) => updateGuided('fileFormat', event.target.value)}
-                />
+                  className="input-field input-teal"
+                >
+                  {['av_mkv', 'av_mp4', 'av_webm'].map((format) => (
+                    <option key={format} value={format}>
+                      {format}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 Quality type
-                <input
+                <select
                   value={form.qualityType}
                   onChange={(event) => updateGuided('qualityType', event.target.value)}
-                />
+                  className="input-field input-teal"
+                >
+                  {['0', '1', '2'].map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 Quality
-                <input
+                <select
                   value={form.quality}
                   onChange={(event) => updateGuided('quality', event.target.value)}
-                />
+                  className="input-field input-teal"
+                >
+                  <option value="">Not set</option>
+                  {qualityOptions.map((quality) => (
+                    <option key={quality} value={quality}>
+                      {quality}
+                    </option>
+                  ))}
+                </select>
               </label>
             </div>
           ) : (
-            <label className="grid gap-1">
+            <label className="grid gap-1 text-[0.78rem] text-[var(--text-secondary)]">
               Preset JSON
-              <textarea
-                value={draft.rawText}
-                onChange={(event) => updateRaw(event.target.value)}
-                rows={14}
-              />
+              <div className="relative flex overflow-hidden rounded-lg border border-[var(--border)] bg-[#101018] font-mono text-[0.75rem] leading-5">
+                <pre
+                  ref={rawLineNumbersRef}
+                  aria-hidden="true"
+                  className="pointer-events-none min-w-10 select-none border-r border-white/8 px-2 py-2 text-right text-white/25"
+                >
+                  {draft.rawText.split('\n').map((_, index) => `${index + 1}\n`)}
+                </pre>
+                <div className="relative min-h-[280px] flex-1">
+                  <pre
+                    ref={rawHighlightRef}
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-0 m-0 overflow-hidden whitespace-pre-wrap break-words px-3 py-2"
+                    dangerouslySetInnerHTML={{ __html: highlightJson(draft.rawText) }}
+                  />
+                  <textarea
+                    aria-label="Preset JSON"
+                    value={draft.rawText}
+                    onChange={(event) => updateRaw(event.target.value)}
+                    onScroll={syncRawScroll}
+                    rows={14}
+                    className="relative z-10 min-h-[280px] w-full resize-y bg-transparent px-3 py-2 text-transparent caret-white outline-none selection:bg-teal-400/25"
+                  />
+                </div>
+              </div>
             </label>
           )}
 
-          {draft.rawError && <p role="alert">{draft.rawError}</p>}
+          {draft.rawError && (
+            <p role="alert" className="text-[0.78rem] text-red-300">
+              {draft.rawError}
+            </p>
+          )}
           <div className="flex gap-2">
             <button
               type="button"
-              disabled={Boolean(draft.rawError) || saving}
+              disabled={Boolean(draft.rawError) || saving || Boolean(completeLeafError(draft.body))}
               onClick={() => void save()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-teal-400/15 px-3 py-2 text-[0.75rem] font-medium text-teal-300 disabled:opacity-50"
             >
-              {saving ? 'Saving…' : 'Save preset'}
+              <SaveIcon size={14} /> {saving ? 'Saving…' : 'Save preset'}
             </button>
-            <button type="button" onClick={() => setDraft(null)}>
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => setDraft(null)}
+              className="rounded-lg border border-white/8 px-3 py-2 text-[0.75rem] text-[var(--text-secondary)] disabled:opacity-50"
+            >
               Cancel
             </button>
           </div>

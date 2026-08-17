@@ -13,7 +13,7 @@ import logging
 import os
 import threading
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
@@ -124,13 +124,25 @@ class EncoderWatcher:
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stopping.set()
+        failures: list[str] = []
         if self._observer is not None:
             self._observer.stop()
             self._observer.join(timeout=timeout)
-            self._observer = None
+            if self._observer.is_alive():
+                failures.append("observer")
+            else:
+                self._observer = None
         if self._scanner is not None:
             self._scanner.join(timeout=timeout)
-            self._scanner = None
+            if self._scanner.is_alive():
+                failures.append("scanner")
+            else:
+                self._scanner = None
+        if failures:
+            raise RuntimeError(
+                "Encoder watcher did not stop within the timeout: "
+                + ", ".join(failures)
+            )
 
     def scan_existing(self) -> None:
         """Walk every watch path once, feeding candidates to the tracker.
@@ -162,8 +174,12 @@ class EncoderWatcher:
             def _on_walk_error(exc: OSError, _root: str = root) -> None:
                 nonlocal failed
                 failed = True
-                logger.warning("Could not read %s under %s: %s",
-                               getattr(exc, "filename", "?"), _root, exc)
+                logger.warning(
+                    "Could not read %s under %s: %s",
+                    getattr(exc, "filename", "?"),
+                    _root,
+                    exc,
+                )
 
             for dirpath, _dirs, files in os.walk(root, onerror=_on_walk_error):
                 for name in files:
@@ -191,14 +207,13 @@ class EncoderWatcher:
             (path, *fingerprint)
             for path, fingerprint in seen.items()
             if path not in present
-            and any(
-                path == root or path.startswith(root + os.sep) for root in walked
-            )
+            and any(path == root or path.startswith(root + os.sep) for root in walked)
         ]
         if stale:
             removed = self._store.forget_seen_entries(stale)
-            logger.info("Pruned %d dedup record(s) for files no longer present",
-                        removed)
+            logger.info(
+                "Pruned %d dedup record(s) for files no longer present", removed
+            )
 
     def _scan_loop(self) -> None:
         while not self._stopping.wait(timeout=_SCAN_INTERVAL):

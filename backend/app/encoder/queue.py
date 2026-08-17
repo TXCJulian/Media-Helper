@@ -39,6 +39,8 @@ _WORKER_POLL_SECONDS = 0.5
 # encoder that never comes back would otherwise hold every other job hostage
 # forever with no signal the UI could act on.
 _UNREACHABLE_BLOCK_SECONDS = 1800.0
+_PROBE_RETRY_ATTEMPTS = 3
+_PROBE_RETRY_DELAY_SECONDS = 1.0
 
 # Codes/statuses meaning "the remote has no memory of this job at all", the
 # only condition under which a reattach may fall back to a fresh submit.
@@ -69,6 +71,13 @@ class EncodeQueue:
         self._stopping = threading.Event()
         self._timers: set[threading.Timer] = set()
         self._timers_lock = threading.Lock()
+        self._job_locks: dict[str, threading.RLock] = {}
+        self._job_locks_lock = threading.Lock()
+
+    def _job_lock(self, job_id: str) -> threading.RLock:
+        """Return the lock that serializes cancellation and file publication."""
+        with self._job_locks_lock:
+            return self._job_locks.setdefault(job_id, threading.RLock())
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -165,19 +174,50 @@ class EncodeQueue:
         self._queue.put(job_id)
 
     def cancel(self, job_id: str) -> bool:
-        job = self._store.get_job(job_id)
-        if job is None:
-            return False
-        if job.remote_job_id:
-            try:
-                self._client.cancel(job.remote_job_id)
-            except (EncoderRejected, EncoderUnreachable):
-                logger.warning("Could not cancel remote job %s", job.remote_job_id)
-        self._store.set_stage(job_id, "cancelled")
-        self._publish(job_id)
-        return True
+        with self._job_lock(job_id):
+            job = self._store.get_job(job_id)
+            if job is None or job.stage == "swapping":
+                return False
+            if job.remote_job_id:
+                try:
+                    self._client.cancel(job.remote_job_id)
+                except (EncoderRejected, EncoderUnreachable):
+                    logger.warning("Could not cancel remote job %s", job.remote_job_id)
+            self._store.set_stage(job_id, "cancelled")
+            self._publish(job_id)
+            return True
 
     # ---- planning --------------------------------------------------------
+
+    def _probe_with_retry(self, path: str) -> dict:
+        """Retry short-lived share permission/read races before failing."""
+        for attempt in range(_PROBE_RETRY_ATTEMPTS):
+            try:
+                return probe(path)
+            except ProbeError as exc:
+                message = str(exc).lower()
+                transient = any(
+                    marker in message
+                    for marker in (
+                        "permission denied",
+                        "resource temporarily unavailable",
+                        "input/output error",
+                        "temporarily",
+                    )
+                )
+                if not transient or attempt == _PROBE_RETRY_ATTEMPTS - 1:
+                    raise
+                delay = _PROBE_RETRY_DELAY_SECONDS * (attempt + 1)
+                logger.warning(
+                    "Transient ffprobe failure for %s; retrying in %.1fs (%d/%d): %s",
+                    path,
+                    delay,
+                    attempt + 1,
+                    _PROBE_RETRY_ATTEMPTS - 1,
+                    exc,
+                )
+                time.sleep(delay)
+        raise AssertionError("unreachable")
 
     def plan_new(self, source_path: str, size: int, mtime_ns: int) -> str:
         """Create a job for a newly settled file and plan it.
@@ -203,8 +243,9 @@ class EncodeQueue:
             # `plan()` set their own curated messages; this one only says that
             # something broke and where to look.
             logger.exception("Planning %s failed unexpectedly", source_path)
-            self._fail(job.id, "Internal planning error; see server logs",
-                       "plan_failed")
+            self._fail(
+                job.id, "Internal planning error; see server logs", "plan_failed"
+            )
             return "failed"
 
     def plan(self, job_id: str) -> str:
@@ -219,7 +260,7 @@ class EncodeQueue:
             return "failed"
 
         try:
-            facts = probe(job.source_path)
+            facts = self._probe_with_retry(job.source_path)
         except ProbeError as exc:
             self._fail(job_id, str(exc), "probe_failed")
             return "failed"
@@ -310,8 +351,9 @@ class EncodeQueue:
             (p for p in self._store.list_presets() if p.name == job.preset_name), None
         )
         if preset is None:
-            self._fail(job_id, f"Preset {job.preset_name!r} no longer exists",
-                       "preset_missing")
+            self._fail(
+                job_id, f"Preset {job.preset_name!r} no longer exists", "preset_missing"
+            )
             return
 
         if job.remote_job_id:
@@ -325,7 +367,9 @@ class EncodeQueue:
                 return
         else:
             try:
-                remote_id = self._client.submit(job.source_path, preset.body, preset.name)
+                remote_id = self._client.submit(
+                    job.source_path, preset.body, preset.name
+                )
             except (EncoderRejected, EncoderUnreachable) as exc:
                 self._handle_dispatch_error(job_id, exc)
                 return
@@ -433,75 +477,84 @@ class EncodeQueue:
             if status == "completed":
                 return body
             if status in {"failed", "cancelled"}:
-                self._fail(job_id, body.get("error") or f"Encode {status}",
-                           "encode_failed")
+                self._fail(
+                    job_id, body.get("error") or f"Encode {status}", "encode_failed"
+                )
                 return None
             time.sleep(self._poll_interval)
         return None
 
     def _publish_result(self, job_id: str, source_path: str, body: dict) -> None:
-        output_path = body.get("output_path")
-        if not output_path:
-            self._fail(job_id, "Encoder reported success without an output path",
-                       "no_output")
-            return
-
-        self._store.set_stage(job_id, "swapping")
-        self._publish(job_id)
-        try:
-            result = swap_in(
-                source_path,
-                output_path,
-                original_ttl=self._original_ttl,
-                holding_dir=self._holding_dir,
-            )
-        except SwapError as exc:
-            # The source is intact by construction *unless* the original had
-            # already been moved into holding and the restore-back also
-            # failed -- in that case exc.kept_path names where it survives,
-            # and saying "left untouched" would be a lie the user would act
-            # on (they'd go looking for it at source and not find it).
-            if exc.kept_path is None:
-                self._fail(job_id, f"{exc} (the original was left untouched)",
-                           "swap_failed")
-            else:
+        with self._job_lock(job_id):
+            current = self._store.get_job(job_id)
+            if current is None or current.stage == "cancelled":
+                return
+            output_path = body.get("output_path")
+            if not output_path:
                 self._fail(
                     job_id,
-                    f"{exc} The original was preserved at {exc.kept_path}.",
-                    "swap_failed",
+                    "Encoder reported success without an output path",
+                    "no_output",
                 )
-            return
+                return
 
-        self._store.set_result(job_id, result.final_path, result.encoded_size)
-        # Re-fingerprint what we just published. The swap replaced the file, so
-        # the watcher's record for this path is now stale and the next rescan
-        # would see the encode as a new arrival -- and under a rule that still
-        # matches, re-encode our own output. Recording the published file's
-        # fingerprint (which the swap gave a new mtime) closes that loop; a
-        # container change publishes under a different name, hence final_path
-        # rather than source_path.
-        try:
-            published = os.stat(result.final_path)
-            self._store.mark_seen(
-                result.final_path, published.st_size, published.st_mtime_ns
-            )
-        except OSError:
-            logger.warning("Could not fingerprint the published file %s",
-                           result.final_path, exc_info=True)
-        if result.kept_path:
-            self._store.set_retention(
-                job_id, result.kept_path, time.time() + self._original_ttl
-            )
-        self._store.set_progress(job_id, 100.0)
-        self._store.set_stage(job_id, "done")
-        self._publish(job_id)
+            self._store.set_stage(job_id, "swapping")
+            self._publish(job_id)
+            try:
+                result = swap_in(
+                    source_path,
+                    output_path,
+                    original_ttl=self._original_ttl,
+                    holding_dir=self._holding_dir,
+                )
+            except SwapError as exc:
+                # The source is intact by construction *unless* the original
+                # had already been moved into holding and the restore-back
+                # also failed. In that case exc.kept_path names where it
+                # survives, so do not claim the source was untouched.
+                if exc.kept_path is None:
+                    self._fail(
+                        job_id,
+                        f"{exc} (the original was left untouched)",
+                        "swap_failed",
+                    )
+                else:
+                    self._fail(
+                        job_id,
+                        f"{exc} The original was preserved at {exc.kept_path}.",
+                        "swap_failed",
+                    )
+                return
+
+            self._store.set_result(job_id, result.final_path, result.encoded_size)
+            # Re-fingerprint what we just published so the watcher does not
+            # treat our own output as a new arrival on the next scan.
+            try:
+                published = os.stat(result.final_path)
+                self._store.mark_seen(
+                    result.final_path, published.st_size, published.st_mtime_ns
+                )
+            except OSError:
+                logger.warning(
+                    "Could not fingerprint the published file %s",
+                    result.final_path,
+                    exc_info=True,
+                )
+            if result.kept_path:
+                self._store.set_retention(
+                    job_id, result.kept_path, time.time() + self._original_ttl
+                )
+            self._store.set_progress(job_id, 100.0)
+            self._store.set_stage(job_id, "done")
+            self._publish(job_id)
 
     def _handle_dispatch_error(self, job_id: str, exc: Exception) -> None:
         if isinstance(exc, EncoderRejected) and exc.code == "encoder_unavailable":
             # Never a silent CPU fallback: the user chooses. Blocked jobs are
             # excluded from restart recovery for the same reason.
-            self._store.set_stage(job_id, "blocked", error=exc.reason,
-                                  error_code=exc.code)
+            self._store.set_stage(
+                job_id, "blocked", error=exc.reason, error_code=exc.code
+            )
             self._publish(job_id)
             return
 
@@ -514,8 +567,9 @@ class EncodeQueue:
             retry_after = getattr(exc, "retry_after", None)
             delay = retry_after if retry_after is not None else _REQUEUE_SECONDS
             delay = max(float(delay), 1.0)
-            logger.info("Encoder busy or unreachable; requeueing %s in %ss",
-                        job_id, delay)
+            logger.info(
+                "Encoder busy or unreachable; requeueing %s in %ss", job_id, delay
+            )
             self._store.set_stage(job_id, "queued")
             self._publish(job_id)
             self._schedule_requeue(job_id, delay)

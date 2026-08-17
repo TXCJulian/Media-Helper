@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import PresetEditor from '@/components/encoder/PresetEditor'
+import DirectorySelect from '@/components/ui/DirectorySelect'
 import {
+  fetchEncoderDirectories,
+  fetchEncoderFiles,
   reprocessEncoderFile,
   saveEncoderConfig,
   saveEncoderRules,
@@ -8,6 +11,9 @@ import {
 } from '@/lib/api'
 import type {
   EncoderConfig,
+  EncoderDirectory,
+  EncoderFile,
+  EncoderHealth,
   EncoderPreset,
   EncoderRule,
   EncoderRuleCondition,
@@ -21,6 +27,7 @@ type RuleSet = {
 
 export interface EncoderSettingsProps {
   config: EncoderConfig
+  health?: EncoderHealth | null
   presets: EncoderPreset[]
   rules: RuleSet
   onRefresh: () => void
@@ -55,6 +62,7 @@ const NUMERIC_FIELDS = new Set([
   'frame_rate',
   'duration',
 ])
+const SOURCE_TOOLS = ['unknown', 'makemkv', 'handbrake', 'lavf', 'other']
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -109,8 +117,10 @@ function SectionButton({
       type="button"
       aria-expanded={open}
       onClick={() => onToggle(section)}
-      className={`rounded-lg px-3 py-2 text-[0.78rem] font-medium transition ${
-        open ? 'bg-teal-400/15 text-teal-300' : 'bg-white/4 text-[var(--text-secondary)]'
+      className={`rounded-xl border px-3 py-2 text-[0.78rem] font-medium transition ${
+        open
+          ? 'border-teal-400/30 bg-teal-400/15 text-teal-300'
+          : 'border-white/8 bg-white/4 text-[var(--text-secondary)] hover:border-white/15 hover:text-white'
       }`}
     >
       {label}
@@ -120,6 +130,7 @@ function SectionButton({
 
 export default function EncoderSettings({
   config,
+  health,
   presets,
   rules,
   onRefresh,
@@ -127,8 +138,10 @@ export default function EncoderSettings({
 }: EncoderSettingsProps) {
   const [openSection, setOpenSection] = useState<Section | null>(null)
   const [watchPaths, setWatchPaths] = useState(() => [...config.watch_paths])
+  const [watchDirty, setWatchDirty] = useState(false)
   const [draftRules, setDraftRules] = useState(() => cloneRules(rules.rules))
   const [fallback, setFallback] = useState(rules.fallback)
+  const [rulesDirty, setRulesDirty] = useState(false)
   const [savingPaths, setSavingPaths] = useState(false)
   const [savingRules, setSavingRules] = useState(false)
   const [testPath, setTestPath] = useState('')
@@ -139,12 +152,90 @@ export default function EncoderSettings({
   const testPathRef = useRef('')
   const testRequestRef = useRef(0)
   const reprocessRequestRef = useRef(0)
+  const [directorySearch, setDirectorySearch] = useState('')
+  const [directories, setDirectories] = useState<EncoderDirectory[]>([])
+  const [directoriesLoading, setDirectoriesLoading] = useState(false)
+  const [fileDirectory, setFileDirectory] = useState('')
+  const [fileSearch, setFileSearch] = useState('')
+  const [files, setFiles] = useState<EncoderFile[]>([])
+  const [filesLoading, setFilesLoading] = useState(false)
+  const pendingWatchPaths = useRef<string[] | null>(null)
+  const pendingRules = useRef<RuleSet | null>(null)
 
-  useEffect(() => setWatchPaths([...config.watch_paths]), [config.watch_paths])
+  const samePaths = (left: string[], right: string[]) =>
+    left.length === right.length && left.every((path, index) => path === right[index])
+  const sameRuleSet = (left: RuleSet, right: RuleSet) =>
+    JSON.stringify(left) === JSON.stringify(right)
+
   useEffect(() => {
-    setDraftRules(cloneRules(rules.rules))
-    setFallback(rules.fallback)
-  }, [rules])
+    const pending = pendingWatchPaths.current
+    if (pending && samePaths(config.watch_paths, pending)) {
+      pendingWatchPaths.current = null
+    }
+    if (!watchDirty && !pendingWatchPaths.current) setWatchPaths([...config.watch_paths])
+  }, [config.watch_paths, watchDirty])
+  useEffect(() => {
+    const pending = pendingRules.current
+    const incoming = { rules: rules.rules, fallback: rules.fallback }
+    if (pending && sameRuleSet(incoming, pending)) {
+      pendingRules.current = null
+    }
+    if (!rulesDirty && !pendingRules.current) {
+      setDraftRules(cloneRules(rules.rules))
+      setFallback(rules.fallback)
+    }
+  }, [rules, rulesDirty])
+
+  useEffect(() => {
+    if (openSection !== 'watch' && openSection !== 'rules') return
+    if (typeof fetchEncoderDirectories !== 'function') return
+    let cancelled = false
+    setDirectoriesLoading(true)
+    const timer = window.setTimeout(() => {
+      void fetchEncoderDirectories(directorySearch)
+        .then((result) => {
+          if (!cancelled) setDirectories(result.directories)
+        })
+        .catch((error) => {
+          if (!cancelled) onError(errorMessage(error))
+        })
+        .finally(() => {
+          if (!cancelled) setDirectoriesLoading(false)
+        })
+    }, 180)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [directorySearch, onError, openSection])
+
+  useEffect(() => {
+    if (openSection !== 'rules') return
+    if (!fileDirectory) {
+      setFiles([])
+      setFilesLoading(false)
+      return
+    }
+    if (typeof fetchEncoderFiles !== 'function') return
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      setFilesLoading(true)
+      void fetchEncoderFiles(fileDirectory, fileSearch)
+        .then((result) => {
+          if (!cancelled) setFiles(result.files)
+        })
+        .catch((error) => {
+          if (!cancelled) onError(errorMessage(error))
+        })
+        .finally(() => {
+          if (!cancelled) setFilesLoading(false)
+        })
+    }, 180)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [fileDirectory, fileSearch, onError])
 
   const toggle = (section: Section) => {
     setOpenSection((current) => (current === section ? null : section))
@@ -156,6 +247,8 @@ export default function EncoderSettings({
     try {
       await saveEncoderConfig(paths)
       setWatchPaths(paths)
+      setWatchDirty(false)
+      pendingWatchPaths.current = paths
       onRefresh()
     } catch (error) {
       onError(errorMessage(error))
@@ -165,6 +258,8 @@ export default function EncoderSettings({
   }
 
   const updateRule = (index: number, patch: Partial<EncoderRule>) => {
+    pendingRules.current = null
+    setRulesDirty(true)
     setDraftRules((current) =>
       current.map((rule, ruleIndex) => (ruleIndex === index ? { ...rule, ...patch } : rule)),
     )
@@ -175,6 +270,8 @@ export default function EncoderSettings({
     conditionIndex: number,
     patch: Partial<EncoderRuleCondition>,
   ) => {
+    pendingRules.current = null
+    setRulesDirty(true)
     setDraftRules((current) =>
       current.map((rule, index) =>
         index === ruleIndex
@@ -190,6 +287,8 @@ export default function EncoderSettings({
   }
 
   const moveRule = (index: number, offset: -1 | 1) => {
+    pendingRules.current = null
+    setRulesDirty(true)
     setDraftRules((current) => {
       const destination = index + offset
       if (destination < 0 || destination >= current.length) return current
@@ -214,6 +313,8 @@ export default function EncoderSettings({
     setSavingRules(true)
     try {
       await saveEncoderRules({ rules: normalizedRules, fallback })
+      pendingRules.current = { rules: cloneRules(normalizedRules), fallback }
+      setRulesDirty(false)
       onRefresh()
     } catch (error) {
       onError(errorMessage(error))
@@ -278,7 +379,32 @@ export default function EncoderSettings({
     setReprocessing(false)
   }
 
-  const targets = ['skip', ...presets.map((preset) => preset.name)]
+  const selectWatchPath = (index: number, path: string) => {
+    pendingWatchPaths.current = null
+    setWatchDirty(true)
+    setWatchPaths((current) =>
+      current.map((item, itemIndex) => (itemIndex === index ? path : item)),
+    )
+  }
+
+  const selectedDirectory = (path: string): EncoderDirectory =>
+    directories.find((directory) => directory.path === path) ?? { path, base: '' }
+
+  const targets = Array.from(
+    new Set([
+      'skip',
+      ...presets.map((preset) => preset.name),
+      ...draftRules.map((rule) => rule.target),
+      fallback,
+    ]),
+  )
+  const watchDirectoryOptions = Array.from(
+    new Map(
+      [...directories, ...watchPaths.filter(Boolean).map((path) => selectedDirectory(path))].map(
+        (directory) => [directory.path, directory],
+      ),
+    ).values(),
+  )
 
   return (
     <section aria-label="Encoder settings" className="glass rounded-[16px] p-4">
@@ -304,34 +430,51 @@ export default function EncoderSettings({
       </div>
 
       {openSection === 'watch' && (
-        <div className="mt-4 space-y-3 border-t border-white/6 pt-4">
+        <div className="mt-4 space-y-3 rounded-xl border border-white/8 bg-white/3 p-4">
+          <label className="block text-[0.72rem] font-medium text-[var(--text-secondary)]">
+            Search available folders
+            <input
+              value={directorySearch}
+              onChange={(event) => setDirectorySearch(event.target.value)}
+              placeholder="Filter directories…"
+              className="input-field input-teal mt-1"
+            />
+          </label>
           {watchPaths.length === 0 && (
             <p className="text-[0.76rem] text-[var(--text-tertiary)]">
               Watching is paused until a folder is added and saved.
             </p>
           )}
           {watchPaths.map((path, index) => (
-            <div key={index} className="flex items-end gap-2">
-              <label className="min-w-0 flex-1 text-[0.72rem] text-[var(--text-secondary)]">
-                Watch folder {index + 1}
-                <input
+            <div key={`${path}-${index}`} className="flex items-end gap-2">
+              <div className="min-w-0 flex-1">
+                <DirectorySelect
+                  directories={watchDirectoryOptions}
                   value={path}
-                  onChange={(event) =>
-                    setWatchPaths((current) =>
-                      current.map((item, itemIndex) =>
-                        itemIndex === index ? event.target.value : item,
-                      ),
-                    )
-                  }
-                  className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 py-2 text-[0.82rem] text-[var(--text-primary)]"
+                  base={selectedDirectory(path).base}
+                  onChange={(selected) => selectWatchPath(index, selected)}
+                  onRefresh={() => setDirectorySearch('')}
+                  isLoading={directoriesLoading}
+                  color="teal"
+                  showBaseLabel
+                  onClear={() => selectWatchPath(index, '')}
                 />
-              </label>
+                <input
+                  aria-label={`Watch folder ${index + 1}`}
+                  value={path}
+                  onChange={(event) => selectWatchPath(index, event.target.value)}
+                  className="sr-only"
+                  tabIndex={-1}
+                />
+              </div>
               <button
                 type="button"
                 aria-label={`Remove watch folder ${index + 1}`}
-                onClick={() =>
+                onClick={() => {
+                  pendingWatchPaths.current = null
+                  setWatchDirty(true)
                   setWatchPaths((current) => current.filter((_, itemIndex) => itemIndex !== index))
-                }
+                }}
                 className="rounded-lg px-3 py-2 text-[0.75rem] text-red-300"
               >
                 Remove
@@ -341,7 +484,11 @@ export default function EncoderSettings({
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() => setWatchPaths((current) => [...current, ''])}
+              onClick={() => {
+                pendingWatchPaths.current = null
+                setWatchDirty(true)
+                setWatchPaths((current) => [...current, ''])
+              }}
               className="rounded-lg border border-white/8 px-3 py-2 text-[0.75rem] text-[var(--text-secondary)]"
             >
               Add watch folder
@@ -362,6 +509,7 @@ export default function EncoderSettings({
         <div className="mt-4 border-t border-white/6 pt-4">
           <PresetEditor
             presets={presets}
+            health={health}
             onSaved={onRefresh}
             onDeleted={onRefresh}
             onError={onError}
@@ -403,11 +551,13 @@ export default function EncoderSettings({
                   <button
                     type="button"
                     aria-label={`Remove rule ${rule.id}`}
-                    onClick={() =>
+                    onClick={() => (
+                      (pendingRules.current = null),
+                      setRulesDirty(true),
                       setDraftRules((current) =>
                         current.filter((_, itemIndex) => itemIndex !== ruleIndex),
                       )
-                    }
+                    )}
                     className="text-[0.72rem] text-red-300"
                   >
                     Remove
@@ -423,7 +573,7 @@ export default function EncoderSettings({
                         </p>
                       )}
                       <div className="grid gap-2 sm:grid-cols-[1fr_5rem_1fr_auto]">
-                        <label className="text-[0.68rem] text-[var(--text-tertiary)]">
+                        <label className="field-label text-[var(--text-secondary)]">
                           Field
                           <select
                             aria-label={`${rule.id} condition ${conditionIndex + 1} field`}
@@ -444,6 +594,7 @@ export default function EncoderSettings({
                                     : '',
                               })
                             }}
+                            className="input-field input-teal mt-1"
                           >
                             {FIELDS.map((field) => (
                               <option key={field} value={field}>
@@ -452,7 +603,7 @@ export default function EncoderSettings({
                             ))}
                           </select>
                         </label>
-                        <label className="text-[0.68rem] text-[var(--text-tertiary)]">
+                        <label className="field-label text-[var(--text-secondary)]">
                           Operator
                           <select
                             aria-label={`${rule.id} condition ${conditionIndex + 1} operator`}
@@ -460,6 +611,7 @@ export default function EncoderSettings({
                             onChange={(event) =>
                               updateCondition(ruleIndex, conditionIndex, { op: event.target.value })
                             }
+                            className="input-field input-teal mt-1"
                           >
                             {operatorsFor(condition.field).map((operator) => (
                               <option key={operator} value={operator}>
@@ -468,7 +620,7 @@ export default function EncoderSettings({
                             ))}
                           </select>
                         </label>
-                        <label className="text-[0.68rem] text-[var(--text-tertiary)]">
+                        <label className="field-label text-[var(--text-secondary)]">
                           Value
                           {BOOLEAN_FIELDS.has(condition.field) ? (
                             <select
@@ -479,9 +631,27 @@ export default function EncoderSettings({
                                   value: event.target.value === 'true',
                                 })
                               }
+                              className="input-field input-teal mt-1"
                             >
                               <option value="true">true</option>
                               <option value="false">false</option>
+                            </select>
+                          ) : condition.field === 'source_tool' ? (
+                            <select
+                              aria-label={`${rule.id} condition ${conditionIndex + 1} value`}
+                              value={String(condition.value)}
+                              onChange={(event) =>
+                                updateCondition(ruleIndex, conditionIndex, {
+                                  value: event.target.value,
+                                })
+                              }
+                              className="input-field input-teal mt-1"
+                            >
+                              {SOURCE_TOOLS.map((tool) => (
+                                <option key={tool} value={tool}>
+                                  {tool || 'any'}
+                                </option>
+                              ))}
                             </select>
                           ) : (
                             <input
@@ -492,6 +662,7 @@ export default function EncoderSettings({
                                   value: parseConditionValue(condition.field, event.target.value),
                                 })
                               }
+                              className="input-field input-teal mt-1"
                             />
                           )}
                         </label>
@@ -527,12 +698,13 @@ export default function EncoderSettings({
                   >
                     + AND condition
                   </button>
-                  <label className="min-w-[10rem] text-[0.68rem] text-[var(--text-tertiary)]">
+                  <label className="field-label min-w-[10rem] text-[var(--text-secondary)]">
                     Target
                     <select
                       aria-label={`Target for ${rule.id}`}
                       value={rule.target}
                       onChange={(event) => updateRule(ruleIndex, { target: event.target.value })}
+                      className="input-field input-teal mt-1"
                     >
                       {targets.map((target) => (
                         <option key={target} value={target}>
@@ -548,9 +720,17 @@ export default function EncoderSettings({
               <span className="text-[0.74rem] font-medium text-[var(--text-secondary)]">
                 Fallback
               </span>
-              <label className="mt-2 block text-[0.68rem] text-[var(--text-tertiary)]">
+              <label className="field-label mt-2 block text-[var(--text-secondary)]">
                 Fallback target
-                <select value={fallback} onChange={(event) => setFallback(event.target.value)}>
+                <select
+                  value={fallback}
+                  onChange={(event) => {
+                    pendingRules.current = null
+                    setRulesDirty(true)
+                    setFallback(event.target.value)
+                  }}
+                  className="input-field input-teal mt-1"
+                >
                   {targets.map((target) => (
                     <option key={target} value={target}>
                       {target === 'skip' ? 'Skip' : target}
@@ -564,7 +744,9 @@ export default function EncoderSettings({
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() =>
+              onClick={() => (
+                (pendingRules.current = null),
+                setRulesDirty(true),
                 setDraftRules((current) => [
                   ...current,
                   {
@@ -573,7 +755,7 @@ export default function EncoderSettings({
                     target: 'skip',
                   },
                 ])
-              }
+              )}
             >
               Add rule
             </button>
@@ -583,14 +765,71 @@ export default function EncoderSettings({
           </div>
 
           <div className="rounded-xl border border-white/8 bg-white/3 p-3">
-            <label className="block text-[0.7rem] text-[var(--text-secondary)]">
-              File to test
+            <p className="field-label text-[var(--text-secondary)]">File to test</p>
+            <label className="mt-2 block text-[0.7rem] text-[var(--text-secondary)]">
+              Search directories
               <input
-                value={testPath}
-                onChange={(event) => changeTestPath(event.target.value)}
-                className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 py-2 text-[0.8rem] text-[var(--text-primary)]"
+                value={directorySearch}
+                onChange={(event) => setDirectorySearch(event.target.value)}
+                placeholder="Filter directories…"
+                className="input-field input-teal mt-1"
               />
             </label>
+            <div className="mt-2">
+              <DirectorySelect
+                directories={directories}
+                value={fileDirectory}
+                base={selectedDirectory(fileDirectory).base}
+                onChange={(path) => {
+                  setFileDirectory(path)
+                  changeTestPath('')
+                }}
+                onRefresh={() => setDirectorySearch('')}
+                isLoading={directoriesLoading}
+                color="teal"
+                showBaseLabel
+                ariaLabel="Test file directory"
+                onClear={() => {
+                  setFileDirectory('')
+                  changeTestPath('')
+                }}
+              />
+            </div>
+            <label className="mt-2 block text-[0.7rem] text-[var(--text-secondary)]">
+              Filter files
+              <input
+                value={fileSearch}
+                onChange={(event) => setFileSearch(event.target.value)}
+                placeholder="Filter files…"
+                className="input-field input-teal mt-1"
+              />
+            </label>
+            {files.length > 0 ? (
+              <select
+                aria-label="File to test selector"
+                value={testPath}
+                onChange={(event) => changeTestPath(event.target.value)}
+                className="input-field input-teal mt-2"
+              >
+                <option value="">Select a media file…</option>
+                {files.map((file) => (
+                  <option key={file.path} value={file.path}>
+                    {file.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                aria-label="File to test"
+                value={testPath}
+                onChange={(event) => changeTestPath(event.target.value)}
+                placeholder="No files found; enter a path to test"
+                className="input-field input-teal mt-2"
+              />
+            )}
+            {filesLoading && (
+              <p className="mt-1 text-[0.68rem] text-[var(--text-tertiary)]">Loading files…</p>
+            )}
             <div className="mt-2 flex flex-wrap gap-2">
               <button
                 type="button"

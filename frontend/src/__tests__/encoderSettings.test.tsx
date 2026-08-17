@@ -5,6 +5,8 @@ import * as api from '@/lib/api'
 import type { EncoderConfig, EncoderPreset, EncoderRule, EncoderTestResult } from '@/types'
 
 vi.mock('@/lib/api', () => ({
+  fetchEncoderDirectories: vi.fn().mockResolvedValue({ directories: [] }),
+  fetchEncoderFiles: vi.fn().mockResolvedValue({ files: [] }),
   saveEncoderConfig: vi.fn(),
   saveEncoderRules: vi.fn(),
   testEncoderFile: vi.fn(),

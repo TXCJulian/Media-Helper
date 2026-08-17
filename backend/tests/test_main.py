@@ -499,8 +499,9 @@ class TestEncoderLifespan:
                     # The caller does not get a quiet 200 -- approving (or
                     # any other store/queue-backed route) fails loud instead
                     # of silently accepting work nobody will ever process.
-                    with pytest.raises(RuntimeError):
-                        c.post("/api/encoder/jobs/some-id/approve")
+                    response = c.post("/api/encoder/jobs/some-id/approve")
+                    assert response.status_code == 503
+                    assert response.json()["code"] == "encoder_configuration_unavailable"
 
                 # No leaked dispatch worker thread survives the failure.
                 assert not any(

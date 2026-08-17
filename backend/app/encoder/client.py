@@ -34,8 +34,14 @@ class EncoderUnreachable(RuntimeError):
 class EncoderRejected(RuntimeError):
     """The service answered with an error."""
 
-    def __init__(self, code: str, reason: str, status: int,
-                 detail: dict | None = None, retry_after: int | None = None) -> None:
+    def __init__(
+        self,
+        code: str,
+        reason: str,
+        status: int,
+        detail: dict | None = None,
+        retry_after: int | None = None,
+    ) -> None:
         super().__init__(f"{code}: {reason}")
         self.code = code
         self.reason = reason
@@ -93,8 +99,9 @@ class EncoderClient:
         payload = _json_or_empty(response)
         job_id = payload.get("job_id")
         if not job_id:
-            raise EncoderRejected("unknown", "202 carried no job_id",
-                                  response.status_code, payload)
+            raise EncoderRejected(
+                "unknown", "202 carried no job_id", response.status_code, payload
+            )
         return job_id
 
     def poll(self, remote_job_id: str) -> dict:

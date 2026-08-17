@@ -493,6 +493,7 @@ def test_test_endpoint_reports_the_match_without_encoding(client, monkeypatch, t
     candidate = watch_root / "x.mkv"
     candidate.write_bytes(b"")
     monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
 
     client.post("/api/encoder/presets", json={"document": PRESET_DOC})
     client.put("/api/encoder/rules", json={
@@ -519,6 +520,7 @@ def test_test_endpoint_reports_a_probe_failure_as_a_400(client, monkeypatch, tmp
     candidate = watch_root / "x.txt"
     candidate.write_bytes(b"")
     monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
 
     def _boom(_p):
         raise routes_mod.ProbeError("not a video")
@@ -573,6 +575,7 @@ def test_test_endpoint_rejects_a_symlink_escaping_the_watch_root(client, monkeyp
     except OSError:
         pytest.skip("symlinks not supported in this environment")
     monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
     probed = []
     monkeypatch.setattr(routes_mod, "probe", lambda p: probed.append(p) or {})
     r = client.post("/api/encoder/test", json={"path": str(link)})
@@ -587,6 +590,7 @@ def test_test_endpoint_accepts_a_legitimate_in_root_file(client, monkeypatch, tm
     candidate = watch_root / "Film.mkv"
     candidate.write_bytes(b"")
     monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
     monkeypatch.setattr(routes_mod, "probe", lambda _p: {"height": 1080})
     r = client.post("/api/encoder/test", json={"path": str(candidate)})
     assert r.status_code == 200
@@ -792,8 +796,9 @@ def test_a_contained_startup_failure_surfaces_at_the_route_not_a_fake_200(client
     after a startup failure must not come back as a quiet success."""
     routes_mod.mark_startup_failed()
 
-    with pytest.raises(RuntimeError):
-        client.get("/api/encoder/jobs")
+    response = client.get("/api/encoder/jobs")
+    assert response.status_code == 503
+    assert response.json()["code"] == "encoder_configuration_unavailable"
 
 
 # ---- Important 10: /events was the one unguarded accessor -----------------
@@ -807,8 +812,9 @@ def test_events_endpoint_fails_loud_after_a_contained_startup_failure(client):
     mid-body instead of a normal error status."""
     routes_mod.mark_startup_failed()
 
-    with pytest.raises(RuntimeError):
-        client.get("/api/encoder/events")
+    response = client.get("/api/encoder/events")
+    assert response.status_code == 503
+    assert response.json()["code"] == "encoder_configuration_unavailable"
 
 
 def test_events_endpoint_resolves_the_store_before_the_streaming_response(client, monkeypatch):
@@ -895,8 +901,9 @@ def test_health_fails_loud_after_a_contained_startup_failure(client):
     encoder let it report "ok" while the local store and queue were dead --
     green during exactly the failure it exists to reveal."""
     routes_mod.mark_startup_failed()
-    with pytest.raises(RuntimeError):
-        client.get("/api/encoder/health")
+    response = client.get("/api/encoder/health")
+    assert response.status_code == 503
+    assert response.json()["code"] == "encoder_configuration_unavailable"
 
 
 def test_probe_failures_do_not_leak_ffprobe_output_to_the_caller(
@@ -913,6 +920,7 @@ def test_probe_failures_do_not_leak_ffprobe_output_to_the_caller(
     candidate = watch_root / "x.mkv"
     candidate.write_bytes(b"")
     monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
 
     secret = "/etc/shadow: Permission denied"
     monkeypatch.setattr(
@@ -933,6 +941,7 @@ def test_reprocess_clears_the_dedup_record(client, monkeypatch, tmp_path):
     candidate = watch_root / "x.mkv"
     candidate.write_bytes(b"data")
     monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
 
     store = routes_mod.get_store()
     st = candidate.stat()

@@ -1,19 +1,21 @@
+import logging
 import os
 import re
-import logging
 import unicodedata
-from mutagen.flac import FLAC
-from mutagen.wave import WAVE
-from mutagen.mp3 import MP3
-from mutagen.oggvorbis import OggVorbis
-from mutagen.oggopus import OggOpus
+from typing import Any
+
+from mutagen._util import MutagenError
 from mutagen.aiff import AIFF
 from mutagen.asf import ASF
+from mutagen.flac import FLAC
+from mutagen.mp3 import MP3
 from mutagen.musepack import Musepack
-from mutagen._util import MutagenError
-from typing import Optional, Any
+from mutagen.oggopus import OggOpus
+from mutagen.oggvorbis import OggVorbis
+from mutagen.wave import WAVE
+
 from app.config import VALID_MUSIC_EXT
-from app.fs_utils import flush_directory, collision_safe_path
+from app.fs_utils import collision_safe_path, flush_directory
 from app.get_dirs import has_valid_files
 
 logger = logging.getLogger(__name__)
@@ -91,7 +93,7 @@ def leading_int(raw: Any) -> int:
     return int(m.group(1)) if m else 0
 
 
-def get_first_tag_value(audio: Any, tag_name: str) -> Optional[str]:
+def get_first_tag_value(audio: Any, tag_name: str) -> str | None:
     try:
         vals: Any = audio.get(tag_name)
     except (KeyError, MutagenError):
@@ -117,7 +119,7 @@ def get_first_tag_value(audio: Any, tag_name: str) -> Optional[str]:
         return None
 
 
-def load_audio_file(filepath: str) -> Optional[Any]:
+def load_audio_file(filepath: str) -> Any | None:
     _, ext = os.path.splitext(filepath)
     ext_lower = ext.lower()
 
@@ -203,7 +205,7 @@ def handle_sidecar_lyrics(
 
 def rename_music(
     directory: str, dry_run: bool = False, lyrics_action: str = "rename"
-) -> tuple[list[str], Optional[str]]:
+) -> tuple[list[str], str | None]:
 
     if lyrics_action not in LYRICS_ACTIONS:
         raise ValueError(
@@ -212,7 +214,7 @@ def rename_music(
         )
 
     logs: list[str] = []
-    error: Optional[str] = None
+    error: str | None = None
 
     if not os.path.isdir(directory):
         error = f"Directory not found: {directory}"
@@ -283,7 +285,7 @@ def rename_music(
             try:
                 os.rename(filepath, new_path)
             except OSError as e:
-                skipped_files.append((filename, f"Error renaming: {str(e)}"))
+                skipped_files.append((filename, f"Error renaming: {e!s}"))
                 continue
             logs.append(f"[RENAME]\t'{filename}' -> {os.path.basename(new_path)}")
             # Only after the audio moved, so the lyrics follow its final name.

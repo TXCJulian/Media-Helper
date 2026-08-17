@@ -8,7 +8,7 @@ import queue as queue_mod
 import time
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -36,6 +36,9 @@ router = APIRouter(prefix="/api/encoder")
 
 _HEARTBEAT_SECONDS = 15.0
 _POLL_SECONDS = 0.25
+_MAX_DIRECTORY_RESULTS = 2_000
+_MAX_FILE_RESULTS = 2_000
+_MAX_WALK_ENTRIES = 25_000
 
 _store: EncoderStore | None = None
 _client: EncoderClient | None = None
@@ -52,14 +55,24 @@ _runtime: EncoderRuntime | None = None
 # unconditionally when `init_downloader()` was never called or was undone by
 # `shutdown_downloader()`.
 _startup_failed = False
+_startup_failure_reason: str | None = None
+
+
+class EncoderConfigurationUnavailable(RuntimeError):
+    """The encoder could not start with its persisted configuration."""
+
+
+def _startup_error() -> EncoderConfigurationUnavailable:
+    return EncoderConfigurationUnavailable(
+        _startup_failure_reason
+        or "Encoder configuration is unavailable; check the server logs"
+    )
 
 
 def get_store() -> EncoderStore:
     global _store
     if _startup_failed:
-        raise RuntimeError(
-            "Encoder failed to start; check the server logs for the cause"
-        )
+        raise _startup_error()
     if _store is None:
         _store = EncoderStore(config.ENCODER_DB)
     return _store
@@ -72,9 +85,7 @@ def get_client() -> EncoderClient:
         # the remote encoder and cheerfully reported "ok" while the local
         # database and dispatch queue were dead -- the one screen an operator
         # checks first, showing green during the failure it exists to reveal.
-        raise RuntimeError(
-            "Encoder failed to start; check the server logs for the cause"
-        )
+        raise _startup_error()
     if _client is None:
         _client = EncoderClient(config.ENCODER_URL)
     return _client
@@ -83,9 +94,7 @@ def get_client() -> EncoderClient:
 def get_events() -> EventBroadcaster:
     global _events
     if _startup_failed:
-        raise RuntimeError(
-            "Encoder failed to start; check the server logs for the cause"
-        )
+        raise _startup_error()
     if _events is None:
         _events = EventBroadcaster()
     return _events
@@ -94,9 +103,7 @@ def get_events() -> EventBroadcaster:
 def get_queue() -> EncodeQueue:
     global _queue
     if _startup_failed:
-        raise RuntimeError(
-            "Encoder failed to start; check the server logs for the cause"
-        )
+        raise _startup_error()
     if _queue is None:
         _queue = EncodeQueue(
             get_store(),
@@ -116,14 +123,16 @@ def register_runtime(runtime: EncoderRuntime) -> None:
 
 
 def get_runtime() -> EncoderRuntime:
-    if _startup_failed or _runtime is None:
+    if _startup_failed:
+        raise _startup_error()
+    if _runtime is None:
         raise RuntimeError(
             "Encoder runtime is unavailable; check the server logs for the cause"
         )
     return _runtime
 
 
-def mark_startup_failed() -> None:
+def mark_startup_failed(reason: str | None = None) -> None:
     """Record a contained lifespan startup failure and discard live state.
 
     Called from `main.py`'s lifespan *after* it has already stopped whatever
@@ -134,7 +143,7 @@ def mark_startup_failed() -> None:
     reconstructing (a fresh `EncodeQueue()` whose `.start()` nobody calls
     again is exactly as dead as the stopped one it would replace).
     """
-    global _store, _queue, _events, _runtime, _startup_failed
+    global _store, _queue, _events, _runtime, _startup_failed, _startup_failure_reason
     if _store is not None:
         _store.close()
     _store = None
@@ -142,10 +151,15 @@ def mark_startup_failed() -> None:
     _events = None
     _runtime = None
     _startup_failed = True
+    _startup_failure_reason = (
+        f"Encoder configuration is unavailable: {reason}"
+        if reason
+        else "Encoder configuration is unavailable; check the server logs"
+    )
 
 
 def reset_state_for_tests() -> None:
-    global _store, _events, _queue, _runtime, _startup_failed
+    global _store, _events, _queue, _runtime, _startup_failed, _startup_failure_reason
     if _store is not None:
         _store.close()
     _store = None
@@ -153,6 +167,7 @@ def reset_state_for_tests() -> None:
     _queue = None
     _runtime = None
     _startup_failed = False
+    _startup_failure_reason = None
 
 
 class PresetImport(BaseModel):
@@ -236,13 +251,26 @@ async def _validation_exception_handler(
     if not (path == router.prefix or path.startswith(router.prefix + "/")):
         return await request_validation_exception_handler(request, exc)
     errors = exc.errors()
-    reason = "; ".join(
-        f"{'.'.join(str(p) for p in e.get('loc', ()) if p != 'body')}: {e.get('msg', '')}"
-        for e in errors
-    ) or "Invalid request body"
+    reason = (
+        "; ".join(
+            f"{'.'.join(str(p) for p in e.get('loc', ()) if p != 'body')}: {e.get('msg', '')}"
+            for e in errors
+        )
+        or "Invalid request body"
+    )
     return JSONResponse(
         status_code=422, content={"code": "invalid_request", "reason": reason}
     )
+
+
+async def _configuration_exception_handler(
+    request: Request, exc: EncoderConfigurationUnavailable
+) -> JSONResponse:
+    """Expose startup configuration failures as a stable encoder envelope."""
+    path = request.url.path
+    if path == router.prefix or path.startswith(router.prefix + "/"):
+        return _error(503, "encoder_configuration_unavailable", str(exc))
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 
 def register_error_handlers(app: FastAPI) -> None:
@@ -253,6 +281,9 @@ def register_error_handlers(app: FastAPI) -> None:
     `APIRouter`'s exception handlers along when it is `include_router()`-ed.
     """
     app.add_exception_handler(RequestValidationError, _validation_exception_handler)
+    app.add_exception_handler(
+        EncoderConfigurationUnavailable, _configuration_exception_handler
+    )
 
 
 def _vendor(encoders: list[str]) -> str:
@@ -311,6 +342,93 @@ def encoder_config() -> dict:
     }
 
 
+def _base_label(path: str) -> str:
+    labels = {value: label for label, value in config.BASE_PATH_LABELS.items()}
+    return labels.get(path, os.path.basename(path.rstrip("/\\")) or path)
+
+
+def _ignore_walk_error(_error: OSError) -> None:
+    """Skip directories that disappear or cannot be read during a picker scan."""
+
+
+@router.get("/directories")
+def encoder_directories(
+    search: str | None = Query(None, max_length=200),
+) -> dict[str, Any]:
+    """List safe absolute directories for the watch-folder picker."""
+    needle = (search or "").strip().lower()
+    found: list[dict[str, str]] = []
+    visited = 0
+    truncated = False
+    for base in config.BASE_PATHS:
+        resolved_base = os.path.realpath(base)
+        if not os.path.isdir(resolved_base):
+            continue
+        for root, dirs, _files in os.walk(resolved_base, onerror=_ignore_walk_error):
+            visited += 1
+            if visited > _MAX_WALK_ENTRIES:
+                truncated = True
+                break
+            dirs[:] = [d for d in dirs if d != ".trickplay" and not d.startswith(".")]
+            resolved = os.path.realpath(root)
+            if needle and needle not in resolved.lower():
+                continue
+            found.append({"path": resolved, "base": _base_label(base)})
+            if len(found) >= _MAX_DIRECTORY_RESULTS:
+                truncated = True
+                break
+        if truncated:
+            break
+    unique = {entry["path"]: entry for entry in found}
+    return {
+        "directories": sorted(unique.values(), key=lambda entry: entry["path"].lower()),
+        "truncated": truncated,
+    }
+
+
+@router.get("/files")
+def encoder_files(
+    directory: str = Query(..., max_length=1000),
+    search: str | None = Query(None, max_length=200),
+) -> dict[str, Any]:
+    """List video files below a configured directory for the test picker."""
+    resolved = os.path.realpath(directory)
+    bases = [os.path.realpath(base) for base in config.BASE_PATHS]
+    if not os.path.isdir(resolved) or not any(
+        _is_within_base(resolved, base) for base in bases
+    ):
+        return {"files": []}
+    needle = (search or "").strip().lower()
+    valid_extensions = {extension.lower() for extension in config.VALID_VIDEO_EXT}
+    files: list[dict[str, str]] = []
+    visited = 0
+    truncated = False
+    for root, dirs, names in os.walk(resolved, onerror=_ignore_walk_error):
+        visited += 1
+        if visited > _MAX_WALK_ENTRIES:
+            truncated = True
+            break
+        dirs[:] = [d for d in dirs if d != ".trickplay" and not d.startswith(".")]
+        for name in names:
+            if os.path.splitext(name)[1].lower() not in valid_extensions:
+                continue
+            path = os.path.realpath(os.path.join(root, name))
+            if not any(_is_within_base(path, base) for base in bases):
+                continue
+            if needle and needle not in path.lower():
+                continue
+            files.append({"path": path, "name": os.path.relpath(path, resolved)})
+            if len(files) >= _MAX_FILE_RESULTS:
+                truncated = True
+                break
+        if truncated:
+            break
+    return {
+        "files": sorted(files, key=lambda entry: entry["name"].lower()),
+        "truncated": truncated,
+    }
+
+
 def _validate_watch_paths(paths: list[str]) -> list[str]:
     """Return existing, de-duplicated watch directories inside a base path."""
     bases = [os.path.realpath(base) for base in config.BASE_PATHS]
@@ -322,8 +440,7 @@ def _validate_watch_paths(paths: list[str]) -> list[str]:
             _is_within_base(resolved, base) for base in bases
         ):
             raise ValueError(
-                "Watch path is not an existing directory under BASE_PATHS: "
-                f"{path}"
+                "Watch path is not an existing directory under BASE_PATHS: " f"{path}"
             )
         if resolved not in seen:
             seen.add(resolved)
@@ -334,7 +451,9 @@ def _validate_watch_paths(paths: list[str]) -> list[str]:
 def _is_within_base(path: str, base: str) -> bool:
     """Whether *path* is contained by *base*, including filesystem roots."""
     try:
-        return os.path.normcase(os.path.commonpath([path, base])) == os.path.normcase(base)
+        return os.path.normcase(os.path.commonpath([path, base])) == os.path.normcase(
+            base
+        )
     except ValueError:
         return False
 
@@ -354,14 +473,24 @@ def replace_config(payload: WatchPathsIn) -> dict | JSONResponse:
 @router.get("/presets")
 def list_presets() -> list[dict]:
     return [
-        {"name": p.name, "encoder": p.encoder, "video_preset": p.video_preset,
-         "file_format": p.file_format}
+        {
+            "name": p.name,
+            "encoder": p.encoder,
+            "video_preset": p.video_preset,
+            "file_format": p.file_format,
+        }
         for p in get_store().list_presets()
     ]
 
 
 def _validate_preset_leaf(name: str, body: dict) -> NamedPreset:
     """Parse and capability-check one editable HandBrake preset leaf."""
+    if not isinstance(name, str) or not name.strip():
+        raise PresetError("PresetName must be a non-empty string")
+    for field in ("PresetName", "VideoEncoder", "VideoPreset", "FileFormat"):
+        value = body.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise PresetError(f"Preset {name!r} must include a non-empty {field}")
     presets = parse_document({"PresetList": [body]})
     if len(presets) != 1 or presets[0].name != name:
         raise PresetError("PresetName must match the URL name")
@@ -428,8 +557,11 @@ def import_presets(payload: PresetImport) -> dict | JSONResponse:
 
     usable = [p for p in presets if p.encoder in available]
     skipped = [
-        {"name": p.name, "encoder": p.encoder,
-         "reason": f"The connected encoder does not provide {p.encoder!r}"}
+        {
+            "name": p.name,
+            "encoder": p.encoder,
+            "reason": f"The connected encoder does not provide {p.encoder!r}",
+        }
         for p in presets
         if p.encoder not in available
     ]
@@ -457,10 +589,14 @@ def list_rules() -> dict:
     store = get_store()
     return {
         "rules": [
-            {"id": r.id,
-             "conditions": [{"field": c.field, "op": c.op, "value": c.value}
-                            for c in r.conditions],
-             "target": r.target}
+            {
+                "id": r.id,
+                "conditions": [
+                    {"field": c.field, "op": c.op, "value": c.value}
+                    for c in r.conditions
+                ],
+                "target": r.target,
+            }
             for r in store.list_rules()
         ],
         "fallback": store.get_setting("fallback_target", SKIP),
@@ -482,28 +618,48 @@ def replace_rules(payload: RulesIn) -> dict | JSONResponse:
                 return _error(400, "invalid_rule", str(exc))
 
     rules = [
-        Rule(id=r.id,
-             conditions=[Condition(c.field, c.op, c.value) for c in r.conditions],
-             target=r.target)
+        Rule(
+            id=r.id,
+            conditions=[Condition(c.field, c.op, c.value) for c in r.conditions],
+            target=r.target,
+        )
         for r in payload.rules
     ]
     for rule in [*rules]:
         if rule.target not in known:
-            return _error(400, "unknown_target",
-                          f"Rule {rule.id!r} targets {rule.target!r}, which is "
-                          "not a stored preset")
+            return _error(
+                400,
+                "unknown_target",
+                f"Rule {rule.id!r} targets {rule.target!r}, which is "
+                "not a stored preset. Import or save that preset before saving rules.",
+            )
     if payload.fallback not in known:
-        return _error(400, "unknown_target",
-                      f"Fallback targets {payload.fallback!r}, which is not a "
-                      "stored preset")
+        return _error(
+            400,
+            "unknown_target",
+            f"Fallback targets {payload.fallback!r}, which is not a stored preset. "
+            "Import or save that preset before saving rules.",
+        )
 
     # Validate fields and operators now, against a probe-shaped sample. A typo
     # would otherwise be a rule that silently never fires.
     # Every field must be present, not just named: `_holds` returns False for a
     # missing fact before it can reject, say, `contains` on a numeric field.
-    sample = {"height": 0, "width": 0, "size": 0, "bit_rate": 0, "bit_depth": 0,
-              "frame_rate": 0.0, "duration": 0.0, "video_codec": "", "profile": "",
-              "hdr": False, "dolby_vision": False, "source_tool": "", "encoder_tag": ""}
+    sample = {
+        "height": 0,
+        "width": 0,
+        "size": 0,
+        "bit_rate": 0,
+        "bit_depth": 0,
+        "frame_rate": 0.0,
+        "duration": 0.0,
+        "video_codec": "",
+        "profile": "",
+        "hdr": False,
+        "dolby_vision": False,
+        "source_tool": "",
+        "encoder_tag": "",
+    }
     try:
         evaluate(sample, rules, payload.fallback)
     except RuleError as exc:
@@ -524,25 +680,23 @@ def _resolve_probe_path(path: str) -> str | None:
     `ENCODER_WATCH_PATHS` has no label system the way `BASE_PATH_LABELS`
     does; every entry is already a full in-container path.
 
-    The roots are `BASE_PATHS` *and* the watch paths, not the watch paths
-    alone. This endpoint only reads: it answers "which rule would win for this
-    file", which is exactly the question you ask about a folder you are
-    considering adding to the watch list. Scoping it to the watch paths made
-    that unanswerable, and made an unconfigured install reject every path --
-    which reads as a broken endpoint rather than an unconfigured one.
-    `BASE_PATHS` is already this application's boundary for "paths a user may
-    point at"; the watch paths are unioned in because an operator may watch a
-    location outside it.
+    The roots are `BASE_PATHS` plus the runtime's *effective* persisted watch
+    paths, not the raw environment default. This endpoint only reads: it
+    answers "which rule would win for this file", which is exactly the
+    question you ask about a folder you are considering adding to the watch
+    list. `BASE_PATHS` remains the application's boundary for paths a user may
+    point at, while the runtime paths keep the allow-list correct after a
+    configuration update.
     """
     resolved = os.path.realpath(path)
-    roots = [
-        os.path.realpath(p)
-        for p in (*config.BASE_PATHS, *config.ENCODER_WATCH_PATHS)
-    ]
-    for root in roots:
-        if resolved == root or resolved.startswith(root + os.sep):
-            return resolved
-    return None
+    roots = [os.path.realpath(p) for p in config.BASE_PATHS]
+    try:
+        roots.extend(os.path.realpath(p) for p in get_runtime().watch_paths)
+    except RuntimeError:
+        # A failed runtime is already surfaced by /config; retaining the base
+        # roots keeps the read-only test endpoint deterministic during startup.
+        pass
+    return resolved if any(_is_within_base(resolved, root) for root in roots) else None
 
 
 @router.post("/test", response_model=None)
@@ -561,8 +715,9 @@ def test_against_file(payload: TestIn) -> dict | JSONResponse:
     store = get_store()
     resolved = _resolve_probe_path(payload.path)
     if resolved is None:
-        return _error(400, "invalid_path",
-                      "Path is not within a configured readable root")
+        return _error(
+            400, "invalid_path", "Path is not within a configured readable root"
+        )
     if not os.path.isfile(resolved):
         return _error(400, "invalid_path", "No such file")
     try:
@@ -601,8 +756,9 @@ def reprocess(payload: TestIn) -> dict | JSONResponse:
     """
     resolved = _resolve_probe_path(payload.path)
     if resolved is None:
-        return _error(400, "invalid_path",
-                      "Path is not within a configured readable root")
+        return _error(
+            400, "invalid_path", "Path is not within a configured readable root"
+        )
     if not os.path.isfile(resolved):
         return _error(400, "invalid_path", "No such file")
     return {"path": resolved, "cleared": get_store().forget_seen(resolved)}
@@ -620,8 +776,9 @@ def approve_job(job_id: str):
     if job is None:
         return _error(404, "job_not_found", f"No job {job_id!r}")
     if job.stage not in {"pending", "blocked"}:
-        return _error(409, "not_awaiting_approval",
-                      f"Job is {job.stage}, not awaiting approval")
+        return _error(
+            409, "not_awaiting_approval", f"Job is {job.stage}, not awaiting approval"
+        )
     if job.error_code == "swap_interrupted":
         # This job carries a remote_job_id pointing at a remote encode that
         # is already terminal (its swap was interrupted by a restart, per
@@ -647,10 +804,19 @@ def approve_job(job_id: str):
 @router.delete("/jobs/{job_id}", status_code=204, response_model=None)
 def delete_job(job_id: str):
     store = get_store()
-    if store.get_job(job_id) is None:
+    job = store.get_job(job_id)
+    if job is None:
         return _error(404, "job_not_found", f"No job {job_id!r}")
-    get_queue().cancel(job_id)
-    store.delete_job(job_id)
+    if job.stage == "swapping":
+        return _error(
+            409,
+            "job_swapping",
+            "This job is publishing its result and cannot be deleted yet",
+        )
+    if not get_queue().cancel(job_id):
+        return _error(409, "job_not_cancellable", "The job changed state; try again")
+    if store.delete_job(job_id):
+        get_events().publish({"type": "deleted", "job_id": job_id})
 
 
 @router.get("/events")
@@ -668,8 +834,14 @@ async def events() -> StreamingResponse:
     async def stream():
         last_beat = time.monotonic()
         try:
-            for job in store.list_jobs():
-                yield f"data: {json.dumps(job_to_payload(job))}\n\n"
+            # A connection always starts with one authoritative snapshot,
+            # including an empty one. This gives clients a liveness frame and
+            # lets reconnects remove jobs that were purged while offline.
+            snapshot = {
+                "type": "snapshot",
+                "jobs": [job_to_payload(job) for job in store.list_jobs()],
+            }
+            yield f"data: {json.dumps(snapshot)}\n\n"
             while True:
                 try:
                     event = subscription.get_nowait()
