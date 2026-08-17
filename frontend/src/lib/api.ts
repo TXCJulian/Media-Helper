@@ -10,6 +10,7 @@ async function extractErrorMessage(res: Response): Promise<string> {
     const body = await res.json()
     if (body.detail) return String(body.detail)
     if (body.error) return String(body.error)
+    if (body.reason) return String(body.reason)
   } catch {
     // Response body is not JSON
   }
@@ -376,6 +377,131 @@ export async function deleteDownloadJob(jobId: string): Promise<void> {
   })
   assertAuthenticated(res)
   if (!res.ok) throw new Error(await extractErrorMessage(res))
+}
+
+export function fetchEncoderHealth(): Promise<import('@/types').EncoderHealth> {
+  return fetchJson('/encoder/health')
+}
+
+export function fetchEncoderConfig(): Promise<import('@/types').EncoderConfig> {
+  return fetchJson('/encoder/config')
+}
+
+export function saveEncoderConfig(watchPaths: string[]): Promise<{ watch_paths: string[] }> {
+  return fetchJson('/encoder/config', undefined, DEFAULT_TIMEOUT_MS, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ watch_paths: watchPaths }),
+  })
+}
+
+export function fetchEncoderPresets(): Promise<import('@/types').EncoderPreset[]> {
+  return fetchJson('/encoder/presets')
+}
+
+export function fetchEncoderPreset(name: string): Promise<{ body: Record<string, unknown> }> {
+  return fetchJson(`/encoder/presets/${encodeURIComponent(name)}`)
+}
+
+export function saveEncoderPreset(
+  name: string,
+  body: Record<string, unknown>,
+): Promise<{ body: Record<string, unknown> }> {
+  return fetchJson(`/encoder/presets/${encodeURIComponent(name)}`, undefined, DEFAULT_TIMEOUT_MS, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body }),
+  })
+}
+
+export function importEncoderPresets(
+  document: Record<string, unknown>,
+): Promise<{ imported: string[]; skipped: { name: string; encoder: string; reason: string }[] }> {
+  return fetchJson('/encoder/presets', undefined, DEFAULT_TIMEOUT_MS, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ document }),
+  })
+}
+
+export async function deleteEncoderPreset(name: string): Promise<void> {
+  const url = new URL(`/encoder/presets/${encodeURIComponent(name)}`, API_BASE)
+  const res = await fetch(url, {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    credentials: 'include',
+  })
+  assertAuthenticated(res)
+  if (!res.ok) throw new Error(await extractErrorMessage(res))
+}
+
+export function fetchEncoderRules(): Promise<{
+  rules: import('@/types').EncoderRule[]
+  fallback: string
+}> {
+  return fetchJson('/encoder/rules')
+}
+
+export function saveEncoderRules(rules: {
+  rules: import('@/types').EncoderRule[]
+  fallback: string
+}): Promise<{ saved: number }> {
+  return fetchJson('/encoder/rules', undefined, DEFAULT_TIMEOUT_MS, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rules),
+  })
+}
+
+export function testEncoderFile(path: string): Promise<import('@/types').EncoderTestResult> {
+  return fetchJson('/encoder/test', undefined, DEFAULT_TIMEOUT_MS, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+}
+
+export function reprocessEncoderFile(path: string): Promise<{ path: string; cleared: boolean }> {
+  return fetchJson('/encoder/reprocess', undefined, DEFAULT_TIMEOUT_MS, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+}
+
+export function fetchEncoderJobs(): Promise<import('@/types').EncoderJob[]> {
+  return fetchJson('/encoder/jobs')
+}
+
+export function approveEncoderJob(jobId: string): Promise<{ stage: string }> {
+  return fetchJson(
+    `/encoder/jobs/${encodeURIComponent(jobId)}/approve`,
+    undefined,
+    DEFAULT_TIMEOUT_MS,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    },
+  )
+}
+
+export async function deleteEncoderJob(jobId: string): Promise<void> {
+  const url = new URL(`/encoder/jobs/${encodeURIComponent(jobId)}`, API_BASE)
+  const res = await fetch(url, {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    credentials: 'include',
+  })
+  assertAuthenticated(res)
+  if (!res.ok) throw new Error(await extractErrorMessage(res))
+}
+
+export function openEncoderStream(
+  onEvent: (data: string) => void,
+  onStateChange?: (connected: boolean) => void,
+): () => void {
+  return openEventStream('/encoder/events', onEvent, { onStateChange })
 }
 
 export async function postCookies(file: File): Promise<void> {

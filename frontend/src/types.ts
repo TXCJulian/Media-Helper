@@ -245,3 +245,80 @@ export interface DownloaderStatus {
   queue_depth: number
   workers: number
 }
+
+export interface EncoderHealth {
+  status: string
+  vendor?: 'NVENC' | 'QSV' | 'VCE' | 'CPU' | string
+  handbrake_version?: string
+  encoders?: string[]
+  allowed_roots?: string[]
+  workers?: number
+  error?: string
+}
+
+export interface EncoderConfig {
+  watch_paths: string[]
+  mode: 'auto' | 'review'
+  settle_seconds: number
+  original_ttl: number
+  job_ttl: number
+}
+
+export interface EncoderPreset {
+  name: string
+  encoder: string
+  video_preset: string
+  file_format: string
+  /** The full HandBrake leaf, fetched before editing. */
+  body?: Record<string, unknown>
+}
+
+export type EncoderJobStage =
+  | 'settling'
+  | 'pending'
+  | 'queued'
+  | 'encoding'
+  | 'swapping'
+  | 'done'
+  | 'failed'
+  | 'blocked'
+  | 'cancelled'
+  | 'skipped'
+
+export interface EncoderJob {
+  job_id: string
+  source_path: string
+  stage: EncoderJobStage
+  progress: number
+  preset_name: string | null
+  rule_id: string | null
+  error: string | null
+  error_code: string | null
+  output_path: string | null
+  facts: Record<string, unknown>
+  original_size: number | null
+  encoded_size: number | null
+  saved_bytes: number | null
+  created_at: string
+  updated_at: string
+}
+
+export interface EncoderRuleCondition {
+  field: string
+  op: string
+  value: unknown
+}
+
+export interface EncoderRule {
+  id: string
+  conditions: EncoderRuleCondition[]
+  target: string
+}
+
+export interface EncoderTestResult {
+  facts: Record<string, unknown>
+  matched_rule: string | null
+  target: string
+  evaluated: string[]
+  not_evaluated: string[]
+}
