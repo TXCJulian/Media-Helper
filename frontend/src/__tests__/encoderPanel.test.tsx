@@ -21,6 +21,16 @@ function jsonResponse(body: unknown, status = 200): Response {
   } as unknown as Response
 }
 
+function noContentResponse(): Response {
+  return {
+    ok: true,
+    status: 204,
+    statusText: 'No Content',
+    headers: new Headers(),
+    text: async () => '',
+  } as unknown as Response
+}
+
 function job(overrides: Partial<EncoderJob> = {}): EncoderJob {
   return {
     job_id: 'job-1',
@@ -224,5 +234,55 @@ describe('EncoderPanel', () => {
       expect(screen.queryByRole('button', { name: 'Approve encoding' })).toBeNull(),
     )
     expect(screen.getByText('Reconnecting…')).toBeTruthy()
+  })
+
+  it('keeps a job-action failure when a settings refresh completes later', async () => {
+    const pending = job({ stage: 'pending', progress: 0 })
+    const refreshedConfig = deferred<Response>()
+    let configRequests = 0
+    const fetchMock = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
+      const url = String(request)
+      if (url.includes('/encoder/health')) {
+        return jsonResponse({ status: 'ok', vendor: 'QSV', encoders: ['qsv_h265'] })
+      }
+      if (url.includes('/encoder/jobs/') && url.includes('/approve')) {
+        return jsonResponse({ reason: 'approval failed' }, 409)
+      }
+      if (url.includes('/encoder/presets/QSV') && init?.method === 'DELETE') {
+        return noContentResponse()
+      }
+      if (url.includes('/encoder/config')) {
+        configRequests += 1
+        if (configRequests === 2) return refreshedConfig.promise
+      }
+      return responseFor(url, [pending])
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<EncoderPanel onBack={vi.fn()} />)
+
+    await screen.findByRole('button', { name: 'Approve encoding' })
+    fireEvent.click(screen.getByRole('button', { name: 'Presets' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete QSV' }))
+    await waitFor(() => expect(configRequests).toBe(2))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve encoding' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('approval failed')
+
+    await act(async () =>
+      refreshedConfig.resolve(
+        jsonResponse({
+          watch_paths: ['/media/Updated'],
+          mode: 'review',
+          settle_seconds: 30,
+          original_ttl: 604800,
+          job_ttl: 604800,
+        }),
+      ),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Watch Folders' }))
+    expect((await screen.findByLabelText('Watch folder 1')).getAttribute('value')).toBe(
+      '/media/Updated',
+    )
+    expect(screen.getByRole('alert').textContent).toContain('approval failed')
   })
 })

@@ -78,8 +78,8 @@ describe('encoder configuration transport', () => {
     await expect(fetchEncoderHealth()).resolves.toMatchObject({ vendor: 'QSV' })
     await expect(fetchEncoderConfig()).resolves.toMatchObject({ watch_paths: [] })
 
-    expect(fetchMock.mock.calls[0]![0]).toContain('/encoder/health')
-    expect(fetchMock.mock.calls[1]![0]).toContain('/encoder/config')
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe('/api/encoder/health')
+    expect(new URL(String(fetchMock.mock.calls[1]![0])).pathname).toBe('/api/encoder/config')
   })
 
   it('preserves an encoder error reason for the caller', async () => {
@@ -104,7 +104,9 @@ describe('encoder preset transport', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await saveEncoderPreset('NVENC HD', leaf)
-    expect(fetchMock.mock.calls[0]![0]).toContain('/encoder/presets/NVENC%20HD')
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(
+      '/api/encoder/presets/NVENC%20HD',
+    )
     expect(bodyOf(fetchMock)).toEqual({ body: leaf })
 
     await importEncoderPresets({ PresetList: [leaf] })
@@ -170,7 +172,9 @@ describe('encoder rule and job transport', () => {
     expect(bodyOf(fetchMock, 2)).toEqual({ path: '/media/a.mkv' })
 
     await approveEncoderJob('job id')
-    expect(fetchMock.mock.calls[3]![0]).toContain('/encoder/jobs/job%20id/approve')
+    expect(new URL(String(fetchMock.mock.calls[3]![0])).pathname).toBe(
+      '/api/encoder/jobs/job%20id/approve',
+    )
     expect(bodyOf(fetchMock, 3)).toEqual({})
   })
 

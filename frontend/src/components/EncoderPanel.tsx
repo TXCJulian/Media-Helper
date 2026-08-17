@@ -48,7 +48,9 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
   const [rules, setRules] = useState<EncoderRules | null>(null)
   const [initialJobs, setInitialJobs] = useState<EncoderJob[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [resourceError, setResourceError] = useState('')
+  const [settingsError, setSettingsError] = useState('')
+  const [jobErrors, setJobErrors] = useState<Map<string, string>>(() => new Map())
   const [historyOpen, setHistoryOpen] = useState(false)
   const [deletedJobIds, setDeletedJobIds] = useState<Set<string>>(() => new Set())
   const [acknowledgedStages, setAcknowledgedStages] = useState<Map<string, EncoderJob['stage']>>(
@@ -93,10 +95,10 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
       setPresets(completePresets)
       setRules(nextRules)
       if (nextJobs) setInitialJobs(nextJobs)
-      setError('')
+      setResourceError('')
     } catch (loadError) {
       if (mounted.current && request === resourceRequest.current) {
-        setError(errorMessage(loadError, 'Failed to load encoder settings.'))
+        setResourceError(errorMessage(loadError, 'Failed to load encoder settings.'))
       }
     } finally {
       if (mounted.current && request === resourceRequest.current) setLoading(false)
@@ -139,23 +141,34 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
   const activeJobs = jobs.filter((job) => !TERMINAL_STAGES.has(job.stage))
   const history = jobs.filter((job) => TERMINAL_STAGES.has(job.stage))
 
+  const updateJobError = (operation: string, message?: string) => {
+    setJobErrors((current) => {
+      const next = new Map(current)
+      if (message) next.set(operation, message)
+      else next.delete(operation)
+      return next
+    })
+  }
+
   const approve = async (jobId: string) => {
     if (approvingJobs.current.has(jobId)) return
     approvingJobs.current.add(jobId)
+    const operation = `approve:${jobId}`
     try {
       const result = await approveEncoderJob(jobId)
       if (result.stage === 'queued') {
         setAcknowledgedStages((current) => new Map(current).set(jobId, 'queued'))
       }
-      setError('')
+      updateJobError(operation)
     } catch (actionError) {
-      setError(errorMessage(actionError, 'Failed to approve encoder job.'))
+      updateJobError(operation, errorMessage(actionError, 'Failed to approve encoder job.'))
     } finally {
       approvingJobs.current.delete(jobId)
     }
   }
 
   const remove = async (jobId: string) => {
+    const operation = `delete:${jobId}`
     try {
       await deleteEncoderJob(jobId)
       setDeletedJobIds((current) => new Set(current).add(jobId))
@@ -164,9 +177,9 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
         next.delete(jobId)
         return next
       })
-      setError('')
+      updateJobError(operation)
     } catch (actionError) {
-      setError(errorMessage(actionError, 'Failed to delete encoder job.'))
+      updateJobError(operation, errorMessage(actionError, 'Failed to delete encoder job.'))
     }
   }
 
@@ -196,26 +209,36 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
       {healthLabel}
     </button>
   )
+  const visibleErrors = [
+    ...(resourceError ? [{ key: 'resources', message: resourceError }] : []),
+    ...(settingsError ? [{ key: 'settings', message: settingsError }] : []),
+    ...Array.from(jobErrors, ([key, message]) => ({ key, message })),
+  ]
 
   return (
     <div className="encoder-panel">
       <PanelLayout title="Auto Encoder" onBack={onBack} rightElement={healthPill} maxWidth="920px">
-        {error && (
+        {visibleErrors.map(({ key, message }) => (
           <div
+            key={key}
             role="alert"
             className="mb-5 flex items-center justify-between rounded-lg border border-red-500/15 bg-red-500/[0.06] px-4 py-2.5"
           >
-            <p className="text-[0.8rem] text-red-400">{error}</p>
+            <p className="text-[0.8rem] text-red-400">{message}</p>
             <button
               type="button"
-              aria-label="Dismiss error"
-              onClick={() => setError('')}
+              aria-label={`Dismiss ${key} error`}
+              onClick={() => {
+                if (key === 'resources') setResourceError('')
+                else if (key === 'settings') setSettingsError('')
+                else updateJobError(key)
+              }}
               className="ml-3 shrink-0 text-[0.7rem] text-red-400/60"
             >
               dismiss
             </button>
           </div>
-        )}
+        ))}
 
         {loading && (!config || !rules) ? (
           <p className="py-8 text-center text-[0.82rem] text-[var(--text-tertiary)]">
@@ -226,8 +249,11 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
             config={config}
             presets={presets}
             rules={rules}
-            onRefresh={() => void refreshResources(false)}
-            onError={setError}
+            onRefresh={() => {
+              setSettingsError('')
+              void refreshResources(false)
+            }}
+            onError={setSettingsError}
           />
         ) : (
           <button
