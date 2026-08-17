@@ -226,6 +226,45 @@ def test_runtime_restarts_old_watcher_when_initial_persistence_fails(monkeypatch
     assert runtime._watcher.started is True
 
 
+def test_runtime_keeps_the_old_watcher_when_retiring_it_fails(monkeypatch):
+    """A failed retirement must not leave both old and new watchers running."""
+    watchers = []
+
+    class OldStopFailureWatcher:
+        def __init__(self, _store, *, paths, **_kwargs):
+            self.paths = paths
+            self.started = False
+            self.stopped = False
+            watchers.append(self)
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            if self.paths == ["/base/old"]:
+                raise OSError("old observer would not stop")
+            self.stopped = True
+
+    store = RuntimeStore(["/base/old"])
+    monkeypatch.setattr(runtime_mod, "EncoderWatcher", OldStopFailureWatcher)
+    runtime = runtime_mod.EncoderRuntime(
+        store,
+        type("Queue", (), {"plan_new": lambda *_args: None})(),
+        default_paths=["/base/old"],
+        settle_seconds=0,
+        valid_extensions={".mkv"},
+    )
+    runtime.start()
+
+    with pytest.raises(RuntimeError, match="Could not stop"):
+        runtime.replace_watch_paths(["/base/new"])
+
+    replacement = next(watcher for watcher in watchers if watcher.paths == ["/base/new"])
+    assert replacement.stopped is True
+    assert runtime._watcher.paths == ["/base/old"]
+    assert runtime.watch_paths == ["/base/old"]
+
+
 def test_importing_a_preset_document_stores_its_leaves(client):
     r = client.post("/api/encoder/presets", json={"document": PRESET_DOC})
     assert r.status_code == 200

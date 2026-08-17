@@ -63,11 +63,12 @@ class EncoderRuntime:
         """Activate *paths* before making them the durable configuration.
 
         Starting the replacement first keeps the current setting and watcher
-        paired if watchdog rejects the new paths.  A write-first sequence has
-        no safe recovery when the attempt to write the old JSON back fails:
-        the old watcher would run while a restart adopted the new JSON.
+        paired if watchdog rejects the new paths. Retire the old watcher before
+        changing the setting, so a retirement failure can stop the candidate
+        and leave the prior configuration untouched.
         """
         with self._lock:
+            old_paths = self.watch_paths
             old_watcher = self._watcher
             replacement = self._make_watcher(paths)
             try:
@@ -79,6 +80,16 @@ class EncoderRuntime:
                     pass
                 raise RuntimeError("Could not replace encoder watch paths") from exc
 
+            if old_watcher is not None:
+                try:
+                    old_watcher.stop()
+                except Exception as exc:
+                    try:
+                        replacement.stop()
+                    except Exception:
+                        pass
+                    raise RuntimeError("Could not stop encoder watch paths") from exc
+
             try:
                 self._store.set_setting("watch_paths", json.dumps(paths))
             except Exception as exc:
@@ -86,12 +97,14 @@ class EncoderRuntime:
                     replacement.stop()
                 except Exception:
                     pass
+                if old_watcher is not None:
+                    try:
+                        restored = self._make_watcher(old_paths)
+                        restored.start()
+                        self._watcher = restored
+                    except Exception:
+                        self._watcher = None
                 raise RuntimeError("Could not replace encoder watch paths") from exc
 
             self._watcher = replacement
-            if old_watcher is not None:
-                try:
-                    old_watcher.stop()
-                except Exception as exc:
-                    raise RuntimeError("Could not stop encoder watch paths") from exc
             return paths
