@@ -98,6 +98,8 @@ export default function EncoderJobCard({ job, onApprove, onDelete }: Props) {
   const terminal = TERMINAL_PILL[job.stage]
   const reviewLabel = REVIEW_LABEL[job.stage]
   const currentPosition = stagePosition(job.stage)
+  const canApprove =
+    (job.stage === 'pending' || job.stage === 'blocked') && job.error_code !== 'swap_interrupted'
   const hasFacts = Object.keys(job.facts).length > 0
   const factLabels = Object.entries(job.facts)
     .map(([key, value]) => displayFact(key, value, job.facts))
@@ -129,7 +131,7 @@ export default function EncoderJobCard({ job, onApprove, onDelete }: Props) {
               <InfoIcon />
             </button>
           )}
-          {job.stage === 'pending' || job.stage === 'blocked' ? (
+          {canApprove ? (
             <button
               type="button"
               aria-label="Approve encoding"

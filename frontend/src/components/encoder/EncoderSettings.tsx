@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import PresetEditor from '@/components/encoder/PresetEditor'
 import {
   reprocessEncoderFile,
@@ -86,6 +86,13 @@ function operatorsFor(field: string): string[] {
   return OPERATORS
 }
 
+function nextRuleId(rules: EncoderRule[]): string {
+  const used = new Set(rules.map((rule) => rule.id.trim()))
+  let suffix = 1
+  while (used.has(`rule-${suffix}`)) suffix += 1
+  return `rule-${suffix}`
+}
+
 function SectionButton({
   label,
   section,
@@ -129,6 +136,9 @@ export default function EncoderSettings({
   const [testing, setTesting] = useState(false)
   const [reprocessing, setReprocessing] = useState(false)
   const [reprocessMessage, setReprocessMessage] = useState<string | null>(null)
+  const testPathRef = useRef('')
+  const testRequestRef = useRef(0)
+  const reprocessRequestRef = useRef(0)
 
   useEffect(() => setWatchPaths([...config.watch_paths]), [config.watch_paths])
   useEffect(() => {
@@ -190,9 +200,20 @@ export default function EncoderSettings({
   }
 
   const saveRules = async () => {
+    const normalizedRules = draftRules.map((rule) => ({ ...rule, id: rule.id.trim() }))
+    const ids = normalizedRules.map((rule) => rule.id)
+    if (ids.some((id) => !id)) {
+      onError('Rule IDs cannot be empty.')
+      return
+    }
+    if (new Set(ids).size !== ids.length) {
+      onError('Rule IDs must be unique.')
+      return
+    }
+
     setSavingRules(true)
     try {
-      await saveEncoderRules({ rules: draftRules, fallback })
+      await saveEncoderRules({ rules: normalizedRules, fallback })
       onRefresh()
     } catch (error) {
       onError(errorMessage(error))
@@ -204,35 +225,57 @@ export default function EncoderSettings({
   const runTest = async () => {
     const path = testPath.trim()
     if (!path) return
+    const request = ++testRequestRef.current
     setTesting(true)
     setTestResult(null)
     setReprocessMessage(null)
     try {
-      setTestResult(await testEncoderFile(path))
+      const result = await testEncoderFile(path)
+      if (request === testRequestRef.current && testPathRef.current.trim() === path) {
+        setTestResult(result)
+      }
     } catch (error) {
-      onError(errorMessage(error))
+      if (request === testRequestRef.current && testPathRef.current.trim() === path) {
+        onError(errorMessage(error))
+      }
     } finally {
-      setTesting(false)
+      if (request === testRequestRef.current) setTesting(false)
     }
   }
 
   const reprocess = async () => {
     const path = testPath.trim()
     if (!path) return
+    const request = ++reprocessRequestRef.current
     setReprocessing(true)
     setReprocessMessage(null)
     try {
       const result = await reprocessEncoderFile(path)
-      setReprocessMessage(
-        result.cleared
-          ? 'File queued for reconsideration on the next scan.'
-          : 'File was not in the processed-file index.',
-      )
+      if (request === reprocessRequestRef.current && testPathRef.current.trim() === path) {
+        setReprocessMessage(
+          result.cleared
+            ? 'File queued for reconsideration on the next scan.'
+            : 'File was not in the processed-file index.',
+        )
+      }
     } catch (error) {
-      onError(errorMessage(error))
+      if (request === reprocessRequestRef.current && testPathRef.current.trim() === path) {
+        onError(errorMessage(error))
+      }
     } finally {
-      setReprocessing(false)
+      if (request === reprocessRequestRef.current) setReprocessing(false)
     }
+  }
+
+  const changeTestPath = (path: string) => {
+    testPathRef.current = path
+    testRequestRef.current += 1
+    reprocessRequestRef.current += 1
+    setTestPath(path)
+    setTestResult(null)
+    setReprocessMessage(null)
+    setTesting(false)
+    setReprocessing(false)
   }
 
   const targets = ['skip', ...presets.map((preset) => preset.name)]
@@ -525,7 +568,7 @@ export default function EncoderSettings({
                 setDraftRules((current) => [
                   ...current,
                   {
-                    id: `rule-${current.length + 1}`,
+                    id: nextRuleId(current),
                     conditions: [initialCondition()],
                     target: 'skip',
                   },
@@ -544,7 +587,7 @@ export default function EncoderSettings({
               File to test
               <input
                 value={testPath}
-                onChange={(event) => setTestPath(event.target.value)}
+                onChange={(event) => changeTestPath(event.target.value)}
                 className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 py-2 text-[0.8rem] text-[var(--text-primary)]"
               />
             </label>

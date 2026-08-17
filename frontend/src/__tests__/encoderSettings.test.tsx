@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import EncoderSettings from '@/components/encoder/EncoderSettings'
 import * as api from '@/lib/api'
-import type { EncoderConfig, EncoderPreset, EncoderRule } from '@/types'
+import type { EncoderConfig, EncoderPreset, EncoderRule, EncoderTestResult } from '@/types'
 
 vi.mock('@/lib/api', () => ({
   saveEncoderConfig: vi.fn(),
@@ -49,6 +49,25 @@ const orderedRules: EncoderRule[] = [
     target: 'skip',
   },
 ]
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
+function testResult(overrides: Partial<EncoderTestResult> = {}): EncoderTestResult {
+  return {
+    facts: {},
+    matched_rule: 'uhd',
+    target: 'NVENC',
+    evaluated: ['uhd'],
+    not_evaluated: ['already-hevc'],
+    ...overrides,
+  }
+}
 
 function renderSettings(overrides: Partial<React.ComponentProps<typeof EncoderSettings>> = {}) {
   const onRefresh = vi.fn()
@@ -138,14 +157,53 @@ describe('EncoderSettings sections', () => {
     expect(Array.from(operator.options, (option) => option.value)).not.toContain('contains')
   })
 
-  it('shows matched, evaluated, and unreachable rules when testing a file', async () => {
-    vi.mocked(api.testEncoderFile).mockResolvedValue({
-      facts: { height: 2160, hdr: true },
-      matched_rule: 'uhd',
-      target: 'NVENC',
-      evaluated: ['uhd'],
-      not_evaluated: ['already-hevc'],
+  it('creates a unique default rule ID after another rule is removed', () => {
+    renderSettings({
+      rules: {
+        rules: [
+          { id: 'rule-1', conditions: [], target: 'skip' },
+          { id: 'rule-2', conditions: [], target: 'skip' },
+        ],
+        fallback: 'skip',
+      },
     })
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove rule rule-1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add rule' }))
+
+    const ids = screen
+      .getAllByLabelText(/Rule \d+ name/)
+      .map((input) => (input as HTMLInputElement).value)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('rejects an empty edited rule ID before saving', () => {
+    const { onError } = renderSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    fireEvent.change(screen.getByLabelText('Rule 1 name'), { target: { value: '   ' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save rules' }))
+
+    expect(onError).toHaveBeenCalledWith(expect.stringMatching(/empty/i))
+    expect(api.saveEncoderRules).not.toHaveBeenCalled()
+  })
+
+  it('rejects duplicate edited rule IDs before saving', () => {
+    const { onError } = renderSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    fireEvent.change(screen.getByLabelText('Rule 2 name'), { target: { value: 'uhd' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save rules' }))
+
+    expect(onError).toHaveBeenCalledWith(expect.stringMatching(/unique/i))
+    expect(api.saveEncoderRules).not.toHaveBeenCalled()
+  })
+
+  it('shows matched, evaluated, and unreachable rules when testing a file', async () => {
+    vi.mocked(api.testEncoderFile).mockResolvedValue(
+      testResult({ facts: { height: 2160, hdr: true } }),
+    )
     renderSettings()
 
     fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
@@ -163,6 +221,53 @@ describe('EncoderSettings sections', () => {
       expect(api.reprocessEncoderFile).toHaveBeenCalledWith('/media/Movies/demo.mkv'),
     )
     expect(await screen.findByText(/queued for reconsideration/i)).toBeTruthy()
+  })
+
+  it('clears completed file-test and reprocess output when the path changes', async () => {
+    vi.mocked(api.testEncoderFile).mockResolvedValue(testResult())
+    renderSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    const input = screen.getByLabelText('File to test')
+
+    fireEvent.change(input, { target: { value: '/media/Movies/a.mkv' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Test file' }))
+    expect(await screen.findByText('Matched: uhd → NVENC')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Reprocess file' }))
+    expect(await screen.findByText(/queued for reconsideration/i)).toBeTruthy()
+
+    fireEvent.change(input, { target: { value: '/media/Movies/b.mkv' } })
+    expect(screen.queryByText('Matched: uhd → NVENC')).toBeNull()
+    expect(screen.queryByText(/queued for reconsideration/i)).toBeNull()
+  })
+
+  it('ignores a file-test response after its submitted path is replaced', async () => {
+    const pending = deferred<EncoderTestResult>()
+    vi.mocked(api.testEncoderFile).mockReturnValue(pending.promise)
+    renderSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    const input = screen.getByLabelText('File to test')
+
+    fireEvent.change(input, { target: { value: '/media/Movies/a.mkv' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Test file' }))
+    fireEvent.change(input, { target: { value: '/media/Movies/b.mkv' } })
+    await act(async () => pending.resolve(testResult()))
+
+    expect(screen.queryByText('Matched: uhd → NVENC')).toBeNull()
+  })
+
+  it('ignores a reprocess response after its submitted path is replaced', async () => {
+    const pending = deferred<{ path: string; cleared: boolean }>()
+    vi.mocked(api.reprocessEncoderFile).mockReturnValue(pending.promise)
+    renderSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    const input = screen.getByLabelText('File to test')
+
+    fireEvent.change(input, { target: { value: '/media/Movies/a.mkv' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Reprocess file' }))
+    fireEvent.change(input, { target: { value: '/media/Movies/b.mkv' } })
+    await act(async () => pending.resolve({ path: '/media/Movies/a.mkv', cleared: true }))
+
+    expect(screen.queryByText(/queued for reconsideration/i)).toBeNull()
   })
 
   it('forwards failed saves without reporting a refresh', async () => {

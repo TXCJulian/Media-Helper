@@ -92,6 +92,23 @@ describe('EncoderJobCard', () => {
     },
   )
 
+  it('offers deletion instead of rejected approval after an interrupted swap', () => {
+    const onApprove = vi.fn()
+    const onDelete = vi.fn()
+    render(
+      <EncoderJobCard
+        job={job({ stage: 'blocked', error_code: 'swap_interrupted' })}
+        onApprove={onApprove}
+        onDelete={onDelete}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Approve encoding' })).toBeNull()
+    screen.getByRole('button', { name: 'Delete job' }).click()
+    expect(onDelete).toHaveBeenCalledWith('encode-1')
+    expect(onApprove).not.toHaveBeenCalled()
+  })
+
   it('offers deletion for non-review jobs and surfaces backend errors', () => {
     const onDelete = vi.fn()
     render(
