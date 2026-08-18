@@ -476,6 +476,8 @@ def _validate_watch_paths(paths: list[str]) -> list[str]:
             raise ValueError(
                 "Watch path is not an existing directory under BASE_PATHS: " f"{path}"
             )
+        if any(has_excluded_ancestor(resolved, base) for base in bases):
+            raise ValueError("Watch path is inside an excluded media tree: " f"{path}")
         if resolved not in seen:
             seen.add(resolved)
             validated.append(resolved)
@@ -843,9 +845,8 @@ def reprocess(payload: ReprocessIn) -> dict | JSONResponse:
 @router.post("/reprocess-all", response_model=None)
 def reprocess_all() -> dict | JSONResponse:
     """Start one background pass that re-evaluates every configured source."""
-    runtime = get_runtime()
     try:
-        return runtime.start_reprocess_all()
+        return get_runtime().start_reprocess_all()
     except RuntimeError as exc:
         return _error(500, "reprocess_start_failed", str(exc))
 

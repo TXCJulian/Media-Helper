@@ -26,10 +26,10 @@ def reprocess_to_payload(
     error: str | None = None,
 ) -> dict[str, Any]:
     """Build the complete, serialisable SSE contract for a reprocess run."""
-    if not run_id or status not in _REPROCESS_STATUSES:
+    if not isinstance(run_id, str) or not run_id or status not in _REPROCESS_STATUSES:
         raise ValueError("Invalid reprocess event")
     counts = (scanned, created, skipped, failed)
-    if any(not isinstance(count, int) or count < 0 for count in counts):
+    if any(type(count) is not int or count < 0 for count in counts):
         raise ValueError("Reprocess counts must be non-negative integers")
     if path is not None and not isinstance(path, str):
         raise ValueError("Reprocess path must be a string or null")

@@ -55,13 +55,37 @@ def has_excluded_ancestor(path: str, base: str) -> bool:
     return False
 
 
+def is_within(path: str, base: str) -> bool:
+    """Whether *path* is contained by *base*, including a filesystem root."""
+    try:
+        return os.path.normcase(os.path.commonpath([path, base])) == os.path.normcase(
+            base
+        )
+    except ValueError:
+        return False
+
+
+def _normalise_roots(paths: Iterable[str]) -> tuple[str, ...]:
+    """Deduplicate roots and remove children already covered by a parent."""
+    roots: list[str] = []
+    for path in paths:
+        root = os.path.realpath(path)
+        if any(is_within(root, existing) for existing in roots):
+            continue
+        roots = [existing for existing in roots if not is_within(existing, root)]
+        roots.append(root)
+    return tuple(roots)
+
+
 class ReprocessManager:
     """Run one library-wide re-evaluation at a time on a daemon thread."""
 
-    def __init__(self, queue, *, valid_extensions: set[str]) -> None:
+    def __init__(self, queue, events, *, valid_extensions: set[str]) -> None:
         self._queue = queue
+        self._events = events
         self._extensions = {extension.lower() for extension in valid_extensions}
         self._lock = threading.Lock()
+        self._stopping = threading.Event()
         self._thread: threading.Thread | None = None
         self._run_id: str | None = None
 
@@ -71,8 +95,9 @@ class ReprocessManager:
             if self._thread is not None and self._thread.is_alive():
                 return {"run_id": self._run_id or "", "status": "started"}
             run_id = str(uuid.uuid4())
-            snapshot = tuple(paths)
+            snapshot = _normalise_roots(paths)
             self._run_id = run_id
+            self._stopping.clear()
             self._thread = threading.Thread(
                 target=self._run,
                 args=(run_id, snapshot),
@@ -81,6 +106,16 @@ class ReprocessManager:
             )
             self._thread.start()
             return {"run_id": run_id, "status": "started"}
+
+    def stop(self, timeout: float = 5.0) -> None:
+        """Request a running scan to stop and wait for its planner thread."""
+        self._stopping.set()
+        with self._lock:
+            thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                raise RuntimeError("Bulk reprocess did not stop within the timeout")
 
     def _publish(
         self,
@@ -94,7 +129,7 @@ class ReprocessManager:
         path: str | None = None,
         error: str | None = None,
     ) -> None:
-        self._queue._events.publish(  # The queue owns the encoder SSE broadcaster.
+        self._events.publish(
             reprocess_to_payload(
                 run_id,
                 status,
@@ -109,6 +144,8 @@ class ReprocessManager:
 
     def _run(self, run_id: str, paths: tuple[str, ...]) -> None:
         scanned = created = skipped = failed = 0
+        library_bases = tuple(os.path.realpath(base) for base in config.BASE_PATHS)
+        visited: set[str] = set()
         self._publish(
             run_id,
             "started",
@@ -119,21 +156,62 @@ class ReprocessManager:
         )
         try:
             for base in paths:
+                if self._stopping.is_set():
+                    self._publish(
+                        run_id, "failed", scanned=scanned, created=created,
+                        skipped=skipped, failed=failed,
+                        error="Bulk reprocess stopped",
+                    )
+                    return
                 if not os.path.isdir(base):
                     logger.warning("Reprocess watch path is not readable: %s", base)
                     continue
+                if not any(is_within(base, library_base) for library_base in library_bases):
+                    logger.warning("Reprocess watch path is outside configured media roots: %s", base)
+                    continue
+                if any(
+                    has_excluded_ancestor(base, library_base)
+                    for library_base in library_bases
+                ):
+                    logger.warning("Reprocess watch path is excluded: %s", base)
+                    continue
                 for root, dirs, names in os.walk(base, onerror=_ignore_walk_error):
-                    if is_excluded_path(root, base):
+                    if self._stopping.is_set():
+                        self._publish(
+                            run_id, "failed", scanned=scanned, created=created,
+                            skipped=skipped, failed=failed,
+                            error="Bulk reprocess stopped",
+                        )
+                        return
+                    if is_excluded_path(root, base) or any(
+                        has_excluded_ancestor(root, library_base)
+                        for library_base in library_bases
+                    ):
                         dirs[:] = []
                         continue
-                    prune_excluded_dirs(root, dirs, [base])
+                    prune_excluded_dirs(root, dirs, (base, *library_bases))
                     for name in names:
-                        path = os.path.join(root, name)
+                        if self._stopping.is_set():
+                            self._publish(
+                                run_id, "failed", scanned=scanned, created=created,
+                                skipped=skipped, failed=failed,
+                                error="Bulk reprocess stopped",
+                            )
+                            return
+                        path = os.path.realpath(os.path.join(root, name))
                         if (
-                            is_excluded_path(path, base)
+                            path in visited
+                            or is_excluded_path(path, base)
+                            or not any(is_within(path, watch_root) for watch_root in paths)
+                            or not any(is_within(path, library_base) for library_base in library_bases)
+                            or any(
+                                has_excluded_ancestor(path, library_base)
+                                for library_base in library_bases
+                            )
                             or os.path.splitext(name)[1].lower() not in self._extensions
                         ):
                             continue
+                        visited.add(path)
                         scanned += 1
                         try:
                             result = self._queue.reprocess_path(path)

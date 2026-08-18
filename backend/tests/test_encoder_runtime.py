@@ -2,7 +2,7 @@ import queue
 
 import pytest
 
-from app.encoder.events import EventBroadcaster
+from app.encoder.events import EventBroadcaster, reprocess_to_payload
 from app.encoder.presets import NamedPreset
 from app.encoder.queue import EncodeQueue
 from app.encoder.rules import Condition, Rule
@@ -39,9 +39,11 @@ def _wait_for_terminal(subscription, run_id):
 
 @pytest.fixture
 def runtime_env(tmp_path, monkeypatch):
+    import app.config as config
     import app.encoder.queue as queue_mod
     import app.encoder.runtime as runtime_mod
 
+    monkeypatch.setattr(config, "BASE_PATHS", [str(tmp_path)])
     monkeypatch.setattr(runtime_mod, "EncoderWatcher", IdleWatcher)
     monkeypatch.setattr(
         queue_mod,
@@ -65,7 +67,7 @@ def runtime_env(tmp_path, monkeypatch):
     root.mkdir()
     events = EventBroadcaster()
 
-    def build(mode="review"):
+    def build(mode="review", paths=None):
         encoder_queue = EncodeQueue(
             store,
             object(),
@@ -76,7 +78,7 @@ def runtime_env(tmp_path, monkeypatch):
         runtime = EncoderRuntime(
             store,
             encoder_queue,
-            default_paths=[str(root)],
+            default_paths=list(paths) if paths is not None else [str(root)],
             settle_seconds=0,
             valid_extensions={".mkv"},
         )
@@ -165,6 +167,62 @@ def test_bulk_reprocess_uses_the_picker_exclusions(runtime_env):
     assert [job.source_path for job in store.list_jobs()] == [str(root / "visible.mkv")]
 
 
+@pytest.mark.parametrize("excluded", ["Music", ".hidden", ".trickplay"])
+def test_bulk_reprocess_ignores_a_watch_root_inside_an_excluded_tree(
+    runtime_env, excluded
+):
+    """A root inside a picker-hidden tree must not become an escape hatch."""
+    store, root, events, build = runtime_env
+    excluded_root = root.parent / excluded / "nested"
+    excluded_root.mkdir(parents=True)
+    (excluded_root / "secret.mkv").write_bytes(b"video")
+    runtime, _queue = build(paths=[str(excluded_root)])
+
+    subscription = events.subscribe()
+    run = runtime.start_reprocess_all()
+    terminal = _wait_for_terminal(subscription, run["run_id"])
+
+    assert terminal["scanned"] == 0
+    assert store.list_jobs() == []
+
+
+def test_bulk_reprocess_skips_a_file_symlink_outside_its_watch_root(runtime_env):
+    """Following a file symlink could probe and encode outside the chosen root."""
+    store, root, events, build = runtime_env
+    outside = root.parent / "outside.mkv"
+    outside.write_bytes(b"video")
+    link = root / "escape.mkv"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks not supported in this environment")
+    runtime, _queue = build()
+
+    subscription = events.subscribe()
+    run = runtime.start_reprocess_all()
+    terminal = _wait_for_terminal(subscription, run["run_id"])
+
+    assert terminal["scanned"] == 0
+    assert store.list_jobs() == []
+
+
+def test_bulk_reprocess_deduplicates_nested_watch_roots(runtime_env):
+    """Overlapping roots must not inflate the scan or re-evaluate one file twice."""
+    store, root, events, build = runtime_env
+    nested = root / "nested"
+    nested.mkdir()
+    source = nested / "once.mkv"
+    source.write_bytes(b"video")
+    runtime, _queue = build(paths=[str(root), str(nested)])
+
+    subscription = events.subscribe()
+    run = runtime.start_reprocess_all()
+    terminal = _wait_for_terminal(subscription, run["run_id"])
+
+    assert terminal["scanned"] == 1
+    assert len(store.list_jobs()) == 1
+
+
 def test_bulk_reprocess_counts_a_failed_plan_as_failed(runtime_env):
     """A created row that fails planning must not look like a successful plan."""
     store, root, events, build = runtime_env
@@ -221,3 +279,56 @@ def test_bulk_reprocess_returns_the_running_run_id(runtime_env, monkeypatch):
     assert runtime.start_reprocess_all() == first
     release.put(None)
     assert _wait_for_terminal(subscription, first["run_id"])["status"] == "completed"
+
+
+def test_runtime_stop_joins_the_active_bulk_reprocess(runtime_env, monkeypatch):
+    """Stopping the runtime must leave no planner thread behind the queue."""
+    _store, root, _events, build = runtime_env
+    (root / "first.mkv").write_bytes(b"video")
+    (root / "second.mkv").write_bytes(b"video")
+    runtime, encoder_queue = build()
+    started = queue.Queue()
+    release = queue.Queue()
+    original = encoder_queue.reprocess_path
+
+    def slow_reprocess(path):
+        started.put(path)
+        release.get(timeout=2)
+        return original(path)
+
+    monkeypatch.setattr(encoder_queue, "reprocess_path", slow_reprocess)
+    runtime.start_reprocess_all()
+    assert started.get(timeout=2) == str(root / "first.mkv")
+
+    try:
+        runtime.stop()
+        assert not runtime._reprocess._thread.is_alive()
+    finally:
+        release.put(None)
+        runtime._reprocess._thread.join(timeout=2)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("run_id", 1),
+        ("scanned", True),
+        ("created", True),
+        ("skipped", True),
+        ("failed", True),
+    ],
+)
+def test_reprocess_events_reject_non_string_ids_and_boolean_counts(field, value):
+    """JSON-looking truthy values must not bypass the declared SSE schema."""
+    payload = {
+        "run_id": "run-1",
+        "status": "started",
+        "scanned": 0,
+        "created": 0,
+        "skipped": 0,
+        "failed": 0,
+    }
+    payload[field] = value
+
+    with pytest.raises(ValueError):
+        reprocess_to_payload(**payload)

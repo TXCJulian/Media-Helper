@@ -80,6 +80,11 @@ class EncodeQueue:
         with self._job_locks_lock:
             return self._job_locks.setdefault(job_id, threading.RLock())
 
+    @property
+    def events(self) -> EventBroadcaster:
+        """The encoder broadcaster shared by queue and bulk reprocess events."""
+        return self._events
+
     # ---- lifecycle -------------------------------------------------------
 
     def start(self) -> None:

@@ -154,19 +154,21 @@ def test_config_rejects_a_path_outside_base_without_replacing(client, tmp_path, 
     assert runtime.replacements == []
 
 
-def test_config_accepts_a_directory_below_a_filesystem_root_base(
+def test_config_accepts_a_directory_below_a_configured_base(
     client, tmp_path, monkeypatch
 ):
     runtime = FakeRuntime([])
     routes_mod.register_runtime(runtime)
-    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [tmp_path.anchor])
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(tmp_path.parent)])
+    visible = tmp_path / "visible"
+    visible.mkdir()
 
     response = client.put(
-        "/api/encoder/config", json={"watch_paths": [str(tmp_path)]}
+        "/api/encoder/config", json={"watch_paths": [str(visible)]}
     )
 
     assert response.status_code == 200
-    assert runtime.replacements == [[str(tmp_path.resolve())]]
+    assert runtime.replacements == [[str(visible.resolve())]]
 
 
 def test_config_replacement_failure_uses_the_encoder_error_envelope(
@@ -1082,3 +1084,20 @@ def test_reprocess_all_starts_the_runtime_scan(client):
 
     assert response.status_code == 200
     assert response.json() == {"run_id": "bulk-run", "status": "started"}
+
+
+def test_reprocess_all_without_a_registered_runtime_uses_the_flat_error_envelope():
+    """Runtime lookup is part of route startup and must not escape as a 500 traceback."""
+    routes_mod.reset_state_for_tests()
+    app = FastAPI()
+    app.include_router(routes_mod.router)
+    routes_mod.register_error_handlers(app)
+
+    with TestClient(app) as client:
+        response = client.post("/api/encoder/reprocess-all")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "code": "reprocess_start_failed",
+        "reason": "Encoder runtime is unavailable; check the server logs for the cause",
+    }

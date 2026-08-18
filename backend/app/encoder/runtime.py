@@ -119,6 +119,8 @@ class EncoderRuntime:
 
     def stop(self) -> None:
         with self._lock:
+            if self._reprocess is not None:
+                self._reprocess.stop()
             if self._watcher is not None:
                 self._watcher.stop()
                 self._watcher = None
@@ -132,7 +134,7 @@ class EncoderRuntime:
                 raise RuntimeError("Encoder watch runtime is unavailable")
             if self._reprocess is None:
                 self._reprocess = ReprocessManager(
-                    self._queue, valid_extensions=self._valid_extensions
+                    self._queue, self._queue.events, valid_extensions=self._valid_extensions
                 )
             return self._reprocess.start(paths)
 
