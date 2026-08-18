@@ -191,7 +191,12 @@ describe('encoder rule and job transport', () => {
 
   it('reprocesses a failed job through its encoded route', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ job_id: 'replacement', path: '/media/a.mkv', stage: 'pending', created: true }),
+      jsonResponse({
+        job_id: 'replacement',
+        path: '/media/a.mkv',
+        stage: 'pending',
+        created: true,
+      }),
     )
     vi.stubGlobal('fetch', fetchMock)
 
