@@ -1101,3 +1101,21 @@ def test_reprocess_all_without_a_registered_runtime_uses_the_flat_error_envelope
         "code": "reprocess_start_failed",
         "reason": "Encoder runtime is unavailable; check the server logs for the cause",
     }
+
+
+def test_reprocess_all_preserves_the_startup_configuration_error_envelope():
+    """The generic start failure must not swallow the established 503 contract."""
+    routes_mod.reset_state_for_tests()
+    routes_mod.mark_startup_failed("watch path is unavailable")
+    app = FastAPI()
+    app.include_router(routes_mod.router)
+    routes_mod.register_error_handlers(app)
+
+    with TestClient(app) as client:
+        response = client.post("/api/encoder/reprocess-all")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "code": "encoder_configuration_unavailable",
+        "reason": "Encoder configuration is unavailable: watch path is unavailable",
+    }

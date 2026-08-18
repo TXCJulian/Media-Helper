@@ -847,6 +847,8 @@ def reprocess_all() -> dict | JSONResponse:
     """Start one background pass that re-evaluates every configured source."""
     try:
         return get_runtime().start_reprocess_all()
+    except EncoderConfigurationUnavailable:
+        raise
     except RuntimeError as exc:
         return _error(500, "reprocess_start_failed", str(exc))
 
