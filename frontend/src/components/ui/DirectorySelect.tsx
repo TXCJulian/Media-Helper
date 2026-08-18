@@ -72,7 +72,7 @@ export default function DirectorySelect({
     if (!isOpen || focusedIndex < 0 || !listRef.current) return
     const items = listRef.current.children
     if (items[focusedIndex]) {
-      ;(items[focusedIndex] as HTMLElement).scrollIntoView({ block: 'nearest' })
+      ;(items[focusedIndex] as HTMLElement).scrollIntoView?.({ block: 'nearest' })
     }
   }, [focusedIndex, isOpen])
 

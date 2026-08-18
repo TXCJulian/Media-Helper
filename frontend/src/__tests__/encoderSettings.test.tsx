@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import EncoderSettings from '@/components/encoder/EncoderSettings'
+import DirectorySelect from '@/components/ui/DirectorySelect'
 import * as api from '@/lib/api'
 import type {
   EncoderConfig,
@@ -106,6 +107,37 @@ beforeEach(() => {
 })
 
 describe('EncoderSettings sections', () => {
+  it('focuses the first directory result when an open picker lacks the current value', () => {
+    const { rerender } = render(
+      <DirectorySelect
+        directories={[]}
+        value="/media/missing"
+        base=""
+        onChange={vi.fn()}
+        onRefresh={vi.fn()}
+        isLoading={false}
+        ariaLabel="Directory picker"
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Directory picker' }))
+    rerender(
+      <DirectorySelect
+        directories={[{ path: '/media/Movies', base: '/media' }]}
+        value="/media/missing"
+        base=""
+        onChange={vi.fn()}
+        onRefresh={vi.fn()}
+        isLoading={false}
+        ariaLabel="Directory picker"
+      />,
+    )
+
+    expect(screen.getByRole('option', { name: '/media/Movies' }).className).toContain(
+      'bg-[var(--bg-glass-hover)]',
+    )
+  })
+
   it('starts collapsed and keeps the fixed fallback after every ordered rule', async () => {
     renderSettings()
 
@@ -117,6 +149,40 @@ describe('EncoderSettings sections', () => {
     const rows = screen.getByRole('list', { name: 'Encoding rules' }).children
     expect(rows[rows.length - 1]).toBe(fallback)
     expect(screen.queryByRole('button', { name: /Move fallback/i })).toBeNull()
+  })
+
+  it('uses compact encoder select labels for rules and fallback targets', () => {
+    renderSettings()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+
+    expect(screen.getAllByText('Field')[0]?.closest('label')?.className).toContain('text-[0.7rem]')
+    expect(screen.getAllByText('Operator')[0]?.closest('label')?.className).toContain(
+      'text-[0.7rem]',
+    )
+    expect(screen.getAllByText('Value')[0]?.closest('label')?.className).toContain('text-[0.7rem]')
+    expect(screen.getAllByText('Target')[0]?.closest('label')?.className).toContain(
+      'text-[0.7rem]',
+    )
+    expect(screen.getByText('Fallback target').closest('label')?.className).toContain(
+      'text-[0.7rem]',
+    )
+  })
+
+  it('selects the first returned directory and file for a blank file test', async () => {
+    vi.mocked(api.fetchEncoderDirectories).mockResolvedValue({
+      directories: [{ path: '/media/Movies', base: '/media' }],
+    })
+    vi.mocked(api.fetchEncoderFiles).mockResolvedValue({
+      files: [{ path: '/media/Movies/demo.mkv', name: 'demo.mkv' }],
+    })
+    renderSettings()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+
+    const selector = (await screen.findByLabelText('File to test selector')) as HTMLSelectElement
+    await waitFor(() => expect(selector.value).toBe('/media/Movies/demo.mkv'))
+    expect(api.fetchEncoderFiles).toHaveBeenCalledWith('/media/Movies', '')
   })
 
   it('adds and removes watch folders locally, then saves the explicit list', async () => {

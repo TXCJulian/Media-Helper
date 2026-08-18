@@ -1,5 +1,6 @@
 import { type UIEvent, useRef, useState } from 'react'
 import { deleteEncoderPreset, importEncoderPresets, saveEncoderPreset } from '@/lib/api'
+import EncoderSelect from '@/components/encoder/EncoderSelect'
 import IconButton from '@/components/ui/IconButton'
 import { PencilIcon, SaveIcon, TrashIcon } from '@/components/ui/icons'
 import type { EncoderHealth, EncoderPreset } from '@/types'
@@ -369,7 +370,7 @@ export default function PresetEditor({
       <ul className="space-y-2" aria-label="Stored presets">
         {presets.map((preset) => (
           <li key={preset.name} className="flex items-center gap-2">
-            <span>{preset.name}</span>
+            <span className="text-[0.75rem] text-[var(--text-secondary)]">{preset.name}</span>
             <IconButton
               label={`Edit ${preset.name}`}
               disabled={!preset.body || saving}
@@ -417,7 +418,8 @@ export default function PresetEditor({
               </label>
               <label>
                 Video encoder
-                <select
+                <EncoderSelect
+                  aria-label="Video encoder"
                   value={form.encoder}
                   onChange={(event) => {
                     const encoder = event.target.value
@@ -425,71 +427,44 @@ export default function PresetEditor({
                     const firstSpeed = health?.encoder_presets?.[encoder]?.[0]
                     if (firstSpeed) updateGuided('videoPreset', firstSpeed)
                   }}
-                  className="input-field input-teal"
-                >
-                  {encoderOptions.map((encoder) => (
-                    <option key={encoder} value={encoder}>
-                      {encoder}
-                    </option>
-                  ))}
-                </select>
+                  options={encoderOptions}
+                />
               </label>
               <label>
                 Speed preset
-                <select
+                <EncoderSelect
+                  aria-label="Speed preset"
                   value={form.videoPreset}
                   onChange={(event) => updateGuided('videoPreset', event.target.value)}
-                  className="input-field input-teal"
-                >
-                  {speedOptions.map((speed) => (
-                    <option key={speed} value={speed}>
-                      {speed}
-                    </option>
-                  ))}
-                </select>
+                  options={speedOptions}
+                />
               </label>
               <label>
                 File format
-                <select
+                <EncoderSelect
+                  aria-label="File format"
                   value={form.fileFormat}
                   onChange={(event) => updateGuided('fileFormat', event.target.value)}
-                  className="input-field input-teal"
-                >
-                  {['av_mkv', 'av_mp4', 'av_webm'].map((format) => (
-                    <option key={format} value={format}>
-                      {format}
-                    </option>
-                  ))}
-                </select>
+                  options={['av_mkv', 'av_mp4', 'av_webm']}
+                />
               </label>
               <label>
                 Quality type
-                <select
+                <EncoderSelect
+                  aria-label="Quality type"
                   value={form.qualityType}
                   onChange={(event) => updateGuided('qualityType', event.target.value)}
-                  className="input-field input-teal"
-                >
-                  {['0', '1', '2'].map((value) => (
-                    <option key={value} value={value}>
-                      {value}
-                    </option>
-                  ))}
-                </select>
+                  options={['0', '1', '2']}
+                />
               </label>
               <label>
                 Quality
-                <select
+                <EncoderSelect
+                  aria-label="Quality"
                   value={form.quality}
                   onChange={(event) => updateGuided('quality', event.target.value)}
-                  className="input-field input-teal"
-                >
-                  <option value="">Not set</option>
-                  {qualityOptions.map((quality) => (
-                    <option key={quality} value={quality}>
-                      {quality}
-                    </option>
-                  ))}
-                </select>
+                  options={[{ value: '', label: 'Not set' }, ...qualityOptions]}
+                />
               </label>
             </div>
           ) : (

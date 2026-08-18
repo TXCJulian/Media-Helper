@@ -55,6 +55,14 @@ afterEach(() => {
 })
 
 describe('PresetEditor', () => {
+  it('uses the encoder select surface in guided fields', () => {
+    renderEditor()
+
+    fireEvent.click(screen.getByRole('button', { name: 'New guided preset' }))
+
+    expect(screen.getByLabelText('Video encoder').className).toContain('encoder-select')
+  })
+
   it('preserves raw-only fields after guided changes', () => {
     render(
       <PresetEditor

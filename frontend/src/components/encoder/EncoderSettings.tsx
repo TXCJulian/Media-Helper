@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import PresetEditor from '@/components/encoder/PresetEditor'
+import EncoderSelect from '@/components/encoder/EncoderSelect'
 import DirectorySelect from '@/components/ui/DirectorySelect'
 import {
   fetchEncoderDirectories,
@@ -194,7 +195,12 @@ export default function EncoderSettings({
     const timer = window.setTimeout(() => {
       void fetchEncoderDirectories(directorySearch)
         .then((result) => {
-          if (!cancelled) setDirectories(result.directories)
+          if (!cancelled) {
+            setDirectories(result.directories)
+            if (openSection === 'rules') {
+              setFileDirectory((current) => current || result.directories[0]?.path || '')
+            }
+          }
         })
         .catch((error) => {
           if (!cancelled) onError(errorMessage(error))
@@ -222,7 +228,10 @@ export default function EncoderSettings({
       setFilesLoading(true)
       void fetchEncoderFiles(fileDirectory, fileSearch)
         .then((result) => {
-          if (!cancelled) setFiles(result.files)
+          if (!cancelled) {
+            setFiles(result.files)
+            if (!testPathRef.current && result.files[0]) changeTestPath(result.files[0].path)
+          }
         })
         .catch((error) => {
           if (!cancelled) onError(errorMessage(error))
@@ -573,9 +582,9 @@ export default function EncoderSettings({
                         </p>
                       )}
                       <div className="grid gap-2 sm:grid-cols-[1fr_5rem_1fr_auto]">
-                        <label className="field-label text-[var(--text-secondary)]">
+                        <label className="field-label text-[0.7rem] text-[var(--text-secondary)]">
                           Field
-                          <select
+                          <EncoderSelect
                             aria-label={`${rule.id} condition ${conditionIndex + 1} field`}
                             value={condition.field}
                             onChange={(event) => {
@@ -594,36 +603,26 @@ export default function EncoderSettings({
                                     : '',
                               })
                             }}
-                            className="input-field input-teal mt-1"
-                          >
-                            {FIELDS.map((field) => (
-                              <option key={field} value={field}>
-                                {field}
-                              </option>
-                            ))}
-                          </select>
+                            className="mt-1"
+                            options={FIELDS}
+                          />
                         </label>
-                        <label className="field-label text-[var(--text-secondary)]">
+                        <label className="field-label text-[0.7rem] text-[var(--text-secondary)]">
                           Operator
-                          <select
+                          <EncoderSelect
                             aria-label={`${rule.id} condition ${conditionIndex + 1} operator`}
                             value={condition.op}
                             onChange={(event) =>
                               updateCondition(ruleIndex, conditionIndex, { op: event.target.value })
                             }
-                            className="input-field input-teal mt-1"
-                          >
-                            {operatorsFor(condition.field).map((operator) => (
-                              <option key={operator} value={operator}>
-                                {operator}
-                              </option>
-                            ))}
-                          </select>
+                            className="mt-1"
+                            options={operatorsFor(condition.field)}
+                          />
                         </label>
-                        <label className="field-label text-[var(--text-secondary)]">
+                        <label className="field-label text-[0.7rem] text-[var(--text-secondary)]">
                           Value
                           {BOOLEAN_FIELDS.has(condition.field) ? (
-                            <select
+                            <EncoderSelect
                               aria-label={`${rule.id} condition ${conditionIndex + 1} value`}
                               value={String(condition.value)}
                               onChange={(event) =>
@@ -631,13 +630,11 @@ export default function EncoderSettings({
                                   value: event.target.value === 'true',
                                 })
                               }
-                              className="input-field input-teal mt-1"
-                            >
-                              <option value="true">true</option>
-                              <option value="false">false</option>
-                            </select>
+                              className="mt-1"
+                              options={['true', 'false']}
+                            />
                           ) : condition.field === 'source_tool' ? (
-                            <select
+                            <EncoderSelect
                               aria-label={`${rule.id} condition ${conditionIndex + 1} value`}
                               value={String(condition.value)}
                               onChange={(event) =>
@@ -645,14 +642,12 @@ export default function EncoderSettings({
                                   value: event.target.value,
                                 })
                               }
-                              className="input-field input-teal mt-1"
-                            >
-                              {SOURCE_TOOLS.map((tool) => (
-                                <option key={tool} value={tool}>
-                                  {tool || 'any'}
-                                </option>
-                              ))}
-                            </select>
+                              className="mt-1"
+                              options={SOURCE_TOOLS.map((tool) => ({
+                                value: tool,
+                                label: tool || 'any',
+                              }))}
+                            />
                           ) : (
                             <input
                               aria-label={`${rule.id} condition ${conditionIndex + 1} value`}
@@ -698,20 +693,18 @@ export default function EncoderSettings({
                   >
                     + AND condition
                   </button>
-                  <label className="field-label min-w-[10rem] text-[var(--text-secondary)]">
+                  <label className="field-label min-w-[10rem] text-[0.7rem] text-[var(--text-secondary)]">
                     Target
-                    <select
+                    <EncoderSelect
                       aria-label={`Target for ${rule.id}`}
                       value={rule.target}
                       onChange={(event) => updateRule(ruleIndex, { target: event.target.value })}
-                      className="input-field input-teal mt-1"
-                    >
-                      {targets.map((target) => (
-                        <option key={target} value={target}>
-                          {target === 'skip' ? 'Skip' : target}
-                        </option>
-                      ))}
-                    </select>
+                      className="mt-1"
+                      options={targets.map((target) => ({
+                        value: target,
+                        label: target === 'skip' ? 'Skip' : target,
+                      }))}
+                    />
                   </label>
                 </div>
               </li>
@@ -720,23 +713,22 @@ export default function EncoderSettings({
               <span className="text-[0.74rem] font-medium text-[var(--text-secondary)]">
                 Fallback
               </span>
-              <label className="field-label mt-2 block text-[var(--text-secondary)]">
+              <label className="field-label mt-2 block text-[0.7rem] text-[var(--text-secondary)]">
                 Fallback target
-                <select
+                <EncoderSelect
+                  aria-label="Fallback target"
                   value={fallback}
                   onChange={(event) => {
                     pendingRules.current = null
                     setRulesDirty(true)
                     setFallback(event.target.value)
                   }}
-                  className="input-field input-teal mt-1"
-                >
-                  {targets.map((target) => (
-                    <option key={target} value={target}>
-                      {target === 'skip' ? 'Skip' : target}
-                    </option>
-                  ))}
-                </select>
+                  className="mt-1"
+                  options={targets.map((target) => ({
+                    value: target,
+                    label: target === 'skip' ? 'Skip' : target,
+                  }))}
+                />
               </label>
             </li>
           </ol>
@@ -805,19 +797,16 @@ export default function EncoderSettings({
               />
             </label>
             {files.length > 0 ? (
-              <select
+              <EncoderSelect
                 aria-label="File to test selector"
                 value={testPath}
                 onChange={(event) => changeTestPath(event.target.value)}
-                className="input-field input-teal mt-2"
-              >
-                <option value="">Select a media file…</option>
-                {files.map((file) => (
-                  <option key={file.path} value={file.path}>
-                    {file.name}
-                  </option>
-                ))}
-              </select>
+                className="mt-2"
+                options={[
+                  { value: '', label: 'Select a media file…' },
+                  ...files.map((file) => ({ value: file.path, label: file.name })),
+                ]}
+              />
             ) : (
               <input
                 aria-label="File to test"
