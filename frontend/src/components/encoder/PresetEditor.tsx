@@ -1,9 +1,19 @@
 import { type UIEvent, useRef, useState } from 'react'
-import { deleteEncoderPreset, importEncoderPresets, saveEncoderPreset } from '@/lib/api'
+import {
+  deleteEncoderPreset,
+  importEncoderPresets,
+  previewEncoderPresets,
+  saveEncoderPreset,
+} from '@/lib/api'
 import EncoderSelect from '@/components/encoder/EncoderSelect'
 import IconButton from '@/components/ui/IconButton'
 import { PencilIcon, SaveIcon, TrashIcon } from '@/components/ui/icons'
-import type { EncoderHealth, EncoderPreset } from '@/types'
+import type {
+  EncoderHealth,
+  EncoderPreset,
+  EncoderPresetImportResult,
+  EncoderPresetPreview,
+} from '@/types'
 
 type GuidedPresetFields = {
   name: string
@@ -19,6 +29,10 @@ type Draft = {
   body: Record<string, unknown>
   rawText: string
   rawError: string | null
+}
+
+type ImportSummary = EncoderPresetImportResult & {
+  unsupported: EncoderPresetPreview[]
 }
 
 export type PresetEditorProps = {
@@ -146,10 +160,11 @@ export default function PresetEditor({
   const [draft, setDraft] = useState<Draft | null>(null)
   const [view, setView] = useState<'guided' | 'raw'>('guided')
   const [saving, setSaving] = useState(false)
-  const [importSummary, setImportSummary] = useState<{
-    imported: string[]
-    skipped: { name: string; encoder: string; reason: string }[]
-  } | null>(null)
+  const [importDocument, setImportDocument] = useState<Record<string, unknown> | null>(null)
+  const [importCandidates, setImportCandidates] = useState<EncoderPresetPreview[] | null>(null)
+  const [selectedImportNames, setSelectedImportNames] = useState<string[]>([])
+  const [importing, setImporting] = useState(false)
+  const [importSummary, setImportSummary] = useState<ImportSummary | null>(null)
   const importInput = useRef<HTMLInputElement>(null)
   const rawHighlightRef = useRef<HTMLPreElement>(null)
   const rawLineNumbersRef = useRef<HTMLPreElement>(null)
@@ -188,7 +203,7 @@ export default function PresetEditor({
       setDraft({
         ...draft,
         body,
-        rawText: draft.originalName ? formatBody(body) : rawText,
+        rawText,
         rawError: null,
       })
     } catch (error) {
@@ -247,15 +262,39 @@ export default function PresetEditor({
     }
   }
 
-  const importDocument = async (file: File) => {
+  const previewImportDocument = async (file: File) => {
     try {
       const parsed: unknown = JSON.parse(await file.text())
       if (!isJsonObject(parsed)) throw new Error('Imported preset document must be a JSON object.')
-      const summary = await importEncoderPresets(parsed)
-      setImportSummary(summary)
+      const preview = await previewEncoderPresets(parsed)
+      setImportDocument(parsed)
+      setImportCandidates(preview.presets)
+      setSelectedImportNames(
+        preview.presets.filter((preset) => preset.supported).map((preset) => preset.name),
+      )
+      setImportSummary(null)
+    } catch (error) {
+      onError(errorMessage(error))
+    }
+  }
+
+  const importSelectedPresets = async () => {
+    if (!importDocument) return
+    setImporting(true)
+    try {
+      const summary = await importEncoderPresets(importDocument, selectedImportNames)
+      setImportSummary({
+        ...summary,
+        unsupported: importCandidates?.filter((candidate) => !candidate.supported) ?? [],
+      })
+      setImportDocument(null)
+      setImportCandidates(null)
+      setSelectedImportNames([])
       onSaved()
     } catch (error) {
       onError(errorMessage(error))
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -294,7 +333,7 @@ export default function PresetEditor({
           className="hidden"
           onChange={(event) => {
             const file = event.target.files?.[0]
-            if (file) void importDocument(file)
+            if (file) void previewImportDocument(file)
             event.target.value = ''
           }}
         />
@@ -344,13 +383,85 @@ export default function PresetEditor({
         </button>
       </div>
 
+      {importCandidates && (
+        <div className="space-y-2 rounded-lg border border-white/10 bg-white/[0.02] p-3">
+          <p className="text-[0.75rem] text-[var(--text-secondary)]">
+            Choose the presets to import.
+          </p>
+          <ul className="space-y-1.5" aria-label="Preset import candidates">
+            {importCandidates.map((candidate) => (
+              <li key={`${candidate.name}-${candidate.encoder}`}>
+                <label
+                  className={`flex items-start gap-2 text-[0.75rem] ${candidate.supported ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)] opacity-60'}`}
+                >
+                  <input
+                    type="checkbox"
+                    aria-label={`Keep preset ${candidate.name}`}
+                    checked={selectedImportNames.includes(candidate.name)}
+                    disabled={!candidate.supported || importing}
+                    onChange={(event) => {
+                      setSelectedImportNames((current) =>
+                        event.target.checked
+                          ? [...current, candidate.name]
+                          : current.filter((name) => name !== candidate.name),
+                      )
+                    }}
+                  />
+                  <span>
+                    {candidate.name}{' '}
+                    <span className="text-[var(--text-secondary)]">({candidate.encoder})</span>
+                    {!candidate.supported && candidate.reason && (
+                      <span className="block text-amber-200">{candidate.reason}</span>
+                    )}
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={importing}
+              onClick={() => void importSelectedPresets()}
+              className="rounded-lg border border-teal-400/25 bg-teal-400/10 px-3 py-2 text-[0.75rem] font-medium text-teal-300 disabled:opacity-50"
+            >
+              {importing ? 'Importing…' : 'Import selected presets'}
+            </button>
+            <button
+              type="button"
+              disabled={importing}
+              onClick={() => {
+                setImportDocument(null)
+                setImportCandidates(null)
+                setSelectedImportNames([])
+              }}
+              className="rounded-lg border border-white/8 px-3 py-2 text-[0.75rem] text-[var(--text-secondary)] disabled:opacity-50"
+            >
+              Cancel import
+            </button>
+          </div>
+        </div>
+      )}
+
       {importSummary && (
         <div
           role="status"
-          className={`rounded-lg border px-3 py-2 text-[0.75rem] ${importSummary.skipped.length ? 'border-amber-400/30 bg-amber-400/10 text-amber-200' : 'border-teal-400/25 bg-teal-400/10 text-teal-200'}`}
+          className={`rounded-lg border px-3 py-2 text-[0.75rem] ${importSummary.skipped.length || importSummary.unsupported.length ? 'border-amber-400/30 bg-amber-400/10 text-amber-200' : 'border-teal-400/25 bg-teal-400/10 text-teal-200'}`}
         >
           Imported {importSummary.imported.length} preset
           {importSummary.imported.length === 1 ? '' : 's'}.
+          {importSummary.unselected.length > 0 && (
+            <p className="mt-1">Not imported: {importSummary.unselected.join(', ')}.</p>
+          )}
+          {importSummary.unsupported.length > 0 && (
+            <ul className="mt-1 list-disc pl-4">
+              {importSummary.unsupported.map((item) => (
+                <li key={`${item.name}-${item.encoder}`}>
+                  {item.name}: {item.reason}
+                </li>
+              ))}
+            </ul>
+          )}
           {importSummary.skipped.length > 0 && (
             <ul className="mt-1 list-disc pl-4">
               {importSummary.skipped.map((item) => (
@@ -468,21 +579,21 @@ export default function PresetEditor({
               </label>
             </div>
           ) : (
-            <label className="grid gap-1 text-[0.78rem] text-[var(--text-secondary)]">
+            <label className="grid min-h-0 gap-1 text-[0.78rem] text-[var(--text-secondary)]">
               Preset JSON
-              <div className="relative flex overflow-hidden rounded-lg border border-[var(--border)] bg-[#101018] font-mono text-[0.75rem] leading-5">
+              <div className="relative flex h-[28rem] max-h-[70vh] min-h-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[#101018] font-mono text-[0.75rem] leading-5">
                 <pre
                   ref={rawLineNumbersRef}
                   aria-hidden="true"
-                  className="pointer-events-none min-w-10 select-none border-r border-white/8 px-2 py-2 text-right text-white/25"
+                  className="pointer-events-none h-full min-h-0 min-w-10 select-none overflow-hidden border-r border-white/8 px-2 py-2 text-right text-white/25"
                 >
                   {draft.rawText.split('\n').map((_, index) => `${index + 1}\n`)}
                 </pre>
-                <div className="relative min-h-[280px] flex-1">
+                <div className="relative min-h-0 flex-1">
                   <pre
                     ref={rawHighlightRef}
                     aria-hidden="true"
-                    className="pointer-events-none absolute inset-0 m-0 overflow-hidden whitespace-pre-wrap break-words px-3 py-2"
+                    className="pointer-events-none absolute inset-0 m-0 min-h-0 overflow-hidden whitespace-pre px-3 py-2"
                     dangerouslySetInnerHTML={{ __html: highlightJson(draft.rawText) }}
                   />
                   <textarea
@@ -490,8 +601,8 @@ export default function PresetEditor({
                     value={draft.rawText}
                     onChange={(event) => updateRaw(event.target.value)}
                     onScroll={syncRawScroll}
-                    rows={14}
-                    className="relative z-10 min-h-[280px] w-full resize-y bg-transparent px-3 py-2 text-transparent caret-white outline-none selection:bg-teal-400/25"
+                    wrap="off"
+                    className="relative z-10 h-full min-h-0 w-full resize-none overflow-auto bg-transparent px-3 py-2 text-transparent caret-white outline-none selection:bg-teal-400/25"
                   />
                 </div>
               </div>

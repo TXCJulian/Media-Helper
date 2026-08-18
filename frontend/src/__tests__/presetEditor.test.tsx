@@ -6,6 +6,7 @@ import type { EncoderPreset } from '@/types'
 const api = vi.hoisted(() => ({
   saveEncoderPreset: vi.fn(),
   deleteEncoderPreset: vi.fn(),
+  previewEncoderPresets: vi.fn(),
   importEncoderPresets: vi.fn(),
 }))
 
@@ -18,6 +19,10 @@ const leaf = {
   FileFormat: 'av_mkv',
   VideoQualityType: 2,
   VideoQualitySlider: 22,
+}
+
+const STOCK_DOCUMENT = {
+  PresetList: [leaf],
 }
 
 function preset(overrides: Partial<EncoderPreset> = {}): EncoderPreset {
@@ -197,7 +202,10 @@ describe('PresetEditor', () => {
   })
 
   it('calls import success only after its request resolves and reports rejection without success', async () => {
-    const pending = deferred<{ imported: string[]; skipped: [] }>()
+    const pending = deferred<{ imported: string[]; skipped: []; unselected: [] }>()
+    api.previewEncoderPresets.mockResolvedValue({
+      presets: [{ name: 'NVENC', encoder: 'nvenc_h265', supported: true, reason: null }],
+    })
     api.importEncoderPresets
       .mockReturnValueOnce(pending.promise)
       .mockRejectedValueOnce(new Error('import failed'))
@@ -208,9 +216,11 @@ describe('PresetEditor', () => {
     fireEvent.change(first.container.querySelector('input[type="file"]')!, {
       target: { files: [file] },
     })
+    await screen.findByLabelText('Keep preset NVENC')
+    fireEvent.click(screen.getByRole('button', { name: 'Import selected presets' }))
     await waitFor(() => expect(api.importEncoderPresets).toHaveBeenCalledTimes(1))
     expect(first.onSaved).not.toHaveBeenCalled()
-    pending.resolve({ imported: [], skipped: [] })
+    pending.resolve({ imported: [], skipped: [], unselected: [] })
     await waitFor(() => expect(first.onSaved).toHaveBeenCalledTimes(1))
     first.unmount()
 
@@ -218,7 +228,120 @@ describe('PresetEditor', () => {
     fireEvent.change(second.container.querySelector('input[type="file"]')!, {
       target: { files: [file] },
     })
+    await screen.findByLabelText('Keep preset NVENC')
+    fireEvent.click(screen.getByRole('button', { name: 'Import selected presets' }))
     await waitFor(() => expect(second.onError).toHaveBeenCalledWith('import failed'))
     expect(second.onSaved).not.toHaveBeenCalled()
+  })
+
+  it('lets the user deselect a supported preset before import', async () => {
+    api.previewEncoderPresets.mockResolvedValue({
+      presets: [{ name: 'NVENC', encoder: 'nvenc_h265', supported: true, reason: null }],
+    })
+    api.importEncoderPresets.mockResolvedValue({ imported: [], skipped: [], unselected: ['NVENC'] })
+    const file = new File([JSON.stringify(STOCK_DOCUMENT)], 'presets.json', {
+      type: 'application/json',
+    })
+    Object.defineProperty(file, 'text', {
+      value: () => Promise.resolve(JSON.stringify(STOCK_DOCUMENT)),
+    })
+    const { container } = renderEditor()
+
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } })
+    await screen.findByLabelText('Keep preset NVENC')
+    fireEvent.click(screen.getByLabelText('Keep preset NVENC'))
+    fireEvent.click(screen.getByRole('button', { name: 'Import selected presets' }))
+
+    await waitFor(() => expect(api.importEncoderPresets).toHaveBeenCalledWith(STOCK_DOCUMENT, []))
+  })
+
+  it('keeps the raw editor viewport bounded for long JSON', () => {
+    renderEditor()
+
+    fireEvent.click(screen.getByRole('button', { name: 'New raw preset' }))
+    const editor = screen.getByLabelText('Preset JSON')
+
+    expect(editor.className).toContain('h-full')
+    expect(editor.className).toContain('overflow-auto')
+    expect(editor.className).not.toContain('resize-y')
+  })
+
+  it('preserves raw typing text while keeping an existing preset name immutable on save', async () => {
+    api.saveEncoderPreset.mockResolvedValue({ body: leaf })
+    renderEditor()
+    const rawText = JSON.stringify({ ...leaf, PresetName: 'Renamed NVENC', Extra: true }, null, 4)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit NVENC' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Raw JSON' }))
+    fireEvent.change(screen.getByLabelText('Preset JSON'), { target: { value: rawText } })
+
+    expect((screen.getByLabelText('Preset JSON') as HTMLTextAreaElement).value).toBe(rawText)
+    fireEvent.click(screen.getByRole('button', { name: 'Save preset' }))
+    await waitFor(() => expect(api.saveEncoderPreset).toHaveBeenCalled())
+    expect(api.saveEncoderPreset).toHaveBeenCalledWith(
+      'NVENC',
+      expect.objectContaining({ PresetName: 'NVENC', Extra: true }),
+    )
+  })
+
+  it('shows unsupported preview candidates as disabled with their reason', async () => {
+    api.previewEncoderPresets.mockResolvedValue({
+      presets: [
+        {
+          name: 'QSV',
+          encoder: 'qsv_h265',
+          supported: false,
+          reason: "The connected encoder does not provide 'qsv_h265'",
+        },
+      ],
+    })
+    const file = new File([JSON.stringify(STOCK_DOCUMENT)], 'presets.json', {
+      type: 'application/json',
+    })
+    Object.defineProperty(file, 'text', {
+      value: () => Promise.resolve(JSON.stringify(STOCK_DOCUMENT)),
+    })
+    const { container } = renderEditor()
+
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } })
+
+    const candidate = await screen.findByLabelText('Keep preset QSV')
+    expect(candidate).toHaveProperty('disabled', true)
+    expect(screen.getByText(/does not provide 'qsv_h265'/)).toBeTruthy()
+  })
+
+  it('reports imported, unselected, and unsupported presets in the import status', async () => {
+    api.previewEncoderPresets.mockResolvedValue({
+      presets: [
+        { name: 'NVENC', encoder: 'nvenc_h265', supported: true, reason: null },
+        {
+          name: 'QSV',
+          encoder: 'qsv_h265',
+          supported: false,
+          reason: "The connected encoder does not provide 'qsv_h265'",
+        },
+      ],
+    })
+    api.importEncoderPresets.mockResolvedValue({
+      imported: ['NVENC'],
+      skipped: [],
+      unselected: ['QSV'],
+    })
+    const file = new File([JSON.stringify(STOCK_DOCUMENT)], 'presets.json', {
+      type: 'application/json',
+    })
+    Object.defineProperty(file, 'text', {
+      value: () => Promise.resolve(JSON.stringify(STOCK_DOCUMENT)),
+    })
+    const { container } = renderEditor()
+
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } })
+    await screen.findByLabelText('Keep preset NVENC')
+    fireEvent.click(screen.getByRole('button', { name: 'Import selected presets' }))
+
+    const status = await screen.findByRole('status')
+    expect(status.textContent).toContain('Imported 1 preset.')
+    expect(status.textContent).toContain('Not imported: QSV.')
+    expect(status.textContent).toContain("QSV: The connected encoder does not provide 'qsv_h265'")
   })
 })
