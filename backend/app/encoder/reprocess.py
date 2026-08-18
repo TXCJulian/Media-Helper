@@ -21,7 +21,7 @@ def _norm_dir(path: str) -> str:
 def is_excluded_path(path: str, base: str) -> bool:
     """Whether a media-library walk must omit *path* and its descendants."""
     name = os.path.basename(os.path.normpath(path))
-    if name.startswith("."):
+    if name.startswith(".") or name.endswith(".trickplay") or ".trickplay" in name.lower():
         return True
     return name == config.MUSIC_FOLDER_NAME and _norm_dir(
         os.path.dirname(os.path.normpath(path))
@@ -55,11 +55,16 @@ def has_excluded_ancestor(path: str, base: str, *, exclude_music: bool = True) -
     for component in relative.split(os.sep):
         current = os.path.join(current, component)
         name = os.path.basename(os.path.normpath(current))
-        if name.startswith(".") or (
-            exclude_music
-            and name == config.MUSIC_FOLDER_NAME
-            and _norm_dir(os.path.dirname(os.path.normpath(current)))
-            == _norm_dir(resolved_base)
+        if (
+            name.startswith(".")
+            or name.endswith(".trickplay")
+            or ".trickplay" in name.lower()
+            or (
+                exclude_music
+                and name == config.MUSIC_FOLDER_NAME
+                and _norm_dir(os.path.dirname(os.path.normpath(current)))
+                == _norm_dir(resolved_base)
+            )
         ):
             return True
     return False

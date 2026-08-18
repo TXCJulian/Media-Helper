@@ -824,6 +824,8 @@ def test_directories_hide_trickplay_and_top_level_music(client, monkeypatch, tmp
     base = tmp_path / "media"
     (base / "Movies").mkdir(parents=True)
     (base / ".trickplay").mkdir()
+    (base / "Movies" / "Film.trickplay").mkdir()
+    (base / "Movies" / "Film.trickplay" / "320p").mkdir()
     (base / "Music").mkdir()
     monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
     monkeypatch.setattr(routes_mod.config, "MUSIC_FOLDER_NAME", "Music")
@@ -832,7 +834,10 @@ def test_directories_hide_trickplay_and_top_level_music(client, monkeypatch, tmp
         for entry in client.get("/api/encoder/directories").json()["directories"]
     }
     assert str(base / ".trickplay") not in paths
+    assert str(base / "Movies" / "Film.trickplay") not in paths
+    assert str(base / "Movies" / "Film.trickplay" / "320p") not in paths
     assert str(base / "Music") not in paths
+    assert str(base / "Movies") in paths
 
 
 def test_directories_hide_custom_music_folder(client, monkeypatch, tmp_path):
@@ -852,11 +857,17 @@ def test_directories_hide_custom_music_folder(client, monkeypatch, tmp_path):
 def test_config_rejects_watch_paths_inside_trickplay(client, monkeypatch, tmp_path):
     base = tmp_path / "media"
     (base / ".trickplay" / "sub").mkdir(parents=True)
+    (base / "Movies" / "Film.trickplay" / "320p").mkdir(parents=True)
     monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
-    resp = client.put(
+    resp1 = client.put(
         "/api/encoder/config", json={"watch_paths": [str(base / ".trickplay" / "sub")]}
     )
-    assert resp.status_code == 400
+    assert resp1.status_code == 400
+    resp2 = client.put(
+        "/api/encoder/config",
+        json={"watch_paths": [str(base / "Movies" / "Film.trickplay" / "320p")]},
+    )
+    assert resp2.status_code == 400
 
 
 def test_config_rejects_watch_paths_inside_music_folder(client, monkeypatch, tmp_path):

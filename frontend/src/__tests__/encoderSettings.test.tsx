@@ -339,6 +339,29 @@ describe('EncoderSettings sections', () => {
     )
   })
 
+  it('provides makemkv and standard tools for source_tool conditions', () => {
+    renderSettings({
+      rules: {
+        rules: [
+          {
+            id: 'rule-1',
+            conditions: [{ field: 'source_tool', op: '==', value: 'makemkv' }],
+            target: 'CPU 4K',
+          },
+        ],
+        fallback: 'skip',
+      },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+
+    const select = screen.getByLabelText('rule-1 condition 1 value') as HTMLSelectElement
+    const options = Array.from(select.options).map((opt) => opt.value)
+    expect(options).toContain('makemkv')
+    expect(options).toContain('handbrake')
+    expect(options).toContain('lavf')
+  })
+
   it('selects the first returned directory and file for a blank file test', async () => {
     vi.mocked(api.fetchEncoderDirectories).mockResolvedValue({
       directories: [{ path: '/media/Movies', base: '/media' }],

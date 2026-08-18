@@ -75,7 +75,7 @@ const NUMERIC_FIELDS = new Set([
   'duration',
   'audio_channels',
 ])
-const SOURCE_TOOLS = ['', 'sonarr', 'radarr', 'whisper', 'handbrake', 'ffmpeg', 'manual']
+const SOURCE_TOOLS = ['', 'makemkv', 'handbrake', 'lavf', 'unknown', 'other']
 
 const STRING_OPERATORS = ['==', '!=', 'contains', 'startswith', 'endswith']
 const NUMERIC_OPERATORS = ['==', '!=', '<', '<=', '>', '>=']
