@@ -824,14 +824,7 @@ def test_against_file(payload: TestIn) -> dict | JSONResponse:
 
 @router.post("/reprocess", response_model=None)
 def reprocess(payload: ReprocessIn) -> dict | JSONResponse:
-    """Clear the dedup record for a file so the watcher considers it again.
-
-    The escape hatch for "I changed my rules, encode this one again". The
-    watcher deliberately decides about each file once, so without an explicit
-    way back in, the only recourse was to touch the file on disk or edit the
-    database. Dropping the record is all this does -- the next rescan probes
-    the file and applies whatever the rules now say, including `skip`.
-    """
+    """Immediately re-evaluate a source path with the current rules."""
     resolved = _resolve_probe_path(payload.path)
     if resolved is None:
         return _error(
@@ -839,7 +832,7 @@ def reprocess(payload: ReprocessIn) -> dict | JSONResponse:
         )
     if not os.path.isfile(resolved):
         return _error(400, "invalid_path", "No such file")
-    return {"path": resolved, "cleared": get_store().forget_seen(resolved)}
+    return get_queue().reprocess_path(resolved)
 
 
 @router.post("/reprocess-all", response_model=None)
@@ -856,6 +849,30 @@ def reprocess_all() -> dict | JSONResponse:
 @router.get("/jobs")
 def list_jobs() -> list[dict]:
     return [job_to_payload(j) for j in get_store().list_jobs()]
+
+
+@router.post("/jobs/{job_id}/reprocess", response_model=None)
+def reprocess_job(job_id: str) -> dict | JSONResponse:
+    """Re-evaluate a historical job's source without mutating that history row."""
+    store = get_store()
+    job = store.get_job(job_id)
+    if job is None:
+        return _error(404, "job_not_found", f"No job {job_id!r}")
+    if job.stage == "swapping":
+        return _error(
+            409,
+            "job_swapping",
+            "This job is publishing its result and cannot be reprocessed yet",
+        )
+
+    resolved = _resolve_probe_path(job.source_path)
+    if resolved is None:
+        return _error(
+            400, "invalid_path", "Path is not within a configured readable root"
+        )
+    if not os.path.isfile(resolved):
+        return _error(400, "invalid_path", "No such file")
+    return get_queue().reprocess_path(resolved)
 
 
 @router.post("/jobs/{job_id}/approve", response_model=None)

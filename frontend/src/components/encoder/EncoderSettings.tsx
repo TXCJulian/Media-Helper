@@ -354,9 +354,9 @@ export default function EncoderSettings({
       const result = await reprocessEncoderFile(path)
       if (request === reprocessRequestRef.current && testPathRef.current.trim() === path) {
         setReprocessMessage(
-          result.cleared
-            ? 'File queued for reconsideration on the next scan.'
-            : 'File was not in the processed-file index.',
+          result.created
+            ? 'File was re-evaluated immediately.'
+            : 'An active job already exists for this file.',
         )
       }
     } catch (error) {

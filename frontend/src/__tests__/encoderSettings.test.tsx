@@ -2,7 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import EncoderSettings from '@/components/encoder/EncoderSettings'
 import * as api from '@/lib/api'
-import type { EncoderConfig, EncoderPreset, EncoderRule, EncoderTestResult } from '@/types'
+import type {
+  EncoderConfig,
+  EncoderPreset,
+  EncoderRule,
+  EncoderTestResult,
+  ReprocessResult,
+} from '@/types'
 
 vi.mock('@/lib/api', () => ({
   fetchEncoderDirectories: vi.fn().mockResolvedValue({ directories: [] }),
@@ -92,8 +98,10 @@ beforeEach(() => {
   vi.mocked(api.saveEncoderConfig).mockResolvedValue({ watch_paths: [] })
   vi.mocked(api.saveEncoderRules).mockResolvedValue({ saved: 0 })
   vi.mocked(api.reprocessEncoderFile).mockResolvedValue({
+    job_id: 'new-job',
     path: '/media/Movies/demo.mkv',
-    cleared: true,
+    stage: 'pending',
+    created: true,
   })
 })
 
@@ -222,7 +230,7 @@ describe('EncoderSettings sections', () => {
     await waitFor(() =>
       expect(api.reprocessEncoderFile).toHaveBeenCalledWith('/media/Movies/demo.mkv'),
     )
-    expect(await screen.findByText(/queued for reconsideration/i)).toBeTruthy()
+    expect(await screen.findByText(/re-evaluated immediately/i)).toBeTruthy()
   })
 
   it('clears completed file-test and reprocess output when the path changes', async () => {
@@ -235,7 +243,7 @@ describe('EncoderSettings sections', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Test file' }))
     expect(await screen.findByText('Matched: uhd → NVENC')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Reprocess file' }))
-    expect(await screen.findByText(/queued for reconsideration/i)).toBeTruthy()
+    expect(await screen.findByText(/re-evaluated immediately/i)).toBeTruthy()
 
     fireEvent.change(input, { target: { value: '/media/Movies/b.mkv' } })
     expect(screen.queryByText('Matched: uhd → NVENC')).toBeNull()
@@ -258,7 +266,7 @@ describe('EncoderSettings sections', () => {
   })
 
   it('ignores a reprocess response after its submitted path is replaced', async () => {
-    const pending = deferred<{ path: string; cleared: boolean }>()
+    const pending = deferred<ReprocessResult>()
     vi.mocked(api.reprocessEncoderFile).mockReturnValue(pending.promise)
     renderSettings()
     fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
@@ -267,9 +275,16 @@ describe('EncoderSettings sections', () => {
     fireEvent.change(input, { target: { value: '/media/Movies/a.mkv' } })
     fireEvent.click(screen.getByRole('button', { name: 'Reprocess file' }))
     fireEvent.change(input, { target: { value: '/media/Movies/b.mkv' } })
-    await act(async () => pending.resolve({ path: '/media/Movies/a.mkv', cleared: true }))
+    await act(async () =>
+      pending.resolve({
+        job_id: 'new-job',
+        path: '/media/Movies/a.mkv',
+        stage: 'pending',
+        created: true,
+      }),
+    )
 
-    expect(screen.queryByText(/queued for reconsideration/i)).toBeNull()
+    expect(screen.queryByText(/re-evaluated immediately/i)).toBeNull()
   })
 
   it('forwards failed saves without reporting a refresh', async () => {

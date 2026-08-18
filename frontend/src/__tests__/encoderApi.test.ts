@@ -12,6 +12,7 @@ import {
   importEncoderPresets,
   previewEncoderPresets,
   reprocessEncoderFile,
+  reprocessEncoderJob,
   saveEncoderConfig,
   saveEncoderPreset,
   saveEncoderRules,
@@ -166,7 +167,9 @@ describe('encoder rule and job transport', () => {
           not_evaluated: [],
         }),
       )
-      .mockResolvedValueOnce(jsonResponse({ path: '/media/a.mkv', cleared: true }))
+      .mockResolvedValueOnce(
+        jsonResponse({ job_id: 'new', path: '/media/a.mkv', stage: 'pending', created: true }),
+      )
       .mockResolvedValueOnce(jsonResponse({ stage: 'queued' }))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -184,6 +187,25 @@ describe('encoder rule and job transport', () => {
       '/api/encoder/jobs/job%20id/approve',
     )
     expect(bodyOf(fetchMock, 3)).toEqual({})
+  })
+
+  it('reprocesses a failed job through its encoded route', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ job_id: 'replacement', path: '/media/a.mkv', stage: 'pending', created: true }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(reprocessEncoderJob('failed job')).resolves.toEqual({
+      job_id: 'replacement',
+      path: '/media/a.mkv',
+      stage: 'pending',
+      created: true,
+    })
+
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(
+      '/api/encoder/jobs/failed%20job/reprocess',
+    )
+    expect(fetchMock.mock.calls[0]![1].method).toBe('POST')
   })
 
   it('loads rules and jobs and deletes a job through its no-content endpoint', async () => {

@@ -334,6 +334,13 @@ export interface EncoderJob {
   updated_at: string
 }
 
+export interface ReprocessResult {
+  job_id: string
+  path: string
+  stage: EncoderJobStage
+  created: boolean
+}
+
 export interface EncoderRuleCondition {
   field: string
   op: string

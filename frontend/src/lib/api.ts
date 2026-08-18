@@ -496,12 +496,21 @@ export function testEncoderFile(path: string): Promise<import('@/types').Encoder
   })
 }
 
-export function reprocessEncoderFile(path: string): Promise<{ path: string; cleared: boolean }> {
+export function reprocessEncoderFile(path: string): Promise<import('@/types').ReprocessResult> {
   return fetchJson('/api/encoder/reprocess', undefined, DEFAULT_TIMEOUT_MS, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),
   })
+}
+
+export function reprocessEncoderJob(jobId: string): Promise<import('@/types').ReprocessResult> {
+  return fetchJson(
+    `/api/encoder/jobs/${encodeURIComponent(jobId)}/reprocess`,
+    undefined,
+    DEFAULT_TIMEOUT_MS,
+    { method: 'POST' },
+  )
 }
 
 export function fetchEncoderJobs(): Promise<import('@/types').EncoderJob[]> {

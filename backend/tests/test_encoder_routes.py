@@ -1045,13 +1045,16 @@ def test_probe_failures_do_not_leak_ffprobe_output_to_the_caller(
     assert "Permission denied" not in r.text
 
 
-def test_reprocess_clears_the_dedup_record(client, monkeypatch, tmp_path):
+def test_reprocess_immediately_returns_the_planned_job(client, monkeypatch, tmp_path):
+    from app.encoder import queue as queue_mod
+
     watch_root = tmp_path / "Movies"
     watch_root.mkdir()
     candidate = watch_root / "x.mkv"
     candidate.write_bytes(b"data")
     monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
     routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
+    monkeypatch.setattr(queue_mod, "probe", lambda _path: {})
 
     store = routes_mod.get_store()
     st = candidate.stat()
@@ -1060,12 +1063,104 @@ def test_reprocess_clears_the_dedup_record(client, monkeypatch, tmp_path):
 
     r = client.post("/api/encoder/reprocess", json={"path": str(candidate)})
     assert r.status_code == 200
-    assert r.json()["cleared"] is True
-    assert str(candidate) not in store.seen_fingerprints()
+    assert r.json() == {
+        "job_id": routes_mod.get_store().newest_job_for_source(str(candidate)).id,
+        "path": str(candidate),
+        "stage": "skipped",
+        "created": True,
+    }
 
-    # Idempotent: clearing again is not an error, it just clears nothing.
-    assert client.post("/api/encoder/reprocess",
-                       json={"path": str(candidate)}).json()["cleared"] is False
+
+def test_job_reprocess_returns_an_existing_active_job(client, monkeypatch, tmp_path):
+    """A retry must not create a second active row for the same source."""
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    candidate = watch_root / "x.mkv"
+    candidate.write_bytes(b"data")
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
+
+    store = routes_mod.get_store()
+    failed_job = store.create_job(str(candidate))
+    store.set_stage(failed_job.id, "failed", error="encoder rejected it")
+    active_job = store.create_job(str(candidate))
+
+    response = client.post(f"/api/encoder/jobs/{failed_job.id}/reprocess")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "job_id": active_job.id,
+        "path": str(candidate),
+        "stage": "settling",
+        "created": False,
+    }
+    assert len(store.list_jobs()) == 2
+
+
+def test_failed_job_reprocess_creates_new_history_row(client, monkeypatch, tmp_path):
+    """Re-evaluation must preserve the failed row as terminal history."""
+    from app.encoder import queue as queue_mod
+
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    candidate = watch_root / "x.mkv"
+    candidate.write_bytes(b"data")
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
+    monkeypatch.setattr(queue_mod, "probe", lambda _path: {})
+
+    store = routes_mod.get_store()
+    failed_job = store.create_job(str(candidate))
+    store.set_stage(failed_job.id, "failed", error="encoder rejected it")
+
+    response = client.post(f"/api/encoder/jobs/{failed_job.id}/reprocess")
+
+    assert response.status_code == 200
+    assert response.json()["created"] is True
+    assert response.json()["job_id"] != failed_job.id
+    assert response.json()["path"] == str(candidate)
+    assert response.json()["stage"] == "skipped"
+    assert len(store.list_jobs()) == 2
+    assert store.get_job(failed_job.id).stage == "failed"
+
+
+def test_job_reprocess_rejects_unknown_and_swapping_jobs(client, monkeypatch, tmp_path):
+    """A missing row or a live swap cannot be safely re-evaluated."""
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    candidate = watch_root / "x.mkv"
+    candidate.write_bytes(b"data")
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
+
+    missing = client.post("/api/encoder/jobs/nope/reprocess")
+    assert missing.status_code == 404
+    assert missing.json()["code"] == "job_not_found"
+
+    store = routes_mod.get_store()
+    swapping = store.create_job(str(candidate))
+    store.set_stage(swapping.id, "swapping")
+
+    response = client.post(f"/api/encoder/jobs/{swapping.id}/reprocess")
+    assert response.status_code == 409
+    assert response.json()["code"] == "job_swapping"
+
+
+def test_job_reprocess_refuses_a_source_outside_every_root(client, monkeypatch, tmp_path):
+    outside = tmp_path / "elsewhere.mkv"
+    outside.write_bytes(b"data")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [])
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [])
+    routes_mod.register_runtime(FakeRuntime([]))
+
+    store = routes_mod.get_store()
+    failed_job = store.create_job(str(outside))
+    store.set_stage(failed_job.id, "failed", error="encoder rejected it")
+
+    response = client.post(f"/api/encoder/jobs/{failed_job.id}/reprocess")
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_path"
 
 
 def test_reprocess_refuses_a_path_outside_every_root(client, monkeypatch, tmp_path):
