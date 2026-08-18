@@ -60,6 +60,7 @@ const encoderReprocessStatuses = new Set<EncoderReprocessEvent['status']>([
   'running',
   'completed',
   'failed',
+  'cancelled',
 ])
 
 function isEncoderReprocessEvent(value: unknown): value is EncoderReprocessEvent {

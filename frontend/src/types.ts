@@ -341,7 +341,12 @@ export interface ReprocessResult {
   created: boolean
 }
 
-export type EncoderReprocessStatus = 'started' | 'running' | 'completed' | 'failed'
+export type EncoderReprocessStatus =
+  | 'started'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
 
 export interface EncoderReprocessEvent {
   type: 'reprocess'

@@ -14,6 +14,8 @@ import {
   reprocessEncoderFile,
   reprocessEncoderJob,
   fetchEncoderReprocessStatus,
+  startEncoderReprocessAll,
+  stopEncoderReprocessAll,
   saveEncoderConfig,
   saveEncoderPreset,
   saveEncoderRules,
@@ -214,15 +216,25 @@ describe('encoder rule and job transport', () => {
     expect(fetchMock.mock.calls[0]![1].method).toBe('POST')
   })
 
-  it('loads the authoritative bulk reprocess status', async () => {
+  it('loads the authoritative bulk reprocess status and triggers start/stop', async () => {
     const status = { active: false, event: null }
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(status))
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(status))
+      .mockResolvedValueOnce(jsonResponse({ run_id: 'bulk-1', status: 'started' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'stopping' }))
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(fetchEncoderReprocessStatus()).resolves.toEqual(status)
     expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(
       '/api/encoder/reprocess-all/status',
     )
+
+    await expect(startEncoderReprocessAll()).resolves.toEqual({ run_id: 'bulk-1', status: 'started' })
+    expect(fetchMock.mock.calls[1]![1]?.method).toBe('POST')
+
+    await expect(stopEncoderReprocessAll()).resolves.toEqual({ status: 'stopping' })
+    expect(fetchMock.mock.calls[2]![1]?.method).toBe('DELETE')
   })
 
   it('loads rules and jobs and deletes a job through its no-content endpoint', async () => {

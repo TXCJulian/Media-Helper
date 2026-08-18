@@ -208,6 +208,7 @@ class EncodeQueue:
     # ---- planning --------------------------------------------------------
 
     def _probe_once(self, path: str) -> dict:
+        """Probe a single media file with ffprobe. Forwarding helper used for test mocking."""
         return probe(path)
 
     def _probe_with_retry(
@@ -259,29 +260,18 @@ class EncodeQueue:
         *,
         cancel_event: threading.Event | None = None,
     ) -> str:
-        """Create a job for a newly settled file and plan it.
+        """Create a job for *source_path* and run planning synchronously.
 
-        The watcher's entry point, and the only place that pairs job creation
-        with planning. It exists so that an *unexpected* failure in `plan()`
-        cannot leave the row in `settling`: that stage is neither terminal nor
-        resumable, so the job would hold its source path against the unique
-        active index forever, never be retried by restart recovery, and never
-        be reconsidered by the watcher -- the file silently drops out of the
-        system with a row that looks like work in progress.
-
-        `plan()` already converts the failures it anticipates into `failed`.
-        This is the backstop for the ones it does not.
+        Returns the resulting stage (e.g., 'pending', 'queued', 'skipped',
+        'failed'). If the target rule evaluated to 'skip', the job is still
+        created with stage='skipped' to record that the file was processed.
         """
         job = self._store.create_job(source_path, size, mtime_ns)
+        self._publish(job.id)
         try:
             return self.plan(job.id, cancel_event=cancel_event)
         except Exception:
-            # The message reaches the API and the panel, and an *unexpected*
-            # exception carries whatever internal state it happened to hold --
-            # filesystem paths, SQL, driver text. The anticipated failures in
-            # `plan()` set their own curated messages; this one only says that
-            # something broke and where to look.
-            logger.exception("Planning %s failed unexpectedly", source_path)
+            logger.exception("Initial plan failed for %s", source_path)
             self._fail(
                 job.id, "Internal planning error; see server logs", "plan_failed"
             )
@@ -293,7 +283,12 @@ class EncodeQueue:
         *,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, object]:
-        """Immediately reconsider a path, bypassing watcher deduplication."""
+        """Immediately reconsider a path, bypassing watcher deduplication.
+
+        Precondition: `source_path` must be an absolute path that has already been
+        authorized and validated by the caller (e.g. via `_resolve_probe_path` or
+        `resolve_authorized_path`).
+        """
         if cancel_event is not None and cancel_event.is_set():
             return {
                 "job_id": None,
@@ -310,7 +305,18 @@ class EncodeQueue:
                 "created": False,
             }
 
-        stat = os.stat(source_path)
+        try:
+            stat = os.stat(source_path)
+        except OSError as exc:
+            logger.warning(
+                "Could not stat path for reprocess: %s (%s)", source_path, exc
+            )
+            return {
+                "job_id": None,
+                "path": source_path,
+                "stage": "failed",
+                "created": False,
+            }
         self._store.forget_seen(source_path)
         try:
             stage = self.plan_new(

@@ -36,6 +36,7 @@ export interface EncoderSettingsProps {
   onRefresh: () => void
   onError: (message: string) => void
   onStartReprocessAll?: () => Promise<EncoderReprocessRun>
+  onStopReprocessAll?: () => Promise<{ status: string }>
   latestReprocessEvent?: EncoderReprocessEvent | null
   reprocessActive?: boolean | null
 }
@@ -54,11 +55,16 @@ const FIELDS = [
   'profile',
   'source_tool',
   'encoder_tag',
-  'hdr',
+  'audio_codec',
+  'audio_channels',
+  'subtitle_codec',
+  'container',
+  'audio_only',
+  'is_hdr',
   'dolby_vision',
 ]
-const OPERATORS = ['>=', '<=', '>', '<', '==', '!=', 'contains']
-const BOOLEAN_FIELDS = new Set(['hdr', 'dolby_vision'])
+
+const BOOLEAN_FIELDS = new Set(['audio_only', 'is_hdr', 'dolby_vision'])
 const NUMERIC_FIELDS = new Set([
   'height',
   'width',
@@ -67,18 +73,22 @@ const NUMERIC_FIELDS = new Set([
   'bit_depth',
   'frame_rate',
   'duration',
+  'audio_channels',
 ])
-const SOURCE_TOOLS = ['unknown', 'makemkv', 'handbrake', 'lavf', 'other']
+const SOURCE_TOOLS = ['', 'sonarr', 'radarr', 'whisper', 'handbrake', 'ffmpeg', 'manual']
+
+const STRING_OPERATORS = ['==', '!=', 'contains', 'startswith', 'endswith']
+const NUMERIC_OPERATORS = ['==', '!=', '<', '<=', '>', '>=']
+const BOOLEAN_OPERATORS = ['==', '!=']
+
+function operatorsFor(field: string): string[] {
+  if (BOOLEAN_FIELDS.has(field)) return BOOLEAN_OPERATORS
+  if (NUMERIC_FIELDS.has(field)) return NUMERIC_OPERATORS
+  return STRING_OPERATORS
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
-}
-
-function cloneRules(rules: EncoderRule[]): EncoderRule[] {
-  return rules.map((rule) => ({
-    ...rule,
-    conditions: rule.conditions.map((condition) => ({ ...condition })),
-  }))
 }
 
 function parseConditionValue(field: string, value: string): unknown {
@@ -90,18 +100,19 @@ function parseConditionValue(field: string, value: string): unknown {
   return value
 }
 
-function initialCondition(): EncoderRuleCondition {
-  return { field: 'height', op: '>=', value: 2160 }
+function cloneRules(rules: EncoderRule[]): EncoderRule[] {
+  return rules.map((rule) => ({
+    ...rule,
+    conditions: rule.conditions.map((condition) => ({ ...condition })),
+  }))
 }
 
-function operatorsFor(field: string): string[] {
-  if (BOOLEAN_FIELDS.has(field)) return ['==', '!=']
-  if (NUMERIC_FIELDS.has(field)) return OPERATORS.filter((operator) => operator !== 'contains')
-  return OPERATORS
+function initialCondition(): EncoderRuleCondition {
+  return { field: 'height', op: '==', value: 0 }
 }
 
 function nextRuleId(rules: EncoderRule[]): string {
-  const used = new Set(rules.map((rule) => rule.id.trim()))
+  const used = new Set(rules.map((rule) => rule.id))
   let suffix = 1
   while (used.has(`rule-${suffix}`)) suffix += 1
   return `rule-${suffix}`
@@ -142,6 +153,7 @@ export default function EncoderSettings({
   onRefresh,
   onError,
   onStartReprocessAll,
+  onStopReprocessAll,
   latestReprocessEvent = null,
   reprocessActive = null,
 }: EncoderSettingsProps) {
@@ -432,7 +444,9 @@ export default function EncoderSettings({
       const latest = latestReprocessEventRef.current
       if (
         latest?.run_id === run.run_id &&
-        (latest.status === 'completed' || latest.status === 'failed')
+        (latest.status === 'completed' ||
+          latest.status === 'failed' ||
+          latest.status === 'cancelled')
       ) {
         activeReprocessRunIdRef.current = null
         setActiveReprocessRunId(null)
@@ -445,6 +459,20 @@ export default function EncoderSettings({
       onError(errorMessage(error))
     } finally {
       setStartingReprocessAll(false)
+    }
+  }
+
+  const [stoppingReprocessAll, setStoppingReprocessAll] = useState(false)
+
+  const stopReprocessAll = async () => {
+    if (!onStopReprocessAll || stoppingReprocessAll) return
+    setStoppingReprocessAll(true)
+    try {
+      await onStopReprocessAll()
+    } catch (error) {
+      onError(errorMessage(error))
+    } finally {
+      setStoppingReprocessAll(false)
     }
   }
 
@@ -858,14 +886,26 @@ export default function EncoderSettings({
                 </button>
               </div>
             ) : (
-              <button
-                type="button"
-                disabled={reprocessAllActive || startingReprocessAll || !onStartReprocessAll}
-                onClick={() => setConfirmReprocessAll(true)}
-                className="mt-2.5 rounded-md border border-amber-300/40 bg-amber-300/12 px-3 py-1.5 text-[0.75rem] font-semibold text-amber-100 transition hover:bg-amber-300/20 disabled:opacity-50"
-              >
-                Re-evaluate all media
-              </button>
+              <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={reprocessAllActive || startingReprocessAll || !onStartReprocessAll}
+                  onClick={() => setConfirmReprocessAll(true)}
+                  className="rounded-md border border-amber-300/40 bg-amber-300/12 px-3 py-1.5 text-[0.75rem] font-semibold text-amber-100 transition hover:bg-amber-300/20 disabled:opacity-50"
+                >
+                  Re-evaluate all media
+                </button>
+                {reprocessAllActive && onStopReprocessAll && (
+                  <button
+                    type="button"
+                    disabled={stoppingReprocessAll}
+                    onClick={() => void stopReprocessAll()}
+                    className="rounded-md border border-red-400/30 bg-red-400/15 px-2.5 py-1.5 text-[0.75rem] font-semibold text-red-200 transition hover:bg-red-400/25 disabled:opacity-50"
+                  >
+                    {stoppingReprocessAll ? 'Stopping…' : 'Stop'}
+                  </button>
+                )}
+              </div>
             )}
             {reprocessAllMessage && (
               <p role="status" className="mt-2 text-[0.72rem] text-amber-300">

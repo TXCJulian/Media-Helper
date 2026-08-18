@@ -11,7 +11,9 @@ from typing import Any
 
 from app.encoder.store import Job
 
-_REPROCESS_STATUSES = frozenset({"started", "running", "completed", "failed"})
+_REPROCESS_STATUSES = frozenset(
+    {"started", "running", "completed", "failed", "cancelled"}
+)
 
 
 def reprocess_to_payload(
@@ -29,6 +31,7 @@ def reprocess_to_payload(
     if not isinstance(run_id, str) or not run_id or status not in _REPROCESS_STATUSES:
         raise ValueError("Invalid reprocess event")
     counts = (scanned, created, skipped, failed)
+    # Use `type(count) is not int` to explicitly reject `bool` (since bool is a subclass of int)
     if any(type(count) is not int or count < 0 for count in counts):
         raise ValueError("Reprocess counts must be non-negative integers")
     if path is not None and not isinstance(path, str):

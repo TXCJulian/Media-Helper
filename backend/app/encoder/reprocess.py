@@ -12,14 +12,20 @@ from app.encoder.events import reprocess_to_payload
 logger = logging.getLogger(__name__)
 
 
+def _norm_dir(path: str) -> str:
+    """Normalize a path and strip trailing slashes unless it is a bare root."""
+    norm = os.path.normcase(os.path.normpath(path))
+    return norm.rstrip("/\\") or norm
+
+
 def is_excluded_path(path: str, base: str) -> bool:
     """Whether a media-library walk must omit *path* and its descendants."""
     name = os.path.basename(os.path.normpath(path))
-    if name.startswith(".") or name == ".trickplay":
+    if name.startswith("."):
         return True
-    return name == config.MUSIC_FOLDER_NAME and os.path.normcase(
+    return name == config.MUSIC_FOLDER_NAME and _norm_dir(
         os.path.dirname(os.path.normpath(path))
-    ) == os.path.normcase(os.path.normpath(base))
+    ) == _norm_dir(base)
 
 
 def prune_excluded_dirs(root: str, dirs: list[str], bases: Iterable[str]) -> None:
@@ -52,8 +58,8 @@ def has_excluded_ancestor(path: str, base: str, *, exclude_music: bool = True) -
         if name.startswith(".") or (
             exclude_music
             and name == config.MUSIC_FOLDER_NAME
-            and os.path.normcase(os.path.dirname(os.path.normpath(current)))
-            == os.path.normcase(resolved_base)
+            and _norm_dir(os.path.dirname(os.path.normpath(current)))
+            == _norm_dir(resolved_base)
         ):
             return True
     return False
@@ -117,7 +123,12 @@ def resolve_authorized_path(
 
 
 def _normalise_roots(paths: Iterable[str]) -> tuple[str, ...]:
-    """Deduplicate roots and remove children already covered by a parent."""
+    """Deduplicate roots and remove children already covered by a parent.
+
+    The returned tuple preserves user-configured lexical path representations for
+    downstream authorization matching, while `os.path.realpath` is used for
+    containment comparisons to avoid redundant directory walks.
+    """
     roots: list[str] = []
     for path in paths:
         root = _absolute(path)
@@ -151,7 +162,7 @@ class ReprocessManager:
         """Start a scan, or return the existing run while one is in flight."""
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
-                return {"run_id": self._run_id or "", "status": "started"}
+                return {"run_id": self._run_id or "", "status": "already_running"}
             run_id = str(uuid.uuid4())
             snapshot = _normalise_roots(paths)
             self._run_id = run_id
@@ -225,7 +236,7 @@ class ReprocessManager:
                 if self._stopping.is_set():
                     self._publish(
                         run_id,
-                        "failed",
+                        "cancelled",
                         scanned=scanned,
                         created=created,
                         skipped=skipped,
@@ -251,7 +262,7 @@ class ReprocessManager:
                     if self._stopping.is_set():
                         self._publish(
                             run_id,
-                            "failed",
+                            "cancelled",
                             scanned=scanned,
                             created=created,
                             skipped=skipped,
@@ -267,7 +278,7 @@ class ReprocessManager:
                         if self._stopping.is_set():
                             self._publish(
                                 run_id,
-                                "failed",
+                                "cancelled",
                                 scanned=scanned,
                                 created=created,
                                 skipped=skipped,
@@ -315,7 +326,7 @@ class ReprocessManager:
                         if self._stopping.is_set():
                             self._publish(
                                 run_id,
-                                "failed",
+                                "cancelled",
                                 scanned=scanned,
                                 created=created,
                                 skipped=skipped,

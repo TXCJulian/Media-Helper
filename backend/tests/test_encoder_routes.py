@@ -46,6 +46,9 @@ class FakeRuntime:
     def start_reprocess_all(self):
         return {"run_id": "bulk-run", "status": "started"}
 
+    def stop_reprocess_all(self):
+        return {"status": "stopping"}
+
 
 class FailingRuntime(FakeRuntime):
     def replace_watch_paths(self, paths):
@@ -832,12 +835,37 @@ def test_directories_hide_trickplay_and_top_level_music(client, monkeypatch, tmp
     assert str(base / "Music") not in paths
 
 
+def test_directories_hide_custom_music_folder(client, monkeypatch, tmp_path):
+    base = tmp_path / "media"
+    (base / "Movies").mkdir(parents=True)
+    (base / "MySongs").mkdir()
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
+    monkeypatch.setattr(routes_mod.config, "MUSIC_FOLDER_NAME", "MySongs")
+    paths = {
+        entry["path"]
+        for entry in client.get("/api/encoder/directories").json()["directories"]
+    }
+    assert str(base / "MySongs") not in paths
+    assert str(base / "Movies") in paths
+
+
 def test_config_rejects_watch_paths_inside_trickplay(client, monkeypatch, tmp_path):
     base = tmp_path / "media"
     (base / ".trickplay" / "sub").mkdir(parents=True)
     monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
     resp = client.put(
         "/api/encoder/config", json={"watch_paths": [str(base / ".trickplay" / "sub")]}
+    )
+    assert resp.status_code == 400
+
+
+def test_config_rejects_watch_paths_inside_music_folder(client, monkeypatch, tmp_path):
+    base = tmp_path / "media"
+    (base / "Music" / "Rock").mkdir(parents=True)
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
+    monkeypatch.setattr(routes_mod.config, "MUSIC_FOLDER_NAME", "Music")
+    resp = client.put(
+        "/api/encoder/config", json={"watch_paths": [str(base / "Music" / "Rock")]}
     )
     assert resp.status_code == 400
 
@@ -1498,6 +1526,13 @@ def test_reprocess_all_starts_the_runtime_scan(client):
 
     assert response.status_code == 200
     assert response.json() == {"run_id": "bulk-run", "status": "started"}
+
+
+def test_stop_reprocess_all_signals_the_runtime(client):
+    response = client.delete("/api/encoder/reprocess-all")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "stopping"}
 
 
 def test_reprocess_status_returns_the_runtime_snapshot(client):

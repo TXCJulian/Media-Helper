@@ -148,6 +148,13 @@ class EncoderRuntime:
                 )
             return self._reprocess.start(paths)
 
+    def stop_reprocess_all(self) -> dict[str, str]:
+        """Signal any running bulk re-evaluation to cancel."""
+        with self._lock:
+            if self._reprocess is not None:
+                self._reprocess.stop(timeout=0)
+            return {"status": "stopping"}
+
     def replace_watch_paths(self, paths: list[str]) -> list[str]:
         """Replace paths without ever overlapping two active watchers.
 

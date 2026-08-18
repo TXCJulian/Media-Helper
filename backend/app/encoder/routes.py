@@ -858,6 +858,17 @@ def reprocess_all() -> dict | JSONResponse:
         return _error(500, "reprocess_start_failed", str(exc))
 
 
+@router.delete("/reprocess-all", response_model=None)
+def stop_reprocess_all() -> dict | JSONResponse:
+    """Stop an in-flight background bulk re-evaluation pass."""
+    try:
+        return get_runtime().stop_reprocess_all()
+    except EncoderConfigurationUnavailable:
+        raise
+    except RuntimeError as exc:
+        return _error(500, "reprocess_stop_failed", str(exc))
+
+
 @router.get("/reprocess-all/status")
 def reprocess_all_status() -> dict:
     """Recover bulk progress after an SSE disconnect or missed terminal event."""

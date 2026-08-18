@@ -324,7 +324,10 @@ def test_bulk_reprocess_returns_the_running_run_id(runtime_env, monkeypatch):
     subscription = events.subscribe()
     first = runtime.start_reprocess_all()
     assert started.get(timeout=2) == str(source)
-    assert runtime.start_reprocess_all() == first
+    assert runtime.start_reprocess_all() == {
+        "run_id": first["run_id"],
+        "status": "already_running",
+    }
     release.put(None)
     assert _wait_for_terminal(subscription, first["run_id"])["status"] == "completed"
 

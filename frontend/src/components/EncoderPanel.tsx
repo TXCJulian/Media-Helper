@@ -14,6 +14,7 @@ import {
   fetchEncoderRules,
   reprocessEncoderJob,
   startEncoderReprocessAll,
+  stopEncoderReprocessAll,
 } from '@/lib/api'
 import type { EncoderConfig, EncoderHealth, EncoderJob, EncoderPreset, EncoderRule } from '@/types'
 
@@ -294,6 +295,7 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
             }}
             onError={setSettingsError}
             onStartReprocessAll={startEncoderReprocessAll}
+            onStopReprocessAll={stopEncoderReprocessAll}
             latestReprocessEvent={latestReprocessEvent}
             reprocessActive={reprocessActive}
           />
