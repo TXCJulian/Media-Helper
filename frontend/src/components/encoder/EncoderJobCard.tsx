@@ -70,7 +70,10 @@ export default function EncoderJobCard({
   const canApprove =
     (job.stage === 'pending' || job.stage === 'blocked') && job.error_code !== 'swap_interrupted'
   const canDelete = job.stage !== 'swapping'
-  const canReprocess = (job.stage === 'failed' || job.stage === 'blocked') && onReprocess
+  const canReprocess =
+    (job.stage === 'failed' ||
+      (job.stage === 'blocked' && job.error_code !== 'swap_interrupted')) &&
+    onReprocess
   const hasFacts = Object.keys(job.facts).length > 0
   const factLabels = Object.entries(job.facts)
     .map(([key, value]) => formatFactValue(key, value, job.facts))
@@ -218,7 +221,7 @@ export default function EncoderJobCard({
           {factLabels.map((fact) => (
             <span
               key={fact}
-              className="rounded-md border border-white/8 bg-white/4 px-2 py-1 text-[0.7rem] text-[var(--text-secondary)]"
+              className="whitespace-pre-line rounded-md border border-white/8 bg-white/4 px-2 py-1 text-[0.7rem] text-[var(--text-secondary)]"
             >
               {fact}
             </span>

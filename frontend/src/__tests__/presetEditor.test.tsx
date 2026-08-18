@@ -234,11 +234,10 @@ describe('PresetEditor', () => {
     expect(second.onSaved).not.toHaveBeenCalled()
   })
 
-  it('lets the user deselect a supported preset before import', async () => {
+  it('prevents importing after every supported preset is deselected', async () => {
     api.previewEncoderPresets.mockResolvedValue({
       presets: [{ name: 'NVENC', encoder: 'nvenc_h265', supported: true, reason: null }],
     })
-    api.importEncoderPresets.mockResolvedValue({ imported: [], skipped: [], unselected: ['NVENC'] })
     const file = new File([JSON.stringify(STOCK_DOCUMENT)], 'presets.json', {
       type: 'application/json',
     })
@@ -250,9 +249,11 @@ describe('PresetEditor', () => {
     fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } })
     await screen.findByLabelText('Keep preset NVENC')
     fireEvent.click(screen.getByLabelText('Keep preset NVENC'))
-    fireEvent.click(screen.getByRole('button', { name: 'Import selected presets' }))
+    const submit = screen.getByRole('button', { name: 'Import selected presets' })
 
-    await waitFor(() => expect(api.importEncoderPresets).toHaveBeenCalledWith(STOCK_DOCUMENT, []))
+    expect(submit.hasAttribute('disabled')).toBe(true)
+    expect(screen.getByText('Select at least one supported preset to import.')).toBeTruthy()
+    expect(api.importEncoderPresets).not.toHaveBeenCalled()
   })
 
   it('keeps the raw editor viewport bounded for long JSON', () => {

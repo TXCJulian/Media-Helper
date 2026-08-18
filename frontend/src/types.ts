@@ -360,6 +360,11 @@ export interface EncoderReprocessRun {
   status: string
 }
 
+export interface EncoderReprocessState {
+  active: boolean
+  event: EncoderReprocessEvent | null
+}
+
 export interface EncoderRuleCondition {
   field: string
   op: string

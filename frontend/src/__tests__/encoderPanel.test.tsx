@@ -236,6 +236,35 @@ describe('EncoderPanel', () => {
     expect(screen.getByText('Reconnecting…')).toBeTruthy()
   })
 
+  it('moves a recovered blocked job into history without waiting for SSE', async () => {
+    stream.connected = false
+    const blocked = job({ stage: 'blocked', progress: 0, error_code: 'offline' })
+    const fetchMock = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
+      const url = String(request)
+      if (url.includes('/encoder/health')) {
+        return jsonResponse({ status: 'ok', vendor: 'QSV', encoders: ['qsv_h265'] })
+      }
+      if (url.includes('/encoder/jobs/job-1/reprocess') && init?.method === 'POST') {
+        return jsonResponse({
+          job_id: 'replacement',
+          path: blocked.source_path,
+          stage: 'pending',
+          created: true,
+        })
+      }
+      return responseFor(url, [blocked])
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<EncoderPanel onBack={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Re-evaluate file' }))
+
+    await waitFor(() => expect(screen.queryByText('Demo.mkv')).toBeNull())
+    fireEvent.click(screen.getByRole('button', { name: /History \(1\)/i }))
+    expect(await screen.findByText('Demo.mkv')).toBeTruthy()
+    expect(screen.getByText('Cancelled')).toBeTruthy()
+  })
+
   it('keeps a job-action failure when a settings refresh completes later', async () => {
     const pending = job({ stage: 'pending', progress: 0 })
     const refreshedConfig = deferred<Response>()

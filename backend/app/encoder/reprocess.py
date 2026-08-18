@@ -31,7 +31,7 @@ def prune_excluded_dirs(root: str, dirs: list[str], bases: Iterable[str]) -> Non
     ]
 
 
-def has_excluded_ancestor(path: str, base: str) -> bool:
+def has_excluded_ancestor(path: str, base: str, *, exclude_music: bool = True) -> bool:
     """Whether *path* is inside an excluded child of *base*."""
     resolved_path = os.path.normpath(path)
     resolved_base = os.path.normpath(base)
@@ -48,7 +48,13 @@ def has_excluded_ancestor(path: str, base: str) -> bool:
     current = resolved_base
     for component in relative.split(os.sep):
         current = os.path.join(current, component)
-        if is_excluded_path(current, resolved_base):
+        name = os.path.basename(os.path.normpath(current))
+        if name.startswith(".") or (
+            exclude_music
+            and name == config.MUSIC_FOLDER_NAME
+            and os.path.normcase(os.path.dirname(os.path.normpath(current)))
+            == os.path.normcase(resolved_base)
+        ):
             return True
     return False
 
@@ -63,14 +69,58 @@ def is_within(path: str, base: str) -> bool:
         return False
 
 
+def _absolute(path: str) -> str:
+    return os.path.normpath(os.path.abspath(path))
+
+
+def resolve_authorized_path(
+    path: str,
+    roots: Iterable[str],
+    library_bases: Iterable[str],
+) -> str | None:
+    """Return the real path only when both path spellings are authorized."""
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return None
+    lexical = _absolute(path)
+    resolved = os.path.realpath(lexical)
+    lexical_roots = tuple(_absolute(root) for root in roots)
+    resolved_roots = tuple(os.path.realpath(root) for root in roots)
+    if not lexical_roots:
+        return None
+    if not any(is_within(lexical, root) for root in lexical_roots):
+        return None
+    if not any(is_within(resolved, root) for root in resolved_roots):
+        return None
+
+    lexical_bases = tuple(_absolute(base) for base in library_bases)
+    resolved_bases = tuple(os.path.realpath(base) for base in library_bases)
+    for candidate, allowed_roots, bases in (
+        (lexical, lexical_roots, lexical_bases),
+        (resolved, resolved_roots, resolved_bases),
+    ):
+        if any(
+            has_excluded_ancestor(candidate, root, exclude_music=False)
+            for root in allowed_roots
+        ):
+            return None
+        if any(has_excluded_ancestor(candidate, base) for base in bases):
+            return None
+    return resolved
+
+
 def _normalise_roots(paths: Iterable[str]) -> tuple[str, ...]:
     """Deduplicate roots and remove children already covered by a parent."""
     roots: list[str] = []
     for path in paths:
-        root = os.path.realpath(path)
-        if any(is_within(root, existing) for existing in roots):
+        root = _absolute(path)
+        resolved = os.path.realpath(root)
+        if any(is_within(resolved, os.path.realpath(existing)) for existing in roots):
             continue
-        roots = [existing for existing in roots if not is_within(existing, root)]
+        roots = [
+            existing
+            for existing in roots
+            if not is_within(os.path.realpath(existing), resolved)
+        ]
         roots.append(root)
     return tuple(roots)
 
@@ -86,6 +136,8 @@ class ReprocessManager:
         self._stopping = threading.Event()
         self._thread: threading.Thread | None = None
         self._run_id: str | None = None
+        self._latest: dict | None = None
+        self._stop_timeout = 35.0
 
     def start(self, paths: list[str]) -> dict[str, str]:
         """Start a scan, or return the existing run while one is in flight."""
@@ -105,15 +157,22 @@ class ReprocessManager:
             self._thread.start()
             return {"run_id": run_id, "status": "started"}
 
-    def stop(self, timeout: float = 5.0) -> None:
+    def stop(self, timeout: float | None = None) -> None:
         """Request a running scan to stop and wait for its planner thread."""
         self._stopping.set()
         with self._lock:
             thread = self._thread
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=timeout)
+            thread.join(timeout=self._stop_timeout if timeout is None else timeout)
             if thread.is_alive():
-                raise RuntimeError("Bulk reprocess did not stop within the timeout")
+                logger.warning("Bulk reprocess is still finishing its current probe")
+
+    def status(self) -> dict:
+        """Return an authoritative snapshot for clients reconnecting to SSE."""
+        with self._lock:
+            event = dict(self._latest) if self._latest is not None else None
+            active = self._thread is not None and self._thread.is_alive()
+        return {"active": active, "event": event}
 
     def _publish(
         self,
@@ -127,18 +186,19 @@ class ReprocessManager:
         path: str | None = None,
         error: str | None = None,
     ) -> None:
-        self._events.publish(
-            reprocess_to_payload(
-                run_id,
-                status,
-                scanned=scanned,
-                created=created,
-                skipped=skipped,
-                failed=failed,
-                path=path,
-                error=error,
-            )
+        payload = reprocess_to_payload(
+            run_id,
+            status,
+            scanned=scanned,
+            created=created,
+            skipped=skipped,
+            failed=failed,
+            path=path,
+            error=error,
         )
+        with self._lock:
+            self._latest = payload
+        self._events.publish(payload)
 
     def _run(self, run_id: str, paths: tuple[str, ...]) -> None:
         scanned = created = skipped = failed = 0
@@ -168,19 +228,16 @@ class ReprocessManager:
                 if not os.path.isdir(base):
                     logger.warning("Reprocess watch path is not readable: %s", base)
                     continue
-                if not any(
-                    is_within(base, library_base) for library_base in library_bases
+                if resolve_authorized_path(
+                    base, paths, library_bases
+                ) is None or not any(
+                    is_within(os.path.realpath(base), library_base)
+                    for library_base in library_bases
                 ):
                     logger.warning(
                         "Reprocess watch path is outside configured media roots: %s",
                         base,
                     )
-                    continue
-                if any(
-                    has_excluded_ancestor(base, library_base)
-                    for library_base in library_bases
-                ):
-                    logger.warning("Reprocess watch path is excluded: %s", base)
                     continue
                 for root, dirs, names in os.walk(base, onerror=_ignore_walk_error):
                     if self._stopping.is_set():
@@ -194,13 +251,10 @@ class ReprocessManager:
                             error="Bulk reprocess stopped",
                         )
                         return
-                    if is_excluded_path(root, base) or any(
-                        has_excluded_ancestor(root, library_base)
-                        for library_base in library_bases
-                    ):
+                    if resolve_authorized_path(root, paths, library_bases) is None:
                         dirs[:] = []
                         continue
-                    prune_excluded_dirs(root, dirs, (base, *library_bases))
+                    prune_excluded_dirs(root, dirs, library_bases)
                     for name in names:
                         if self._stopping.is_set():
                             self._publish(
@@ -213,13 +267,12 @@ class ReprocessManager:
                                 error="Bulk reprocess stopped",
                             )
                             return
-                        path = os.path.realpath(os.path.join(root, name))
+                        path = resolve_authorized_path(
+                            os.path.join(root, name), paths, library_bases
+                        )
                         if (
-                            path in visited
-                            or is_excluded_path(path, base)
-                            or not any(
-                                is_within(path, watch_root) for watch_root in paths
-                            )
+                            path is None
+                            or path in visited
                             or not any(
                                 is_within(path, library_base)
                                 for library_base in library_bases
@@ -251,6 +304,8 @@ class ReprocessManager:
                             continue
                         if result.get("stage") == "failed":
                             failed += 1
+                        elif result.get("stage") == "skipped":
+                            skipped += 1
                         elif result.get("created"):
                             created += 1
                         else:

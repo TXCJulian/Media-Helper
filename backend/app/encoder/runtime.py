@@ -119,12 +119,20 @@ class EncoderRuntime:
 
     def stop(self) -> None:
         with self._lock:
-            if self._reprocess is not None:
-                self._reprocess.stop()
-            if self._watcher is not None:
-                self._watcher.stop()
-                self._watcher = None
-            self._resolved_paths = None
+            try:
+                if self._reprocess is not None:
+                    self._reprocess.stop()
+            finally:
+                if self._watcher is not None:
+                    self._watcher.stop()
+                    self._watcher = None
+                self._resolved_paths = None
+
+    def reprocess_status(self) -> dict:
+        with self._lock:
+            if self._reprocess is None:
+                return {"active": False, "event": None}
+            return self._reprocess.status()
 
     def start_reprocess_all(self) -> dict[str, str]:
         """Re-evaluate the current library once without restarting its watcher."""

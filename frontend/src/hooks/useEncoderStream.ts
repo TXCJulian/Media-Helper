@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { openEncoderStream } from '@/lib/api'
+import { useEffect, useRef, useState } from 'react'
+import { fetchEncoderReprocessStatus, openEncoderStream } from '@/lib/api'
 import type { EncoderJob, EncoderReprocessEvent } from '@/types'
 
 const encoderJobStages = new Set<EncoderJob['stage']>([
@@ -112,6 +112,7 @@ export function useEncoderStream(): {
   connected: boolean
   snapshotReceived: boolean
   latestReprocessEvent: EncoderReprocessEvent | null
+  reprocessActive: boolean | null
 } {
   const [jobs, setJobs] = useState<EncoderJob[]>([])
   const [connected, setConnected] = useState(false)
@@ -119,13 +120,19 @@ export function useEncoderStream(): {
   const [latestReprocessEvent, setLatestReprocessEvent] = useState<EncoderReprocessEvent | null>(
     null,
   )
+  const [reprocessActive, setReprocessActive] = useState<boolean | null>(null)
+  const latestReprocessEventRef = useRef<EncoderReprocessEvent | null>(null)
 
   useEffect(() => {
     return openEncoderStream((data) => {
       try {
         const parsed: unknown = JSON.parse(data)
         if (isSnapshot(parsed)) setSnapshotReceived(true)
-        if (isEncoderReprocessEvent(parsed)) setLatestReprocessEvent(parsed)
+        if (isEncoderReprocessEvent(parsed)) {
+          latestReprocessEventRef.current = parsed
+          setLatestReprocessEvent(parsed)
+          setReprocessActive(parsed.status === 'started' || parsed.status === 'running')
+        }
       } catch {
         // applyEncoderStreamEvent owns malformed-frame handling.
       }
@@ -133,5 +140,34 @@ export function useEncoderStream(): {
     }, setConnected)
   }, [])
 
-  return { jobs, connected, snapshotReceived, latestReprocessEvent }
+  useEffect(() => {
+    if (!connected) return
+    let current = true
+    void fetchEncoderReprocessStatus()
+      .then((status) => {
+        if (!current) return
+        const latest = latestReprocessEventRef.current
+        const recovered = status.event
+        if (
+          latest &&
+          recovered &&
+          latest.run_id === recovered.run_id &&
+          (latest.status === 'completed' || latest.status === 'failed') &&
+          (recovered.status === 'started' || recovered.status === 'running')
+        ) {
+          return
+        }
+        latestReprocessEventRef.current = recovered
+        setReprocessActive(status.active)
+        setLatestReprocessEvent(recovered)
+      })
+      .catch(() => {
+        // SSE remains authoritative while the lightweight recovery request is unavailable.
+      })
+    return () => {
+      current = false
+    }
+  }, [connected])
+
+  return { jobs, connected, snapshotReceived, latestReprocessEvent, reprocessActive }
 }

@@ -148,14 +148,11 @@ describe('EncoderJobCard', () => {
     expect(onReprocess).toHaveBeenCalledWith('encode-1')
   })
 
-  it.each([
-    { error_code: null, keepsApproval: true },
-    { error_code: 'swap_interrupted', keepsApproval: false },
-  ])('offers re-evaluation for a blocked job (%s)', ({ error_code, keepsApproval }) => {
+  it('offers re-evaluation for a recoverable blocked job', () => {
     const onReprocess = vi.fn()
     render(
       <EncoderJobCard
-        job={job({ stage: 'blocked', error_code })}
+        job={job({ stage: 'blocked', error_code: 'offline' })}
         onApprove={vi.fn()}
         onDelete={vi.fn()}
         onReprocess={onReprocess}
@@ -165,7 +162,21 @@ describe('EncoderJobCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Re-evaluate file' }))
 
     expect(onReprocess).toHaveBeenCalledWith('encode-1')
-    expect(Boolean(screen.queryByRole('button', { name: 'Approve encoding' }))).toBe(keepsApproval)
+    expect(screen.getByRole('button', { name: 'Approve encoding' })).toBeTruthy()
+  })
+
+  it('does not offer unsafe recovery after an interrupted swap', () => {
+    render(
+      <EncoderJobCard
+        job={job({ stage: 'blocked', error_code: 'swap_interrupted' })}
+        onApprove={vi.fn()}
+        onDelete={vi.fn()}
+        onReprocess={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Re-evaluate file' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Approve encoding' })).toBeNull()
   })
 
   it('does not offer re-evaluation while a job is swapping', () => {
@@ -185,6 +196,12 @@ describe('EncoderJobCard', () => {
     expect(formatDuration(6565.183)).toBe('1:49:25')
     expect(formatFrameRate(23.976023978)).toBe('23.976 fps')
     expect(formatAudioTracks([{ codec: 'aac', channels: 6, language: 'eng' }])).toContain('aac')
+    expect(
+      formatAudioTracks([
+        { codec: 'aac', channels: 2, language: 'eng' },
+        { codec: 'ac3', channels: 6, language: 'deu' },
+      ]),
+    ).toBe('aac · stereo · eng\nac3 · 5.1 · deu')
     expect(formatFactValue('metadata', { title: 'Demo' }, {})).toBe('metadata: {"title":"Demo"}')
   })
 

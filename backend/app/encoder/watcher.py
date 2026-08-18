@@ -18,6 +18,8 @@ from collections.abc import Callable
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
+from app import config
+from app.encoder.reprocess import prune_excluded_dirs, resolve_authorized_path
 from app.encoder.store import EncoderStore
 
 logger = logging.getLogger(__name__)
@@ -181,7 +183,14 @@ class EncoderWatcher:
                     exc,
                 )
 
-            for dirpath, _dirs, files in os.walk(root, onerror=_on_walk_error):
+            for dirpath, dirs, files in os.walk(root, onerror=_on_walk_error):
+                if (
+                    resolve_authorized_path(dirpath, self._paths, config.BASE_PATHS)
+                    is None
+                ):
+                    dirs[:] = []
+                    continue
+                prune_excluded_dirs(dirpath, dirs, config.BASE_PATHS)
                 for name in files:
                     path = os.path.join(dirpath, name)
                     present.add(path)
@@ -239,6 +248,10 @@ class EncoderWatcher:
         """
         if os.path.splitext(path)[1].lower() not in self._extensions:
             return
+        authorized = resolve_authorized_path(path, self._paths, config.BASE_PATHS)
+        if authorized is None:
+            return
+        path = authorized
         if os.path.basename(path).startswith(".hbenc-"):
             # Our own in-progress output, not a new arrival.
             return

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import { applyEncoderStreamEvent, useEncoderStream } from '@/hooks/useEncoderStream'
-import { openEncoderStream } from '@/lib/api'
+import { fetchEncoderReprocessStatus, openEncoderStream } from '@/lib/api'
 import type { EncoderJob, EncoderReprocessEvent } from '@/types'
 
 const stream = vi.hoisted(() => ({
@@ -10,7 +10,16 @@ const stream = vi.hoisted(() => ({
   close: vi.fn(),
 }))
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
 vi.mock('@/lib/api', () => ({
+  fetchEncoderReprocessStatus: vi.fn().mockResolvedValue({ active: false, event: null }),
   openEncoderStream: vi.fn(
     (onEvent: (data: string) => void, onStateChange?: (connected: boolean) => void) => {
       stream.onEvent = onEvent
@@ -105,6 +114,7 @@ describe('useEncoderStream', () => {
       connected: false,
       snapshotReceived: false,
       latestReprocessEvent: null,
+      reprocessActive: null,
     })
 
     act(() => {
@@ -118,6 +128,56 @@ describe('useEncoderStream', () => {
 
     unmount()
     expect(stream.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('recovers bulk status whenever the event stream reconnects', async () => {
+    const terminal: EncoderReprocessEvent = {
+      type: 'reprocess',
+      run_id: 'bulk-1',
+      status: 'completed',
+      scanned: 2,
+      created: 1,
+      skipped: 1,
+      failed: 0,
+      path: null,
+      error: null,
+    }
+    vi.mocked(fetchEncoderReprocessStatus).mockResolvedValue({ active: false, event: terminal })
+    const { result } = renderHook(() => useEncoderStream())
+
+    await act(async () => stream.onStateChange?.(true))
+
+    expect(fetchEncoderReprocessStatus).toHaveBeenCalledTimes(1)
+    expect(result.current.latestReprocessEvent).toEqual(terminal)
+    expect(result.current.reprocessActive).toBe(false)
+  })
+
+  it('does not replace a terminal SSE event with an older active status response', async () => {
+    const status = deferred<{
+      active: boolean
+      event: EncoderReprocessEvent
+    }>()
+    vi.mocked(fetchEncoderReprocessStatus).mockReturnValue(status.promise)
+    const { result } = renderHook(() => useEncoderStream())
+    const terminal: EncoderReprocessEvent = {
+      type: 'reprocess',
+      run_id: 'bulk-1',
+      status: 'completed',
+      scanned: 2,
+      created: 1,
+      skipped: 1,
+      failed: 0,
+      path: null,
+      error: null,
+    }
+    const stale = { ...terminal, status: 'running' as const }
+
+    act(() => stream.onStateChange?.(true))
+    act(() => stream.onEvent?.(JSON.stringify(terminal)))
+    await act(async () => status.resolve({ active: true, event: stale }))
+
+    expect(result.current.latestReprocessEvent).toEqual(terminal)
+    expect(result.current.reprocessActive).toBe(false)
   })
 
   it('marks the stream authoritative after receiving a snapshot envelope', () => {

@@ -37,6 +37,7 @@ export interface EncoderSettingsProps {
   onError: (message: string) => void
   onStartReprocessAll?: () => Promise<EncoderReprocessRun>
   latestReprocessEvent?: EncoderReprocessEvent | null
+  reprocessActive?: boolean | null
 }
 
 type Section = 'watch' | 'presets' | 'rules'
@@ -142,6 +143,7 @@ export default function EncoderSettings({
   onError,
   onStartReprocessAll,
   latestReprocessEvent = null,
+  reprocessActive = null,
 }: EncoderSettingsProps) {
   const [openSection, setOpenSection] = useState<Section | null>(null)
   const [watchPaths, setWatchPaths] = useState(() => [...config.watch_paths])
@@ -406,6 +408,11 @@ export default function EncoderSettings({
     startingReprocessAll || activeReprocessRunId !== null || hasActiveReprocessEvent
 
   useEffect(() => {
+    if (reprocessActive === false) {
+      activeReprocessRunIdRef.current = null
+      setActiveReprocessRunId(null)
+      return
+    }
     if (
       !latestReprocessEvent ||
       latestReprocessEvent.run_id !== activeReprocessRunId ||
@@ -415,7 +422,7 @@ export default function EncoderSettings({
     }
     activeReprocessRunIdRef.current = null
     setActiveReprocessRunId(null)
-  }, [activeReprocessRunId, latestReprocessEvent])
+  }, [activeReprocessRunId, latestReprocessEvent, reprocessActive])
 
   const startReprocessAll = async () => {
     if (!onStartReprocessAll || reprocessAllActive || activeReprocessRunIdRef.current) return
@@ -442,7 +449,7 @@ export default function EncoderSettings({
   }
 
   const reprocessAllMessage = latestReprocessEvent
-    ? `Bulk re-evaluation ${latestReprocessEvent.status} — ${latestReprocessEvent.scanned} scanned, ${latestReprocessEvent.created} queued, ${latestReprocessEvent.skipped} skipped, ${latestReprocessEvent.failed} failed${latestReprocessEvent.error ? `: ${latestReprocessEvent.error}` : ''}`
+    ? `Bulk re-evaluation ${latestReprocessEvent.status} — ${latestReprocessEvent.scanned} scanned, ${latestReprocessEvent.created} ${config.mode === 'review' ? 'awaiting review' : 'queued'}, ${latestReprocessEvent.skipped} skipped, ${latestReprocessEvent.failed} failed${latestReprocessEvent.error ? `: ${latestReprocessEvent.error}` : ''}`
     : null
 
   const selectWatchPath = (index: number, path: string) => {

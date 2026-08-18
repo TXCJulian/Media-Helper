@@ -279,7 +279,7 @@ export default function PresetEditor({
   }
 
   const importSelectedPresets = async () => {
-    if (!importDocument) return
+    if (!importDocument || selectedImportNames.length === 0) return
     setImporting(true)
     try {
       const summary = await importEncoderPresets(importDocument, selectedImportNames)
@@ -421,7 +421,7 @@ export default function PresetEditor({
           <div className="flex gap-2">
             <button
               type="button"
-              disabled={importing}
+              disabled={importing || selectedImportNames.length === 0}
               onClick={() => void importSelectedPresets()}
               className="rounded-lg border border-teal-400/25 bg-teal-400/10 px-3 py-2 text-[0.75rem] font-medium text-teal-300 disabled:opacity-50"
             >
@@ -440,6 +440,11 @@ export default function PresetEditor({
               Cancel import
             </button>
           </div>
+          {selectedImportNames.length === 0 && (
+            <p className="text-[0.72rem] text-amber-200">
+              Select at least one supported preset to import.
+            </p>
+          )}
         </div>
       )}
 

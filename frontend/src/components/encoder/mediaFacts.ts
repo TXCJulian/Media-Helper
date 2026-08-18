@@ -63,7 +63,7 @@ export function formatAudioTracks(value: unknown): string {
       return label || compactJson(details)
     })
     .filter(Boolean)
-    .join(', ')
+    .join('\n')
 }
 
 export function formatFactValue(

@@ -186,10 +186,29 @@ describe('EncoderSettings sections', () => {
         latestReprocessEvent={latestReprocessEvent}
       />,
     )
-    expect(screen.getByText(/12 scanned.*4 queued.*7 skipped.*1 failed/i)).toBeTruthy()
+    expect(screen.getByText(/12 scanned.*4 awaiting review.*7 skipped.*1 failed/i)).toBeTruthy()
     expect(
       screen.getByRole('button', { name: 'Re-evaluate all media' }).hasAttribute('disabled'),
     ).toBe(true)
+  })
+
+  it('labels created bulk results according to review mode', () => {
+    renderSettings({
+      latestReprocessEvent: {
+        type: 'reprocess',
+        run_id: 'bulk-review',
+        status: 'completed',
+        scanned: 3,
+        created: 2,
+        skipped: 1,
+        failed: 0,
+        path: null,
+        error: null,
+      },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    expect(screen.getByText(/2 awaiting review/i)).toBeTruthy()
   })
 
   it('keeps a started bulk run single-flight until its matching terminal event arrives', async () => {
@@ -230,6 +249,33 @@ describe('EncoderSettings sections', () => {
       path: null,
       error: null,
     })
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Re-evaluate all media' }).hasAttribute('disabled'),
+      ).toBe(false),
+    )
+  })
+
+  it('releases a local run lock when recovered status says no run is active', async () => {
+    const onStartReprocessAll = vi.fn().mockResolvedValue({ run_id: 'bulk-1', status: 'started' })
+    const { rerender } = renderSettings({ onStartReprocessAll, reprocessActive: true })
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Re-evaluate all media' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm re-evaluate all media' }))
+    await waitFor(() => expect(onStartReprocessAll).toHaveBeenCalledTimes(1))
+
+    rerender(
+      <EncoderSettings
+        config={config}
+        presets={presets}
+        rules={{ rules: orderedRules, fallback: 'skip' }}
+        onRefresh={vi.fn()}
+        onError={vi.fn()}
+        onStartReprocessAll={onStartReprocessAll}
+        reprocessActive={false}
+      />,
+    )
+
     await waitFor(() =>
       expect(
         screen.getByRole('button', { name: 'Re-evaluate all media' }).hasAttribute('disabled'),

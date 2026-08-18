@@ -52,6 +52,7 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
     connected,
     snapshotReceived,
     latestReprocessEvent,
+    reprocessActive,
   } = useEncoderStream()
   const [health, setHealth] = useState<EncoderHealth | null>(null)
   const [checkingHealth, setCheckingHealth] = useState(true)
@@ -204,7 +205,10 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
     setReprocessingJobIds((current) => new Set(current).add(jobId))
     const operation = `reprocess:${jobId}`
     try {
-      await reprocessEncoderJob(jobId)
+      const result = await reprocessEncoderJob(jobId)
+      if (result.created) {
+        setAcknowledgedStages((current) => new Map(current).set(jobId, 'cancelled'))
+      }
       updateJobError(operation)
     } catch (actionError) {
       updateJobError(operation, errorMessage(actionError, 'Failed to re-evaluate encoder job.'))
@@ -291,6 +295,7 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
             onError={setSettingsError}
             onStartReprocessAll={startEncoderReprocessAll}
             latestReprocessEvent={latestReprocessEvent}
+            reprocessActive={reprocessActive}
           />
         ) : (
           <button

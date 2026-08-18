@@ -38,8 +38,8 @@ def test_growth_restarts_the_window():
     tracker = SettleTracker(settle_seconds=30, now=clock)
     tracker.saw("/media3/x.mkv", 1000)
     clock.advance(20)
-    tracker.saw("/media3/x.mkv", 5000)   # still growing
-    clock.advance(20)                     # 40s since first sight, 20s since growth
+    tracker.saw("/media3/x.mkv", 5000)  # still growing
+    clock.advance(20)  # 40s since first sight, 20s since growth
     assert tracker.saw("/media3/x.mkv", 5000) is False
     clock.advance(11)
     assert tracker.saw("/media3/x.mkv", 5000) is True
@@ -128,8 +128,9 @@ class Planner:
             # Mirrors EncodeQueue.plan_new, which converts an unexpected
             # planning failure into a `failed` job rather than leaving the row
             # in `settling` -- a stage that is neither terminal nor resumable.
-            self._store.set_stage(job_id, "failed", error="boom",
-                                  error_code="plan_failed")
+            self._store.set_stage(
+                job_id, "failed", error="boom", error_code="plan_failed"
+            )
             raise RuntimeError("planning failed after the job existed")
 
 
@@ -146,8 +147,7 @@ def make_watcher(store, tmp_path, on_settled, settle_seconds=0):
 def test_scan_existing_dispatches_a_settled_file(store, tmp_path):
     (tmp_path / "movie.mkv").write_bytes(b"data")
     settled = []
-    watcher = make_watcher(
-        store, tmp_path, lambda path, _s, _m: settled.append(path))
+    watcher = make_watcher(store, tmp_path, lambda path, _s, _m: settled.append(path))
 
     watcher.scan_existing()  # first sight: not settled yet
     assert settled == []
@@ -163,8 +163,7 @@ def test_a_still_growing_file_is_never_dispatched(store, tmp_path):
     target = tmp_path / "movie.mkv"
     target.write_bytes(b"data")
     settled = []
-    watcher = make_watcher(
-        store, tmp_path, lambda path, _s, _m: settled.append(path))
+    watcher = make_watcher(store, tmp_path, lambda path, _s, _m: settled.append(path))
 
     watcher.scan_existing()  # first sight
     target.write_bytes(b"data" * 100)  # still growing between scans
@@ -183,8 +182,7 @@ def test_hbenc_staging_files_are_never_dispatched(store, tmp_path):
     (tmp_path / ".hbenc-abc123.mkv").write_bytes(b"data")
     (tmp_path / ".hbenc-abc123-tok.mkv").write_bytes(b"data")
     settled = []
-    watcher = make_watcher(
-        store, tmp_path, lambda path, _s, _m: settled.append(path))
+    watcher = make_watcher(store, tmp_path, lambda path, _s, _m: settled.append(path))
 
     watcher.scan_existing()
     watcher.scan_existing()
@@ -197,8 +195,7 @@ def test_files_with_an_active_job_are_not_redispatched(store, tmp_path):
     target.write_bytes(b"data")
     store.create_job(str(target))  # active source path (stage "settling")
     settled = []
-    watcher = make_watcher(
-        store, tmp_path, lambda path, _s, _m: settled.append(path))
+    watcher = make_watcher(store, tmp_path, lambda path, _s, _m: settled.append(path))
 
     watcher.scan_existing()
     watcher.scan_existing()
@@ -209,13 +206,34 @@ def test_files_with_an_active_job_are_not_redispatched(store, tmp_path):
 def test_non_video_extensions_are_ignored(store, tmp_path):
     (tmp_path / "notes.txt").write_bytes(b"data")
     settled = []
-    watcher = make_watcher(
-        store, tmp_path, lambda path, _s, _m: settled.append(path))
+    watcher = make_watcher(store, tmp_path, lambda path, _s, _m: settled.append(path))
 
     watcher.scan_existing()
     watcher.scan_existing()
 
     assert settled == []
+
+
+def test_hidden_trickplay_and_top_level_music_trees_are_ignored(
+    store, tmp_path, monkeypatch
+):
+    from app.encoder import watcher as watcher_mod
+
+    monkeypatch.setattr(watcher_mod.config, "BASE_PATHS", [str(tmp_path)])
+    for folder in (".hidden", ".trickplay", "Music"):
+        directory = tmp_path / folder
+        directory.mkdir()
+        (directory / "secret.mkv").write_bytes(b"data")
+    visible = tmp_path / "Movies"
+    visible.mkdir()
+    (visible / "film.mkv").write_bytes(b"data")
+    settled = []
+    watcher = make_watcher(store, tmp_path, lambda path, _s, _m: settled.append(path))
+
+    watcher.scan_existing()
+    watcher.scan_existing()
+
+    assert settled == [str(visible / "film.mkv")]
 
 
 def test_a_file_vanishing_mid_settle_is_never_dispatched(store, tmp_path):
@@ -236,8 +254,7 @@ def test_a_file_vanishing_mid_settle_is_never_dispatched(store, tmp_path):
     target = tmp_path / "movie.mkv"
     target.write_bytes(b"data")
     settled = []
-    watcher = make_watcher(
-        store, tmp_path, lambda path, _s, _m: settled.append(path))
+    watcher = make_watcher(store, tmp_path, lambda path, _s, _m: settled.append(path))
 
     watcher._consider(str(target))  # first sight: tracker now holds an entry
     target.unlink()
@@ -260,7 +277,9 @@ def test_start_and_stop_leave_no_thread_running(store, tmp_path):
     assert watcher._scanner is None
 
 
-def test_scan_existing_queries_active_source_paths_once_per_scan(store, tmp_path, monkeypatch):
+def test_scan_existing_queries_active_source_paths_once_per_scan(
+    store, tmp_path, monkeypatch
+):
     """Before the fix, `_consider` queried `active_source_paths()` once per
     file -- on a 10k-file library that is 10k SQL queries every scan. A
     single walk of several files must produce exactly one query, not one per
@@ -416,8 +435,13 @@ def test_our_own_published_output_is_not_rejobbed(store, tmp_path):
     assert planner.paths == [str(target)]
 
     target.write_bytes(b"encoded" * 10)  # the swap
-    _finish(store, planner.job_ids[0], "done",
-            output_path=str(target), encoded_size=target.stat().st_size)
+    _finish(
+        store,
+        planner.job_ids[0],
+        "done",
+        output_path=str(target),
+        encoded_size=target.stat().st_size,
+    )
     _republish(store, str(target))
 
     for _ in range(6):
@@ -440,8 +464,13 @@ def test_output_published_under_a_new_extension_is_not_rejobbed(store, tmp_path)
 
     source.unlink()
     published.write_bytes(b"encoded" * 10)
-    _finish(store, planner.job_ids[0], "done",
-            output_path=str(published), encoded_size=published.stat().st_size)
+    _finish(
+        store,
+        planner.job_ids[0],
+        "done",
+        output_path=str(published),
+        encoded_size=published.stat().st_size,
+    )
     _republish(store, str(published))
 
     for _ in range(6):
@@ -464,8 +493,13 @@ def test_dedup_survives_job_history_expiry(store, tmp_path):
 
     watcher.scan_existing()
     watcher.scan_existing()
-    _finish(store, planner.job_ids[0], "done",
-            output_path=str(target), encoded_size=target.stat().st_size)
+    _finish(
+        store,
+        planner.job_ids[0],
+        "done",
+        output_path=str(target),
+        encoded_size=target.stat().st_size,
+    )
 
     assert store.purge_expired(0) >= 1
     assert store.list_jobs() == []
@@ -490,9 +524,9 @@ def test_a_dispatch_that_fails_before_the_job_exists_is_retried(store, tmp_path)
 
     watcher.scan_existing()
     watcher.scan_existing()
-    assert planner.paths == [str(target)]      # dispatch attempted
-    assert store.list_jobs() == []             # but no job exists
-    assert store.seen_fingerprints() == {}     # so nothing may be suppressed
+    assert planner.paths == [str(target)]  # dispatch attempted
+    assert store.list_jobs() == []  # but no job exists
+    assert store.seen_fingerprints() == {}  # so nothing may be suppressed
 
     watcher.scan_existing()
     watcher.scan_existing()
@@ -586,8 +620,9 @@ def test_an_unreadable_watch_root_does_not_prune_its_records(store, tmp_path):
     target.unlink()
     root.rmdir()
     watcher.scan_existing()
-    assert set(store.seen_fingerprints()) == {str(target)}, \
-        "records were pruned for a root that could not be read"
+    assert set(store.seen_fingerprints()) == {
+        str(target)
+    }, "records were pruned for a root that could not be read"
 
 
 def test_a_fingerprint_written_during_the_scan_is_not_pruned(store, tmp_path):
@@ -620,6 +655,7 @@ def test_a_fingerprint_written_during_the_scan_is_not_pruned(store, tmp_path):
         store.mark_seen(str(published), st.st_size, st.st_mtime_ns)
 
     import app.encoder.watcher as watcher_mod
+
     original = watcher_mod.os.walk
     watcher_mod.os.walk = walk_then_publish
     try:
@@ -627,8 +663,9 @@ def test_a_fingerprint_written_during_the_scan_is_not_pruned(store, tmp_path):
     finally:
         watcher_mod.os.walk = original
 
-    assert str(published) in store.seen_fingerprints(), \
-        "a fingerprint written mid-scan was pruned"
+    assert (
+        str(published) in store.seen_fingerprints()
+    ), "a fingerprint written mid-scan was pruned"
 
     # And therefore the published output is never treated as a new arrival.
     watcher.scan_existing()
@@ -670,6 +707,7 @@ def test_an_unreadable_subtree_does_not_prune_its_root(store, tmp_path):
             onerror(err)
 
     import app.encoder.watcher as watcher_mod
+
     original = watcher_mod.os.walk
     watcher_mod.os.walk = walk_with_error
     try:
@@ -677,8 +715,9 @@ def test_an_unreadable_subtree_does_not_prune_its_root(store, tmp_path):
     finally:
         watcher_mod.os.walk = original
 
-    assert set(store.seen_fingerprints()) == {str(target)}, \
-        "fingerprints were pruned after a walk error"
+    assert set(store.seen_fingerprints()) == {
+        str(target)
+    }, "fingerprints were pruned after a walk error"
 
 
 def test_a_fingerprint_updated_during_the_scan_is_not_pruned(store, tmp_path):
@@ -716,6 +755,7 @@ def test_a_fingerprint_updated_during_the_scan_is_not_pruned(store, tmp_path):
         store.mark_seen(str(target), st.st_size, st.st_mtime_ns)
 
     import app.encoder.watcher as watcher_mod
+
     original = watcher_mod.os.walk
     watcher_mod.os.walk = walk_then_swap
     try:

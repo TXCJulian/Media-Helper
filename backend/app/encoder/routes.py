@@ -24,6 +24,7 @@ from app.encoder.reprocess import (
     has_excluded_ancestor,
     is_excluded_path,
     prune_excluded_dirs,
+    resolve_authorized_path,
 )
 from app.encoder.rules import (
     _BOOL_FIELDS,
@@ -420,12 +421,10 @@ def encoder_files(
     search: str | None = Query(None, max_length=200),
 ) -> dict[str, Any]:
     """List video files below a configured directory for the test picker."""
-    resolved = os.path.realpath(directory)
-    bases = [os.path.realpath(base) for base in config.BASE_PATHS]
-    if not os.path.isdir(resolved) or not any(
-        _is_within_base(resolved, base) for base in bases
-    ):
-        return {"files": []}
+    bases = list(config.BASE_PATHS)
+    resolved = resolve_authorized_path(directory, bases, bases)
+    if resolved is None or not os.path.isdir(resolved):
+        return {"files": [], "truncated": False}
     needle = (search or "").strip().lower()
     valid_extensions = {extension.lower() for extension in config.VALID_VIDEO_EXT}
     files: list[dict[str, str]] = []
@@ -446,8 +445,8 @@ def encoder_files(
                 continue
             if os.path.splitext(name)[1].lower() not in valid_extensions:
                 continue
-            path = os.path.realpath(os.path.join(root, name))
-            if not any(_is_within_base(path, base) for base in bases):
+            path = resolve_authorized_path(os.path.join(root, name), bases, bases)
+            if path is None:
                 continue
             if needle and needle not in path.lower():
                 continue
@@ -465,19 +464,15 @@ def encoder_files(
 
 def _validate_watch_paths(paths: list[str]) -> list[str]:
     """Return existing, de-duplicated watch directories inside a base path."""
-    bases = [os.path.realpath(base) for base in config.BASE_PATHS]
+    bases = list(config.BASE_PATHS)
     validated: list[str] = []
     seen: set[str] = set()
     for path in paths:
-        resolved = os.path.realpath(path)
-        if not os.path.isdir(resolved) or not any(
-            _is_within_base(resolved, base) for base in bases
-        ):
+        resolved = resolve_authorized_path(path, bases, bases)
+        if resolved is None or not os.path.isdir(resolved):
             raise ValueError(
                 "Watch path is not an existing directory under BASE_PATHS: " f"{path}"
             )
-        if any(has_excluded_ancestor(resolved, base) for base in bases):
-            raise ValueError("Watch path is inside an excluded media tree: " f"{path}")
         if resolved not in seen:
             seen.add(resolved)
             validated.append(resolved)
@@ -620,6 +615,12 @@ def import_presets(payload: PresetImport) -> dict | JSONResponse:
     selected_names = (
         document_names if payload.include_names is None else set(payload.include_names)
     )
+    if payload.include_names is not None and not payload.include_names:
+        return _error(
+            400,
+            "invalid_preset_selection",
+            "Select at least one supported preset to import",
+        )
     unknown_names = selected_names - document_names
     if unknown_names:
         return _error(
@@ -766,15 +767,14 @@ def _resolve_probe_path(path: str) -> str | None:
     point at, while the runtime paths keep the allow-list correct after a
     configuration update.
     """
-    resolved = os.path.realpath(path)
-    roots = [os.path.realpath(p) for p in config.BASE_PATHS]
+    roots = list(config.BASE_PATHS)
     try:
-        roots.extend(os.path.realpath(p) for p in get_runtime().watch_paths)
+        roots.extend(get_runtime().watch_paths)
     except RuntimeError:
         # A failed runtime is already surfaced by /config; retaining the base
         # roots keeps the read-only test endpoint deterministic during startup.
         pass
-    return resolved if any(_is_within_base(resolved, root) for root in roots) else None
+    return resolve_authorized_path(path, roots, config.BASE_PATHS)
 
 
 @router.post("/test", response_model=None)
@@ -846,6 +846,12 @@ def reprocess_all() -> dict | JSONResponse:
         return _error(500, "reprocess_start_failed", str(exc))
 
 
+@router.get("/reprocess-all/status")
+def reprocess_all_status() -> dict:
+    """Recover bulk progress after an SSE disconnect or missed terminal event."""
+    return get_runtime().reprocess_status()
+
+
 @router.get("/jobs")
 def list_jobs() -> list[dict]:
     return [job_to_payload(j) for j in get_store().list_jobs()]
@@ -853,7 +859,7 @@ def list_jobs() -> list[dict]:
 
 @router.post("/jobs/{job_id}/reprocess", response_model=None)
 def reprocess_job(job_id: str) -> dict | JSONResponse:
-    """Re-evaluate a historical job's source without mutating that history row."""
+    """Re-evaluate a job's source while retaining its prior row as history."""
     store = get_store()
     job = store.get_job(job_id)
     if job is None:
@@ -864,6 +870,12 @@ def reprocess_job(job_id: str) -> dict | JSONResponse:
             "job_swapping",
             "This job is publishing its result and cannot be reprocessed yet",
         )
+    if job.error_code == "swap_interrupted":
+        return _error(
+            409,
+            "swap_interrupted",
+            "The previous publish was interrupted; confirm the file on disk manually",
+        )
 
     resolved = _resolve_probe_path(job.source_path)
     if resolved is None:
@@ -872,6 +884,8 @@ def reprocess_job(job_id: str) -> dict | JSONResponse:
         )
     if not os.path.isfile(resolved):
         return _error(400, "invalid_path", "No such file")
+    if job.stage == "blocked" and store.cancel_blocked_for_reprocess(job.id):
+        get_events().publish(job_to_payload(store.get_job(job.id)))
     return get_queue().reprocess_path(resolved)
 
 

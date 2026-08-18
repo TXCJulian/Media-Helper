@@ -517,6 +517,10 @@ export function startEncoderReprocessAll(): Promise<import('@/types').EncoderRep
   return fetchJson('/api/encoder/reprocess-all', undefined, DEFAULT_TIMEOUT_MS, { method: 'POST' })
 }
 
+export function fetchEncoderReprocessStatus(): Promise<import('@/types').EncoderReprocessState> {
+  return fetchJson('/api/encoder/reprocess-all/status')
+}
+
 export function fetchEncoderJobs(): Promise<import('@/types').EncoderJob[]> {
   return fetchJson('/api/encoder/jobs')
 }

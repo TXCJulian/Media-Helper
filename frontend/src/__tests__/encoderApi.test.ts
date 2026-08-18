@@ -13,6 +13,7 @@ import {
   previewEncoderPresets,
   reprocessEncoderFile,
   reprocessEncoderJob,
+  fetchEncoderReprocessStatus,
   saveEncoderConfig,
   saveEncoderPreset,
   saveEncoderRules,
@@ -211,6 +212,17 @@ describe('encoder rule and job transport', () => {
       '/api/encoder/jobs/failed%20job/reprocess',
     )
     expect(fetchMock.mock.calls[0]![1].method).toBe('POST')
+  })
+
+  it('loads the authoritative bulk reprocess status', async () => {
+    const status = { active: false, event: null }
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(status))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchEncoderReprocessStatus()).resolves.toEqual(status)
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(
+      '/api/encoder/reprocess-all/status',
+    )
   })
 
   it('loads rules and jobs and deletes a job through its no-content endpoint', async () => {

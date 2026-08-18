@@ -94,7 +94,9 @@ def test_bulk_reprocess_reconsiders_a_previously_skipped_file(runtime_env):
     store, root, events, build = runtime_env
     source = root / "movie.mkv"
     source.write_bytes(b"video")
-    old = store.create_job(str(source), source.stat().st_size, source.stat().st_mtime_ns)
+    old = store.create_job(
+        str(source), source.stat().st_size, source.stat().st_mtime_ns
+    )
     store.set_stage(old.id, "skipped")
     store.mark_seen(str(source), source.stat().st_size, source.stat().st_mtime_ns)
     runtime, _queue = build()
@@ -110,9 +112,17 @@ def test_bulk_reprocess_reconsiders_a_previously_skipped_file(runtime_env):
         "completed",
     ]
     assert all(
-        set(event) == {
-            "type", "run_id", "status", "scanned", "created", "skipped",
-            "failed", "path", "error",
+        set(event)
+        == {
+            "type",
+            "run_id",
+            "status",
+            "scanned",
+            "created",
+            "skipped",
+            "failed",
+            "path",
+            "error",
         }
         for event in run_events
     )
@@ -136,7 +146,9 @@ def test_bulk_reprocess_leaves_an_active_source_as_a_single_job(runtime_env):
     store, root, events, build = runtime_env
     source = root / "active.mkv"
     source.write_bytes(b"video")
-    active = store.create_job(str(source), source.stat().st_size, source.stat().st_mtime_ns)
+    active = store.create_job(
+        str(source), source.stat().st_size, source.stat().st_mtime_ns
+    )
     runtime, _queue = build()
 
     subscription = events.subscribe()
@@ -150,7 +162,7 @@ def test_bulk_reprocess_leaves_an_active_source_as_a_single_job(runtime_env):
 
 
 def test_bulk_reprocess_uses_the_picker_exclusions(runtime_env):
-    """Walking hidden or top-level music trees would plan files the picker hides."""
+    """Walking hidden trees would plan files the picker hides."""
     store, root, events, build = runtime_env
     (root / ".cache").mkdir()
     (root / ".cache" / "hidden.mkv").write_bytes(b"video")
@@ -163,8 +175,27 @@ def test_bulk_reprocess_uses_the_picker_exclusions(runtime_env):
     run = runtime.start_reprocess_all()
     terminal = _wait_for_terminal(subscription, run["run_id"])
 
+    assert terminal["scanned"] == 2
+    assert {job.source_path for job in store.list_jobs()} == {
+        str(root / "Music" / "song.mkv"),
+        str(root / "visible.mkv"),
+    }
+
+
+def test_bulk_reprocess_keeps_music_nested_below_a_media_kind(runtime_env):
+    store, root, events, build = runtime_env
+    nested = root / "Music"
+    nested.mkdir()
+    source = nested / "concert.mkv"
+    source.write_bytes(b"video")
+    runtime, _queue = build()
+
+    subscription = events.subscribe()
+    run = runtime.start_reprocess_all()
+    terminal = _wait_for_terminal(subscription, run["run_id"])
+
     assert terminal["scanned"] == 1
-    assert [job.source_path for job in store.list_jobs()] == [str(root / "visible.mkv")]
+    assert store.newest_job_for_source(str(source)) is not None
 
 
 @pytest.mark.parametrize("excluded", ["Music", ".hidden", ".trickplay"])
@@ -240,6 +271,23 @@ def test_bulk_reprocess_counts_a_failed_plan_as_failed(runtime_env):
     assert store.newest_job_for_source(str(source)).stage == "failed"
 
 
+def test_bulk_reprocess_counts_a_new_skip_as_skipped_not_created(runtime_env):
+    store, root, events, build = runtime_env
+    source = root / "no-match.mkv"
+    source.write_bytes(b"video")
+    store.replace_rules([])
+    store.set_setting("fallback_target", "skip")
+    runtime, _queue = build()
+
+    subscription = events.subscribe()
+    run = runtime.start_reprocess_all()
+    terminal = _wait_for_terminal(subscription, run["run_id"])
+
+    assert terminal["created"] == 0
+    assert terminal["skipped"] == 1
+    assert store.newest_job_for_source(str(source)).stage == "skipped"
+
+
 @pytest.mark.parametrize("mode, stage", [("review", "pending"), ("auto", "queued")])
 def test_bulk_reprocess_uses_the_queue_mode(runtime_env, mode, stage):
     """Bypassing the queue would ignore the configured review/auto safety mode."""
@@ -303,6 +351,33 @@ def test_runtime_stop_joins_the_active_bulk_reprocess(runtime_env, monkeypatch):
     try:
         runtime.stop()
         assert not runtime._reprocess._thread.is_alive()
+    finally:
+        release.put(None)
+        runtime._reprocess._thread.join(timeout=2)
+
+
+def test_runtime_stop_still_stops_watcher_when_bulk_probe_outlives_timeout(
+    runtime_env, monkeypatch
+):
+    _store, root, _events, build = runtime_env
+    (root / "slow.mkv").write_bytes(b"video")
+    runtime, encoder_queue = build()
+    started = queue.Queue()
+    release = queue.Queue()
+
+    def stuck_reprocess(_path):
+        started.put(True)
+        release.get(timeout=2)
+        return {"stage": "skipped", "created": True}
+
+    monkeypatch.setattr(encoder_queue, "reprocess_path", stuck_reprocess)
+    runtime.start_reprocess_all()
+    started.get(timeout=2)
+    monkeypatch.setattr(runtime._reprocess, "_stop_timeout", 0.01, raising=False)
+
+    try:
+        runtime.stop()
+        assert runtime._watcher is None
     finally:
         release.put(None)
         runtime._reprocess._thread.join(timeout=2)

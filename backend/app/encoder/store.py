@@ -240,6 +240,18 @@ class EncoderStore:
     def set_progress(self, job_id: str, pct: float) -> None:
         self._update(job_id, progress=float(pct))
 
+    def cancel_blocked_for_reprocess(self, job_id: str) -> bool:
+        """Release a recoverable blocked row while retaining it as history."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE jobs SET stage = 'cancelled', updated_at = datetime('now') "
+                "WHERE id = ? AND stage = 'blocked' AND "
+                "COALESCE(error_code, '') != 'swap_interrupted'",
+                (job_id,),
+            )
+            self._conn.commit()
+        return cur.rowcount > 0
+
     def set_remote_job(self, job_id: str, remote_job_id: str) -> None:
         self._update(job_id, remote_job_id=remote_job_id)
 
