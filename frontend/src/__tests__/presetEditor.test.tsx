@@ -266,6 +266,38 @@ describe('PresetEditor', () => {
     expect(editor.className).not.toContain('resize-y')
   })
 
+  it('keeps long raw overlay content available while syncing both scroll axes', () => {
+    const { container } = renderEditor()
+    const rawText = JSON.stringify(
+      {
+        ...leaf,
+        LongValues: Array.from(
+          { length: 40 },
+          (_, index) => `line-${index + 1}-${'x'.repeat(120)}`,
+        ),
+      },
+      null,
+      2,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'New raw preset' }))
+    const editor = screen.getByLabelText('Preset JSON') as HTMLTextAreaElement
+    fireEvent.change(editor, { target: { value: rawText } })
+    fireEvent.scroll(editor, { target: { scrollTop: 140, scrollLeft: 90 } })
+
+    const overlays = container.querySelectorAll('pre')
+    expect(overlays).toHaveLength(2)
+    const lineNumbers = overlays[0]!
+    const highlight = overlays[1]!
+    expect(lineNumbers.textContent).toContain(String(rawText.split('\n').length))
+    expect(highlight.textContent).toContain(`line-40-${'x'.repeat(120)}`)
+    expect(lineNumbers.style.transform).toBe('translateY(-140px)')
+    expect(highlight.style.transform).toBe('translate(-90px, -140px)')
+    expect(lineNumbers.className).not.toContain('overflow-hidden')
+    expect(highlight.className).not.toContain('overflow-hidden')
+    expect(editor.parentElement?.parentElement?.className).toContain('overflow-hidden')
+  })
+
   it('preserves raw typing text while keeping an existing preset name immutable on save', async () => {
     api.saveEncoderPreset.mockResolvedValue({ body: leaf })
     renderEditor()

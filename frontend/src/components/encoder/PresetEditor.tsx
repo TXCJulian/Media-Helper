@@ -585,7 +585,7 @@ export default function PresetEditor({
                 <pre
                   ref={rawLineNumbersRef}
                   aria-hidden="true"
-                  className="pointer-events-none h-full min-h-0 min-w-10 select-none overflow-hidden border-r border-white/8 px-2 py-2 text-right text-white/25"
+                  className="pointer-events-none h-full min-h-0 min-w-10 select-none border-r border-white/8 px-2 py-2 text-right text-white/25"
                 >
                   {draft.rawText.split('\n').map((_, index) => `${index + 1}\n`)}
                 </pre>
@@ -593,7 +593,7 @@ export default function PresetEditor({
                   <pre
                     ref={rawHighlightRef}
                     aria-hidden="true"
-                    className="pointer-events-none absolute inset-0 m-0 min-h-0 overflow-hidden whitespace-pre px-3 py-2"
+                    className="pointer-events-none absolute inset-0 m-0 min-h-0 whitespace-pre px-3 py-2"
                     dangerouslySetInnerHTML={{ __html: highlightJson(draft.rawText) }}
                   />
                   <textarea
