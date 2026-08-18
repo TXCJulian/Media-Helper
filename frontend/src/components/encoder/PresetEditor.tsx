@@ -385,7 +385,7 @@ export default function PresetEditor({
       </div>
 
       {importCandidates && (
-        <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+        <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[rgba(0,0,0,0.2)] p-4">
           <p className="text-[0.78rem] font-medium text-[var(--text-secondary)]">
             Choose the presets to import.
           </p>
@@ -398,7 +398,7 @@ export default function PresetEditor({
                   className={`rounded-lg border p-2.5 transition-colors ${
                     isSelected
                       ? 'border-teal-500/30 bg-teal-500/[0.06]'
-                      : 'border-white/6 bg-white/[0.02]'
+                      : 'border-white/6 bg-[rgba(0,0,0,0.15)]'
                   }`}
                 >
                   <label

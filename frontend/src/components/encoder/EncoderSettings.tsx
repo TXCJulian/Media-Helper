@@ -480,7 +480,10 @@ export default function EncoderSettings({
   )
 
   return (
-    <section aria-label="Encoder settings" className="glass rounded-[16px] p-4">
+    <section
+      aria-label="Encoder settings"
+      className="rounded-[16px] border border-[var(--border)] bg-[rgba(0,0,0,0.2)] p-4"
+    >
       <div className="flex flex-wrap gap-2">
         <SectionButton
           label="Watch Folders"
@@ -503,7 +506,7 @@ export default function EncoderSettings({
       </div>
 
       {openSection === 'watch' && (
-        <div className="mt-4 space-y-3 rounded-xl border border-white/8 bg-white/3 p-4">
+        <div className="mt-4 space-y-3 rounded-xl border border-[var(--border)] bg-[rgba(0,0,0,0.2)] p-4">
           <label className="block text-[0.72rem] font-medium text-[var(--text-secondary)]">
             Search available folders
             <input
@@ -594,7 +597,10 @@ export default function EncoderSettings({
         <div className="mt-4 space-y-4 border-t border-white/6 pt-4">
           <ol aria-label="Encoding rules" className="space-y-3">
             {draftRules.map((rule, ruleIndex) => (
-              <li key={ruleIndex} className="rounded-xl border border-white/8 bg-white/3 p-3">
+              <li
+                key={ruleIndex}
+                className="rounded-xl border border-[var(--border)] bg-[rgba(0,0,0,0.2)] p-3"
+              >
                 <div className="flex flex-wrap items-end gap-2">
                   <label className="min-w-[10rem] flex-1 text-[0.7rem] text-[var(--text-secondary)]">
                     Rule name
@@ -868,7 +874,7 @@ export default function EncoderSettings({
             )}
           </div>
 
-          <div className="rounded-xl border border-white/8 bg-white/3 p-3">
+          <div className="rounded-xl border border-[var(--border)] bg-[rgba(0,0,0,0.2)] p-3">
             <p className="field-label text-[var(--text-secondary)]">File to test</p>
             <label className="mt-2 block text-[0.7rem] text-[var(--text-secondary)]">
               Search directories
