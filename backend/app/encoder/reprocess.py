@@ -17,11 +17,9 @@ def is_excluded_path(path: str, base: str) -> bool:
     name = os.path.basename(os.path.normpath(path))
     if name.startswith(".") or name == ".trickplay":
         return True
-    return (
-        name == config.MUSIC_FOLDER_NAME
-        and os.path.normcase(os.path.dirname(os.path.normpath(path)))
-        == os.path.normcase(os.path.normpath(base))
-    )
+    return name == config.MUSIC_FOLDER_NAME and os.path.normcase(
+        os.path.dirname(os.path.normpath(path))
+    ) == os.path.normcase(os.path.normpath(base))
 
 
 def prune_excluded_dirs(root: str, dirs: list[str], bases: Iterable[str]) -> None:
@@ -38,9 +36,9 @@ def has_excluded_ancestor(path: str, base: str) -> bool:
     resolved_path = os.path.normpath(path)
     resolved_base = os.path.normpath(base)
     try:
-        if os.path.normcase(os.path.commonpath([resolved_path, resolved_base])) != os.path.normcase(
-            resolved_base
-        ):
+        if os.path.normcase(
+            os.path.commonpath([resolved_path, resolved_base])
+        ) != os.path.normcase(resolved_base):
             return False
     except ValueError:
         return False
@@ -158,16 +156,25 @@ class ReprocessManager:
             for base in paths:
                 if self._stopping.is_set():
                     self._publish(
-                        run_id, "failed", scanned=scanned, created=created,
-                        skipped=skipped, failed=failed,
+                        run_id,
+                        "failed",
+                        scanned=scanned,
+                        created=created,
+                        skipped=skipped,
+                        failed=failed,
                         error="Bulk reprocess stopped",
                     )
                     return
                 if not os.path.isdir(base):
                     logger.warning("Reprocess watch path is not readable: %s", base)
                     continue
-                if not any(is_within(base, library_base) for library_base in library_bases):
-                    logger.warning("Reprocess watch path is outside configured media roots: %s", base)
+                if not any(
+                    is_within(base, library_base) for library_base in library_bases
+                ):
+                    logger.warning(
+                        "Reprocess watch path is outside configured media roots: %s",
+                        base,
+                    )
                     continue
                 if any(
                     has_excluded_ancestor(base, library_base)
@@ -178,8 +185,12 @@ class ReprocessManager:
                 for root, dirs, names in os.walk(base, onerror=_ignore_walk_error):
                     if self._stopping.is_set():
                         self._publish(
-                            run_id, "failed", scanned=scanned, created=created,
-                            skipped=skipped, failed=failed,
+                            run_id,
+                            "failed",
+                            scanned=scanned,
+                            created=created,
+                            skipped=skipped,
+                            failed=failed,
                             error="Bulk reprocess stopped",
                         )
                         return
@@ -193,8 +204,12 @@ class ReprocessManager:
                     for name in names:
                         if self._stopping.is_set():
                             self._publish(
-                                run_id, "failed", scanned=scanned, created=created,
-                                skipped=skipped, failed=failed,
+                                run_id,
+                                "failed",
+                                scanned=scanned,
+                                created=created,
+                                skipped=skipped,
+                                failed=failed,
                                 error="Bulk reprocess stopped",
                             )
                             return
@@ -202,8 +217,13 @@ class ReprocessManager:
                         if (
                             path in visited
                             or is_excluded_path(path, base)
-                            or not any(is_within(path, watch_root) for watch_root in paths)
-                            or not any(is_within(path, library_base) for library_base in library_bases)
+                            or not any(
+                                is_within(path, watch_root) for watch_root in paths
+                            )
+                            or not any(
+                                is_within(path, library_base)
+                                for library_base in library_bases
+                            )
                             or any(
                                 has_excluded_ancestor(path, library_base)
                                 for library_base in library_bases

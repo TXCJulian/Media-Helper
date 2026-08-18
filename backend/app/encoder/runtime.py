@@ -4,8 +4,8 @@ import json
 import threading
 from collections.abc import Callable
 
-from app.encoder.store import EncoderStore
 from app.encoder.reprocess import ReprocessManager
+from app.encoder.store import EncoderStore
 from app.encoder.watcher import EncoderWatcher
 
 
@@ -134,7 +134,9 @@ class EncoderRuntime:
                 raise RuntimeError("Encoder watch runtime is unavailable")
             if self._reprocess is None:
                 self._reprocess = ReprocessManager(
-                    self._queue, self._queue.events, valid_extensions=self._valid_extensions
+                    self._queue,
+                    self._queue.events,
+                    valid_extensions=self._valid_extensions,
                 )
             return self._reprocess.start(paths)
 
