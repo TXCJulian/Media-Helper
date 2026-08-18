@@ -179,6 +179,56 @@ def test_config_accepts_a_directory_below_a_configured_base(
     assert runtime.replacements == [[str(visible.resolve())]]
 
 
+def test_picker_canonical_path_survives_validation_with_a_symlinked_base(
+    client, tmp_path, monkeypatch
+):
+    real_base = tmp_path / "real-media"
+    movies = real_base / "Movies"
+    movies.mkdir(parents=True)
+    linked_base = tmp_path / "media-link"
+    try:
+        linked_base.symlink_to(real_base, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks not supported in this environment")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(linked_base)])
+    runtime = FakeRuntime([])
+    routes_mod.register_runtime(runtime)
+
+    listed = client.get("/api/encoder/directories").json()["directories"]
+    canonical = next(
+        item["path"] for item in listed if item["path"] == str(movies.resolve())
+    )
+    response = client.put("/api/encoder/config", json={"watch_paths": [canonical]})
+
+    assert response.status_code == 200
+    assert runtime.replacements == [[str(movies.resolve())]]
+
+
+def test_persisted_canonical_watch_path_reloads_with_a_symlinked_base(
+    tmp_path, monkeypatch
+):
+    real_base = tmp_path / "real-media"
+    movies = real_base / "Movies"
+    movies.mkdir(parents=True)
+    linked_base = tmp_path / "media-link"
+    try:
+        linked_base.symlink_to(real_base, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks not supported in this environment")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(linked_base)])
+    store = RuntimeStore([str(movies.resolve())])
+    runtime = runtime_mod.EncoderRuntime(
+        store,
+        type("Queue", (), {"plan_new": lambda *_args: None})(),
+        default_paths=[],
+        settle_seconds=0,
+        valid_extensions={".mkv"},
+        validate_paths=routes_mod._validate_watch_paths,
+    )
+
+    assert runtime.watch_paths == [str(movies.resolve())]
+
+
 def test_config_replacement_failure_uses_the_encoder_error_envelope(
     client, tmp_path, monkeypatch
 ):
@@ -1330,6 +1380,55 @@ def test_swap_interrupted_blocked_job_cannot_be_reprocessed(
 
     assert response.status_code == 409
     assert response.json()["code"] == "swap_interrupted"
+
+
+def test_blocked_job_with_remote_work_cannot_be_reprocessed(
+    client, monkeypatch, tmp_path
+):
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    candidate = watch_root / "x.mkv"
+    candidate.write_bytes(b"data")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(tmp_path)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
+    store = routes_mod.get_store()
+    blocked = store.create_job(str(candidate))
+    store.set_remote_job(blocked.id, "remote-live")
+    store.set_stage(
+        blocked.id,
+        "blocked",
+        error="encoder unreachable",
+        error_code="encoder_unreachable",
+    )
+
+    response = client.post(f"/api/encoder/jobs/{blocked.id}/reprocess")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "remote_job_unresolved"
+    assert store.get_job(blocked.id).stage == "blocked"
+    assert len(store.list_jobs()) == 1
+
+
+def test_approve_does_not_resurrect_a_job_transitioned_for_recovery(
+    client, monkeypatch
+):
+    store = routes_mod.get_store()
+    job = store.create_job("/media3/Movies/x.mkv")
+    store.set_stage(job.id, "blocked", error="offline", error_code="offline")
+    encoder_queue = routes_mod.get_queue()
+    original = encoder_queue.enqueue_if_stage
+
+    def recover_before_claim(job_id, allowed_stages):
+        assert store.cancel_blocked_for_reprocess(job_id)
+        return original(job_id, allowed_stages)
+
+    monkeypatch.setattr(encoder_queue, "enqueue_if_stage", recover_before_claim)
+
+    response = client.post(f"/api/encoder/jobs/{job.id}/approve")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "not_awaiting_approval"
+    assert store.get_job(job.id).stage == "cancelled"
 
 
 def test_job_reprocess_rejects_unknown_and_swapping_jobs(client, monkeypatch, tmp_path):

@@ -252,6 +252,26 @@ class EncoderStore:
             self._conn.commit()
         return cur.rowcount > 0
 
+    def transition_stage(
+        self, job_id: str, allowed_stages: Iterable[str], stage: str
+    ) -> bool:
+        """Atomically move a job only if it is still in an allowed stage."""
+        if stage not in STAGES:
+            raise ValueError(f"Unknown stage: {stage}")
+        allowed = tuple(allowed_stages)
+        if not allowed or any(candidate not in STAGES for candidate in allowed):
+            raise ValueError("Unknown or empty allowed stage set")
+        placeholders = ", ".join("?" for _ in allowed)
+        with self._lock:
+            cur = self._conn.execute(
+                f"UPDATE jobs SET stage = ?, error = NULL, error_code = NULL, "
+                f"updated_at = datetime('now') WHERE id = ? "
+                f"AND stage IN ({placeholders})",
+                (stage, job_id, *allowed),
+            )
+            self._conn.commit()
+        return cur.rowcount > 0
+
     def set_remote_job(self, job_id: str, remote_job_id: str) -> None:
         self._update(job_id, remote_job_id=remote_job_id)
 

@@ -87,15 +87,23 @@ def resolve_authorized_path(
     resolved_roots = tuple(os.path.realpath(root) for root in roots)
     if not lexical_roots:
         return None
-    if not any(is_within(lexical, root) for root in lexical_roots):
+    # Directory picker results are canonical paths.  If a configured base or
+    # watch root is itself a symlink, that canonical spelling is not lexically
+    # below the configured spelling even though it identifies the same safe
+    # subtree.  Authorize either spelling, then independently require the
+    # resolved target to remain inside a resolved root.  The latter check is
+    # what continues to reject symlink escapes.
+    request_roots = tuple(dict.fromkeys((*lexical_roots, *resolved_roots)))
+    if not any(is_within(lexical, root) for root in request_roots):
         return None
     if not any(is_within(resolved, root) for root in resolved_roots):
         return None
 
     lexical_bases = tuple(_absolute(base) for base in library_bases)
     resolved_bases = tuple(os.path.realpath(base) for base in library_bases)
+    request_bases = tuple(dict.fromkeys((*lexical_bases, *resolved_bases)))
     for candidate, allowed_roots, bases in (
-        (lexical, lexical_roots, lexical_bases),
+        (lexical, request_roots, request_bases),
         (resolved, resolved_roots, resolved_bases),
     ):
         if any(
@@ -287,7 +295,9 @@ class ReprocessManager:
                         visited.add(path)
                         scanned += 1
                         try:
-                            result = self._queue.reprocess_path(path)
+                            result = self._queue.reprocess_path(
+                                path, cancel_event=self._stopping
+                            )
                         except Exception:
                             failed += 1
                             logger.exception("Could not reprocess %s", path)
@@ -302,6 +312,17 @@ class ReprocessManager:
                                 error="Could not reprocess file; see server logs",
                             )
                             continue
+                        if self._stopping.is_set():
+                            self._publish(
+                                run_id,
+                                "failed",
+                                scanned=scanned,
+                                created=created,
+                                skipped=skipped,
+                                failed=failed,
+                                error="Bulk reprocess stopped",
+                            )
+                            return
                         if result.get("stage") == "failed":
                             failed += 1
                         elif result.get("stage") == "skipped":

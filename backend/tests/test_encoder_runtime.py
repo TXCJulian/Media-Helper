@@ -314,10 +314,10 @@ def test_bulk_reprocess_returns_the_running_run_id(runtime_env, monkeypatch):
     release = queue.Queue()
     original = encoder_queue.reprocess_path
 
-    def slow_reprocess(path):
+    def slow_reprocess(path, **kwargs):
         started.put(path)
         release.get(timeout=2)
-        return original(path)
+        return original(path, **kwargs)
 
     monkeypatch.setattr(encoder_queue, "reprocess_path", slow_reprocess)
 
@@ -339,10 +339,10 @@ def test_runtime_stop_joins_the_active_bulk_reprocess(runtime_env, monkeypatch):
     release = queue.Queue()
     original = encoder_queue.reprocess_path
 
-    def slow_reprocess(path):
+    def slow_reprocess(path, **kwargs):
         started.put(path)
         release.get(timeout=2)
-        return original(path)
+        return original(path, **kwargs)
 
     monkeypatch.setattr(encoder_queue, "reprocess_path", slow_reprocess)
     runtime.start_reprocess_all()
@@ -365,7 +365,7 @@ def test_runtime_stop_still_stops_watcher_when_bulk_probe_outlives_timeout(
     started = queue.Queue()
     release = queue.Queue()
 
-    def stuck_reprocess(_path):
+    def stuck_reprocess(_path, **_kwargs):
         started.put(True)
         release.get(timeout=2)
         return {"stage": "skipped", "created": True}
@@ -381,6 +381,43 @@ def test_runtime_stop_still_stops_watcher_when_bulk_probe_outlives_timeout(
     finally:
         release.put(None)
         runtime._reprocess._thread.join(timeout=2)
+
+
+def test_runtime_stop_cancels_retrying_planning_before_it_can_enqueue(
+    runtime_env, monkeypatch
+):
+    store, root, _events, build = runtime_env
+    source = root / "retrying.mkv"
+    source.write_bytes(b"video")
+    runtime, encoder_queue = build(mode="auto")
+    probing = queue.Queue()
+    release = queue.Queue()
+
+    def slow_probe(_path):
+        probing.put(True)
+        release.get(timeout=2)
+        return {"height": 1080, "video_codec": "h264"}
+
+    monkeypatch.setattr(encoder_queue, "_probe_once", slow_probe, raising=False)
+    runtime.start_reprocess_all()
+    probing.get(timeout=2)
+
+    stopper = queue.Queue()
+
+    def stop_runtime():
+        runtime.stop()
+        stopper.put(True)
+
+    import threading
+
+    thread = threading.Thread(target=stop_runtime)
+    thread.start()
+    release.put(None)
+    thread.join(timeout=2)
+
+    assert stopper.get(timeout=1) is True
+    assert store.newest_job_for_source(str(source)).stage == "cancelled"
+    assert encoder_queue._queue.empty()
 
 
 @pytest.mark.parametrize(

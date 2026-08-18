@@ -122,6 +122,7 @@ export function useEncoderStream(): {
   )
   const [reprocessActive, setReprocessActive] = useState<boolean | null>(null)
   const latestReprocessEventRef = useRef<EncoderReprocessEvent | null>(null)
+  const reprocessSseGenerationRef = useRef(0)
 
   useEffect(() => {
     return openEncoderStream((data) => {
@@ -129,6 +130,7 @@ export function useEncoderStream(): {
         const parsed: unknown = JSON.parse(data)
         if (isSnapshot(parsed)) setSnapshotReceived(true)
         if (isEncoderReprocessEvent(parsed)) {
+          reprocessSseGenerationRef.current += 1
           latestReprocessEventRef.current = parsed
           setLatestReprocessEvent(parsed)
           setReprocessActive(parsed.status === 'started' || parsed.status === 'running')
@@ -143,9 +145,10 @@ export function useEncoderStream(): {
   useEffect(() => {
     if (!connected) return
     let current = true
+    const sseGenerationAtRequest = reprocessSseGenerationRef.current
     void fetchEncoderReprocessStatus()
       .then((status) => {
-        if (!current) return
+        if (!current || reprocessSseGenerationRef.current !== sseGenerationAtRequest) return
         const latest = latestReprocessEventRef.current
         const recovered = status.event
         if (

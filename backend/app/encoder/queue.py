@@ -48,6 +48,10 @@ _PROBE_RETRY_DELAY_SECONDS = 1.0
 _REMOTE_JOB_GONE_CODES = frozenset({"source_not_found_on_encoder", "job_not_found"})
 
 
+class _PlanningCancelled(Exception):
+    """Internal signal used to stop a bulk plan without recording a failure."""
+
+
 class EncodeQueue:
     def __init__(
         self,
@@ -179,6 +183,14 @@ class EncodeQueue:
         self._publish(job_id)
         self._queue.put(job_id)
 
+    def enqueue_if_stage(self, job_id: str, allowed_stages: set[str]) -> bool:
+        """Atomically enqueue only while an approval-stage claim is still valid."""
+        if not self._store.transition_stage(job_id, allowed_stages, "queued"):
+            return False
+        self._publish(job_id)
+        self._queue.put(job_id)
+        return True
+
     def cancel(self, job_id: str) -> bool:
         with self._job_lock(job_id):
             job = self._store.get_job(job_id)
@@ -195,11 +207,21 @@ class EncodeQueue:
 
     # ---- planning --------------------------------------------------------
 
-    def _probe_with_retry(self, path: str) -> dict:
+    def _probe_once(self, path: str) -> dict:
+        return probe(path)
+
+    def _probe_with_retry(
+        self, path: str, cancel_event: threading.Event | None = None
+    ) -> dict:
         """Retry short-lived share permission/read races before failing."""
         for attempt in range(_PROBE_RETRY_ATTEMPTS):
+            if cancel_event is not None and cancel_event.is_set():
+                raise _PlanningCancelled
             try:
-                return probe(path)
+                facts = self._probe_once(path)
+                if cancel_event is not None and cancel_event.is_set():
+                    raise _PlanningCancelled
+                return facts
             except ProbeError as exc:
                 message = str(exc).lower()
                 transient = any(
@@ -222,10 +244,21 @@ class EncodeQueue:
                     _PROBE_RETRY_ATTEMPTS - 1,
                     exc,
                 )
-                time.sleep(delay)
+                if cancel_event is not None:
+                    if cancel_event.wait(delay):
+                        raise _PlanningCancelled from exc
+                else:
+                    time.sleep(delay)
         raise AssertionError("unreachable")
 
-    def plan_new(self, source_path: str, size: int, mtime_ns: int) -> str:
+    def plan_new(
+        self,
+        source_path: str,
+        size: int,
+        mtime_ns: int,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> str:
         """Create a job for a newly settled file and plan it.
 
         The watcher's entry point, and the only place that pairs job creation
@@ -241,7 +274,7 @@ class EncodeQueue:
         """
         job = self._store.create_job(source_path, size, mtime_ns)
         try:
-            return self.plan(job.id)
+            return self.plan(job.id, cancel_event=cancel_event)
         except Exception:
             # The message reaches the API and the panel, and an *unexpected*
             # exception carries whatever internal state it happened to hold --
@@ -254,8 +287,20 @@ class EncodeQueue:
             )
             return "failed"
 
-    def reprocess_path(self, source_path: str) -> dict[str, object]:
+    def reprocess_path(
+        self,
+        source_path: str,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, object]:
         """Immediately reconsider a path, bypassing watcher deduplication."""
+        if cancel_event is not None and cancel_event.is_set():
+            return {
+                "job_id": None,
+                "path": source_path,
+                "stage": "cancelled",
+                "created": False,
+            }
         active = self._store.active_job_for_source(source_path)
         if active is not None:
             return {
@@ -268,7 +313,12 @@ class EncodeQueue:
         stat = os.stat(source_path)
         self._store.forget_seen(source_path)
         try:
-            stage = self.plan_new(source_path, stat.st_size, stat.st_mtime_ns)
+            stage = self.plan_new(
+                source_path,
+                stat.st_size,
+                stat.st_mtime_ns,
+                cancel_event=cancel_event,
+            )
         except sqlite3.IntegrityError:
             # Another caller won the unique active-source race between the
             # lookup above and create_job(). Return that job as the idempotent
@@ -289,7 +339,7 @@ class EncodeQueue:
         job_id, path, stage = job.id, job.source_path, job.stage
         return {"job_id": job_id, "path": path, "stage": stage, "created": True}
 
-    def plan(self, job_id: str) -> str:
+    def plan(self, job_id: str, *, cancel_event: threading.Event | None = None) -> str:
         """Probe the file, pick a target, and record the decision.
 
         Returns the resulting stage. In `review` mode this stops at `pending`
@@ -301,7 +351,9 @@ class EncodeQueue:
             return "failed"
 
         try:
-            facts = self._probe_with_retry(job.source_path)
+            facts = self._probe_with_retry(job.source_path, cancel_event)
+        except _PlanningCancelled:
+            return self._cancel_planning(job_id)
         except ProbeError as exc:
             self._fail(job_id, str(exc), "probe_failed")
             return "failed"
@@ -314,6 +366,9 @@ class EncodeQueue:
             self._fail(job_id, str(exc), "invalid_rule")
             return "failed"
 
+        if cancel_event is not None and cancel_event.is_set():
+            return self._cancel_planning(job_id)
+
         self._store.set_plan(
             job_id,
             preset_name=None if match.target == SKIP else match.target,
@@ -321,6 +376,9 @@ class EncodeQueue:
             facts=facts,
             original_size=facts.get("size") or 0,
         )
+
+        if cancel_event is not None and cancel_event.is_set():
+            return self._cancel_planning(job_id)
 
         if match.target == SKIP:
             self._store.set_stage(job_id, "skipped")
@@ -339,12 +397,19 @@ class EncodeQueue:
             return "failed"
 
         if self._mode == "auto":
+            if cancel_event is not None and cancel_event.is_set():
+                return self._cancel_planning(job_id)
             self.enqueue(job_id)
             return "queued"
 
         self._store.set_stage(job_id, "pending")
         self._publish(job_id)
         return "pending"
+
+    def _cancel_planning(self, job_id: str) -> str:
+        self._store.set_stage(job_id, "cancelled")
+        self._publish(job_id)
+        return "cancelled"
 
     # ---- retention -------------------------------------------------------
 

@@ -876,6 +876,13 @@ def reprocess_job(job_id: str) -> dict | JSONResponse:
             "swap_interrupted",
             "The previous publish was interrupted; confirm the file on disk manually",
         )
+    if job.stage == "blocked" and job.remote_job_id:
+        return _error(
+            409,
+            "remote_job_unresolved",
+            "This job still references work on the remote encoder; cancel or "
+            "resolve that work before re-evaluating it",
+        )
 
     resolved = _resolve_probe_path(job.source_path)
     if resolved is None:
@@ -917,7 +924,12 @@ def approve_job(job_id: str):
             "state is unknown. Confirm the file manually, then delete this "
             "job to let the watcher re-plan it.",
         )
-    get_queue().enqueue(job_id)
+    if not get_queue().enqueue_if_stage(job_id, {"pending", "blocked"}):
+        current = store.get_job(job_id)
+        stage = current.stage if current is not None else "missing"
+        return _error(
+            409, "not_awaiting_approval", f"Job is {stage}, not awaiting approval"
+        )
     return {"stage": "queued"}
 
 
