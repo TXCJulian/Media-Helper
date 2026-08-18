@@ -183,31 +183,16 @@ class ReprocessIn(BaseModel):
     path: str
 
 
-class ReprocessOut(BaseModel):
-    job_id: str
-    path: str
-    stage: str
-    created: bool
-
-
 class BulkRunIn(BaseModel):
     paths: list[str]
 
 
-class BulkRunOut(BaseModel):
-    jobs: list[ReprocessOut]
-
-
-# Descriptive aliases keep the wire contracts discoverable to callers while
-# retaining the concise names used by the handlers.
+# Request aliases are kept ready for the follow-up routes; response contracts
+# belong with the routes that introduce them.
 ReprocessRequest = ReprocessIn
-ReprocessResponse = ReprocessOut
 BulkRunRequest = BulkRunIn
-BulkRunResponse = BulkRunOut
 JobReevaluationRequest = ReprocessIn
-JobReevaluationResponse = ReprocessOut
 BulkRunStartRequest = BulkRunIn
-BulkRunStartResponse = BulkRunOut
 
 
 class PresetLeaf(BaseModel):
@@ -407,6 +392,23 @@ def _prune_walk_dirs(root: str, dirs: list[str], bases: list[str]) -> None:
     ]
 
 
+def _has_excluded_ancestor(path: str, base: str) -> bool:
+    """Whether any component between *base* and *path* is excluded."""
+    resolved_path = os.path.normpath(path)
+    resolved_base = os.path.normpath(base)
+    if not _is_within_base(resolved_path, resolved_base):
+        return False
+    relative = os.path.relpath(resolved_path, resolved_base)
+    if relative == ".":
+        return False
+    current = resolved_base
+    for component in relative.split(os.sep):
+        current = os.path.join(current, component)
+        if _excluded_walk_path(current, resolved_base):
+            return True
+    return False
+
+
 @router.get("/directories")
 def encoder_directories(
     search: str | None = Query(None, max_length=200),
@@ -461,14 +463,14 @@ def encoder_files(
     files: list[dict[str, str]] = []
     visited = 0
     truncated = False
-    if any(_excluded_walk_path(resolved, base) for base in bases):
+    if any(_has_excluded_ancestor(resolved, base) for base in bases):
         return {"files": [], "truncated": False}
     for root, dirs, names in os.walk(resolved, onerror=_ignore_walk_error):
         visited += 1
         if visited > _MAX_WALK_ENTRIES:
             truncated = True
             break
-        if any(_excluded_walk_path(root, base) for base in bases):
+        if any(_has_excluded_ancestor(root, base) for base in bases):
             break
         _prune_walk_dirs(root, dirs, bases)
         for name in names:
@@ -619,25 +621,14 @@ def import_presets(payload: PresetImport) -> dict | JSONResponse:
             "Cannot validate presets: the encoder did not report its encoders",
         )
 
-    selected = (
-        presets
-        if payload.include_names is None
-        else [p for p in presets if p.name in set(payload.include_names)]
-    )
-    if not selected:
-        return _error(
-            400,
-            "invalid_preset_selection",
-            "The selected names do not identify any presets in this document",
-        )
-    usable = [p for p in selected if p.encoder in available]
+    usable = [p for p in presets if p.encoder in available]
     skipped = [
         {
             "name": p.name,
             "encoder": p.encoder,
             "reason": f"The connected encoder does not provide {p.encoder!r}",
         }
-        for p in selected
+        for p in presets
         if p.encoder not in available
     ]
     if not usable:
@@ -646,7 +637,7 @@ def import_presets(payload: PresetImport) -> dict | JSONResponse:
             "encoder_unavailable",
             "None of the presets in this document can run on the connected "
             f"encoder; it does not provide: "
-            f"{', '.join(sorted({p.encoder for p in selected}))}",
+            f"{', '.join(sorted({p.encoder for p in presets}))}",
         )
 
     get_store().replace_presets(usable)

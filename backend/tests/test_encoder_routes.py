@@ -442,16 +442,6 @@ def test_import_says_so_when_the_encoder_list_cannot_be_read(client, monkeypatch
     assert r.json()["code"] == "encoder_unreachable"
 
 
-def test_import_can_select_named_presets_without_changing_response_envelope(client):
-    response = client.post(
-        "/api/encoder/presets",
-        json={"document": PRESET_DOC, "include_names": ["NVENC"]},
-    )
-    assert response.status_code == 200
-    assert response.json()["imported"] == ["NVENC"]
-    assert "skipped" in response.json()
-
-
 def test_a_malformed_document_is_rejected(client):
     r = client.post("/api/encoder/presets", json={"document": {"PresetList": [{}]}})
     assert r.status_code == 400
@@ -654,6 +644,19 @@ def test_files_hide_excluded_roots_and_descendants(client, monkeypatch, tmp_path
     visible = client.get("/api/encoder/files", params={"directory": str(base)}).json()
     assert [entry["path"] for entry in visible["files"]] == [str(base / "Movies" / "film.mkv")]
     for excluded in (base / ".trickplay", base / "Music"):
+        response = client.get("/api/encoder/files", params={"directory": str(excluded)})
+        assert response.json()["files"] == []
+
+
+def test_files_reject_direct_descendants_of_excluded_trees(client, monkeypatch, tmp_path):
+    base = tmp_path / "media"
+    for excluded in (base / "Music" / "album", base / ".hidden" / "nested", base / ".trickplay" / "cache"):
+        excluded.mkdir(parents=True)
+        (excluded / "secret.mkv").write_bytes(b"")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
+    monkeypatch.setattr(routes_mod.config, "MUSIC_FOLDER_NAME", "Music")
+
+    for excluded in (base / "Music" / "album", base / ".hidden" / "nested", base / ".trickplay" / "cache"):
         response = client.get("/api/encoder/files", params={"directory": str(excluded)})
         assert response.json()["files"] == []
 
