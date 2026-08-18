@@ -113,6 +113,23 @@ def test_reprocess_path_returns_existing_active_job(env):
     assert result["job_id"] == store.active_job_for_source(str(source)).id
 
 
+def test_reprocess_path_returns_new_terminal_job_after_same_second_history(env):
+    store, client, movies, source, _ = env
+    old = store.create_job(str(source))
+    store.set_stage(old.id, "done")
+    store.replace_rules([Rule("skip", [], "skip")])
+    q = _queue(store, client, mode="review")
+    result = q.reprocess_path(str(source))
+    newest = store.newest_job_for_source(str(source))
+    assert result == {
+        "job_id": newest.id,
+        "path": str(source),
+        "stage": "skipped",
+        "created": True,
+    }
+    assert newest.id != old.id
+
+
 def test_a_skip_target_ends_the_job_without_dispatching(env):
     store, client, movies, source, _ = env
     store.replace_rules([Rule("r1", [Condition("height", ">=", 720)], "skip")])

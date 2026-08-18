@@ -278,18 +278,10 @@ class EncodeQueue:
                 "created": False,
             }
 
-        active = self._store.active_job_for_source(source_path)
-        if active is not None:
-            job_id = active.id
-            path = active.source_path
-            stage = active.stage
-        else:
-            # plan_new can produce a terminal result (skip/failure), so find
-            # the just-created row from the newest job when no active row is
-            # left to return.
-            jobs = [job for job in self._store.list_jobs() if job.source_path == source_path]
-            job = jobs[0]
-            job_id, path, stage = job.id, job.source_path, job.stage
+        job = self._store.newest_job_for_source(source_path)
+        if job is None:
+            raise RuntimeError("planned job disappeared")
+        job_id, path, stage = job.id, job.source_path, job.stage
         return {"job_id": job_id, "path": path, "stage": stage, "created": True}
 
     def plan(self, job_id: str) -> str:

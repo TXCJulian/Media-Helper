@@ -311,6 +311,16 @@ class EncoderStore:
             ).fetchone()
         return _to_job(row) if row else None
 
+    def newest_job_for_source(self, source_path: str) -> Job | None:
+        """Return the newest job for *source_path*, including terminal jobs."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM jobs WHERE source_path = ? "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (source_path,),
+            ).fetchone()
+        return _to_job(row) if row else None
+
     def seen_fingerprints(self) -> dict[str, tuple[int, int]]:
         """`{path: (size, mtime_ns)}` for every file already decided about.
 
