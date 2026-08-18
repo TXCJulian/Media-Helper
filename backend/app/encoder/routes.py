@@ -396,8 +396,11 @@ def encoder_directories(
             if visited > _MAX_WALK_ENTRIES:
                 truncated = True
                 break
-            if is_excluded_path(root, resolved_base):
-                break
+            if is_excluded_path(root, resolved_base) or has_excluded_ancestor(
+                root, resolved_base
+            ):
+                dirs[:] = []
+                continue
             prune_excluded_dirs(root, dirs, [resolved_base])
             resolved = os.path.realpath(root)
             if needle and needle not in resolved.lower():
@@ -430,15 +433,20 @@ def encoder_files(
     files: list[dict[str, str]] = []
     visited = 0
     truncated = False
-    if any(has_excluded_ancestor(resolved, base) for base in bases):
+    if any(has_excluded_ancestor(resolved, base) for base in bases) or any(
+        is_excluded_path(resolved, base) for base in bases
+    ):
         return {"files": [], "truncated": False}
     for root, dirs, names in os.walk(resolved, onerror=_ignore_walk_error):
         visited += 1
         if visited > _MAX_WALK_ENTRIES:
             truncated = True
             break
-        if any(has_excluded_ancestor(root, base) for base in bases):
-            break
+        if any(has_excluded_ancestor(root, base) for base in bases) or any(
+            is_excluded_path(root, base) for base in bases
+        ):
+            dirs[:] = []
+            continue
         prune_excluded_dirs(root, dirs, bases)
         for name in names:
             if name.startswith("."):
@@ -473,6 +481,10 @@ def _validate_watch_paths(paths: list[str]) -> list[str]:
             raise ValueError(
                 "Watch path is not an existing directory under BASE_PATHS: " f"{path}"
             )
+        if any(has_excluded_ancestor(resolved, base) for base in bases) or any(
+            is_excluded_path(resolved, base) for base in bases
+        ):
+            raise ValueError(f"Watch path is inside an excluded directory: {path}")
         if resolved not in seen:
             seen.add(resolved)
             validated.append(resolved)

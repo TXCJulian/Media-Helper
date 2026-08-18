@@ -359,6 +359,7 @@ export default function PresetEditor({
             body.FileFormat = asString(body.FileFormat) || 'av_mkv'
             openDraft(body, null)
           }}
+          className="rounded-lg border border-teal-400/25 bg-teal-400/10 px-3 py-2 text-[0.75rem] font-medium text-teal-300 disabled:opacity-50"
         >
           New guided preset
         </button>
@@ -377,48 +378,71 @@ export default function PresetEditor({
               'raw',
             )
           }}
-          className="rounded-lg border border-white/10 px-3 py-2 text-[0.75rem] text-[var(--text-secondary)]"
+          className="rounded-lg border border-white/10 bg-white/4 px-3 py-2 text-[0.75rem] text-[var(--text-secondary)] hover:text-white"
         >
           New raw preset
         </button>
       </div>
 
       {importCandidates && (
-        <div className="space-y-2 rounded-lg border border-white/10 bg-white/[0.02] p-3">
-          <p className="text-[0.75rem] text-[var(--text-secondary)]">
+        <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+          <p className="text-[0.78rem] font-medium text-[var(--text-secondary)]">
             Choose the presets to import.
           </p>
-          <ul className="space-y-1.5" aria-label="Preset import candidates">
-            {importCandidates.map((candidate) => (
-              <li key={`${candidate.name}-${candidate.encoder}`}>
-                <label
-                  className={`flex items-start gap-2 text-[0.75rem] ${candidate.supported ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)] opacity-60'}`}
+          <ul className="max-h-[360px] space-y-2 overflow-y-auto pr-1" aria-label="Preset import candidates">
+            {importCandidates.map((candidate) => {
+              const isSelected = selectedImportNames.includes(candidate.name)
+              return (
+                <li
+                  key={`${candidate.name}-${candidate.encoder}`}
+                  className={`rounded-lg border p-2.5 transition-colors ${
+                    isSelected
+                      ? 'border-teal-500/30 bg-teal-500/[0.06]'
+                      : 'border-white/6 bg-white/[0.02]'
+                  }`}
                 >
-                  <input
-                    type="checkbox"
-                    aria-label={`Keep preset ${candidate.name}`}
-                    checked={selectedImportNames.includes(candidate.name)}
-                    disabled={!candidate.supported || importing}
-                    onChange={(event) => {
-                      setSelectedImportNames((current) =>
-                        event.target.checked
-                          ? [...current, candidate.name]
-                          : current.filter((name) => name !== candidate.name),
-                      )
-                    }}
-                  />
-                  <span>
-                    {candidate.name}{' '}
-                    <span className="text-[var(--text-secondary)]">({candidate.encoder})</span>
-                    {!candidate.supported && candidate.reason && (
-                      <span className="block text-amber-200">{candidate.reason}</span>
-                    )}
-                  </span>
-                </label>
-              </li>
-            ))}
+                  <label
+                    className={`flex cursor-pointer items-start gap-3 text-[0.78rem] ${
+                      candidate.supported
+                        ? 'text-[var(--text-primary)]'
+                        : 'text-[var(--text-secondary)] opacity-60'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      aria-label={`Keep preset ${candidate.name}`}
+                      checked={isSelected}
+                      disabled={!candidate.supported || importing}
+                      onChange={(event) => {
+                        setSelectedImportNames((current) =>
+                          event.target.checked
+                            ? [...current, candidate.name]
+                            : current.filter((name) => name !== candidate.name),
+                        )
+                      }}
+                      className="mt-0.5 h-4 w-4 shrink-0 rounded border-white/20 bg-white/5 text-teal-400 focus:ring-teal-400"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-baseline gap-1.5">
+                        <span className="font-medium text-[var(--text-primary)]">
+                          {candidate.name}
+                        </span>
+                        <span className="text-[0.72rem] text-[var(--text-secondary)]">
+                          ({candidate.encoder})
+                        </span>
+                      </div>
+                      {!candidate.supported && candidate.reason && (
+                        <span className="mt-1 block text-[0.72rem] text-amber-200">
+                          {candidate.reason}
+                        </span>
+                      )}
+                    </div>
+                  </label>
+                </li>
+              )
+            })}
           </ul>
-          <div className="flex gap-2">
+          <div className="flex gap-2 pt-1">
             <button
               type="button"
               disabled={importing || selectedImportNames.length === 0}
@@ -435,7 +459,7 @@ export default function PresetEditor({
                 setImportCandidates(null)
                 setSelectedImportNames([])
               }}
-              className="rounded-lg border border-white/8 px-3 py-2 text-[0.75rem] text-[var(--text-secondary)] disabled:opacity-50"
+              className="rounded-lg border border-white/8 px-3 py-2 text-[0.75rem] text-[var(--text-secondary)] disabled:opacity-50 hover:text-white"
             >
               Cancel import
             </button>
@@ -514,10 +538,24 @@ export default function PresetEditor({
               type="button"
               aria-pressed={view === 'guided'}
               onClick={() => setView('guided')}
+              className={`rounded-lg border px-3 py-1.5 text-[0.75rem] font-medium transition ${
+                view === 'guided'
+                  ? 'border-teal-400/30 bg-teal-400/15 text-teal-300'
+                  : 'border-white/8 bg-white/4 text-[var(--text-secondary)] hover:text-white'
+              }`}
             >
               Guided fields
             </button>
-            <button type="button" aria-pressed={view === 'raw'} onClick={() => setView('raw')}>
+            <button
+              type="button"
+              aria-pressed={view === 'raw'}
+              onClick={() => setView('raw')}
+              className={`rounded-lg border px-3 py-1.5 text-[0.75rem] font-medium transition ${
+                view === 'raw'
+                  ? 'border-teal-400/30 bg-teal-400/15 text-teal-300'
+                  : 'border-white/8 bg-white/4 text-[var(--text-secondary)] hover:text-white'
+              }`}
+            >
               Raw JSON
             </button>
           </div>
@@ -598,7 +636,7 @@ export default function PresetEditor({
                   <pre
                     ref={rawHighlightRef}
                     aria-hidden="true"
-                    className="pointer-events-none absolute inset-0 m-0 min-h-0 whitespace-pre px-3 py-2"
+                    className="pointer-events-none absolute top-0 left-0 m-0 min-h-0 min-w-full w-max whitespace-pre px-3 py-2 font-mono text-[0.75rem] leading-5"
                     dangerouslySetInnerHTML={{ __html: highlightJson(draft.rawText) }}
                   />
                   <textarea
@@ -607,7 +645,8 @@ export default function PresetEditor({
                     onChange={(event) => updateRaw(event.target.value)}
                     onScroll={syncRawScroll}
                     wrap="off"
-                    className="relative z-10 h-full min-h-0 w-full resize-none overflow-auto bg-transparent px-3 py-2 text-transparent caret-white outline-none selection:bg-teal-400/25"
+                    spellCheck={false}
+                    className="relative z-10 h-full min-h-0 w-full resize-none overflow-auto bg-transparent px-3 py-2 font-mono text-[0.75rem] leading-5 text-transparent caret-white outline-none selection:bg-teal-400/25"
                   />
                 </div>
               </div>

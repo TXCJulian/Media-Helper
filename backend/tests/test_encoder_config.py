@@ -6,6 +6,7 @@ from app import config
 
 
 def _reload(monkeypatch, **env):
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: None)
     for key, value in env.items():
         if value is None:
             monkeypatch.delenv(key, raising=False)

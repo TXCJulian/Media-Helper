@@ -341,7 +341,7 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
             type="button"
             aria-expanded={historyOpen}
             onClick={() => setHistoryOpen((open) => !open)}
-            className={`flex w-full items-center gap-2 border border-[var(--glass-border)] bg-[var(--glass-bg)] px-4 py-2.5 text-left text-[0.8rem] font-medium text-white/70 backdrop-blur-sm transition hover:border-[var(--accent-5)]/30 hover:text-white/90 ${historyOpen ? 'rounded-t-xl' : 'rounded-xl'}`}
+            className={`flex w-full cursor-pointer items-center gap-2 border border-[var(--glass-border)] bg-[var(--glass-bg)] px-4 py-2.5 text-left text-[0.8rem] font-medium text-white/70 backdrop-blur-sm transition hover:border-[var(--accent-5)]/30 hover:text-white/90 ${historyOpen ? 'rounded-t-xl' : 'rounded-xl'}`}
           >
             <span className={`inline-block transition-transform ${historyOpen ? 'rotate-90' : ''}`}>
               &#9654;

@@ -548,7 +548,7 @@ export default function EncoderSettings({
                   setWatchDirty(true)
                   setWatchPaths((current) => current.filter((_, itemIndex) => itemIndex !== index))
                 }}
-                className="rounded-lg px-3 py-2 text-[0.75rem] text-red-300"
+                className="rounded-lg border border-red-400/20 bg-red-400/8 px-3 py-2 text-[0.75rem] text-red-300 transition hover:bg-red-400/15"
               >
                 Remove
               </button>
@@ -562,7 +562,7 @@ export default function EncoderSettings({
                 setWatchDirty(true)
                 setWatchPaths((current) => [...current, ''])
               }}
-              className="rounded-lg border border-white/8 px-3 py-2 text-[0.75rem] text-[var(--text-secondary)]"
+              className="rounded-lg border border-teal-400/25 bg-teal-400/10 px-3 py-2 text-[0.75rem] font-medium text-teal-300 transition hover:bg-teal-400/20"
             >
               Add watch folder
             </button>
@@ -570,7 +570,7 @@ export default function EncoderSettings({
               type="button"
               disabled={savingPaths}
               onClick={() => void savePaths()}
-              className="rounded-lg bg-teal-500/15 px-3 py-2 text-[0.75rem] font-medium text-teal-300 disabled:opacity-50"
+              className="rounded-lg border border-teal-500/30 bg-teal-500/15 px-3 py-2 text-[0.75rem] font-medium text-teal-300 transition hover:bg-teal-500/25 disabled:opacity-50"
             >
               {savingPaths ? 'Saving…' : 'Save watch folders'}
             </button>
@@ -610,6 +610,7 @@ export default function EncoderSettings({
                     disabled={ruleIndex === 0}
                     aria-label={`Move rule ${rule.id} up`}
                     onClick={() => moveRule(ruleIndex, -1)}
+                    className="rounded-lg border border-white/8 bg-white/4 px-2.5 py-1.5 text-[0.75rem] text-[var(--text-secondary)] transition hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
                   >
                     ↑
                   </button>
@@ -618,6 +619,7 @@ export default function EncoderSettings({
                     disabled={ruleIndex === draftRules.length - 1}
                     aria-label={`Move rule ${rule.id} down`}
                     onClick={() => moveRule(ruleIndex, 1)}
+                    className="rounded-lg border border-white/8 bg-white/4 px-2.5 py-1.5 text-[0.75rem] text-[var(--text-secondary)] transition hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
                   >
                     ↓
                   </button>
@@ -631,7 +633,7 @@ export default function EncoderSettings({
                         current.filter((_, itemIndex) => itemIndex !== ruleIndex),
                       )
                     )}
-                    className="text-[0.72rem] text-red-300"
+                    className="rounded-lg border border-red-400/20 bg-red-400/8 px-2.5 py-1.5 text-[0.72rem] text-red-300 transition hover:bg-red-400/15"
                   >
                     Remove
                   </button>
@@ -735,7 +737,7 @@ export default function EncoderSettings({
                               ),
                             })
                           }
-                          className="self-end text-red-300"
+                          className="self-end rounded-lg p-1.5 text-[0.85rem] text-red-300/70 transition hover:bg-red-400/10 hover:text-red-300"
                         >
                           ×
                         </button>
@@ -753,7 +755,7 @@ export default function EncoderSettings({
                         conditions: [...rule.conditions, initialCondition()],
                       })
                     }
-                    className="text-[0.72rem] text-teal-300"
+                    className="rounded-lg border border-teal-400/20 bg-teal-400/8 px-2.5 py-1 text-[0.72rem] font-medium text-teal-300 transition hover:bg-teal-400/15"
                   >
                     + AND condition
                   </button>
@@ -812,24 +814,31 @@ export default function EncoderSettings({
                   },
                 ])
               )}
+              className="rounded-lg border border-teal-400/25 bg-teal-400/10 px-3 py-2 text-[0.75rem] font-medium text-teal-300 transition hover:bg-teal-400/20"
             >
               Add rule
             </button>
-            <button type="button" disabled={savingRules} onClick={() => void saveRules()}>
+            <button
+              type="button"
+              disabled={savingRules}
+              onClick={() => void saveRules()}
+              className="rounded-lg border border-teal-500/30 bg-teal-500/15 px-3 py-2 text-[0.75rem] font-medium text-teal-300 transition hover:bg-teal-500/25 disabled:opacity-50"
+            >
               {savingRules ? 'Saving…' : 'Save rules'}
             </button>
           </div>
 
-          <div className="rounded-xl border border-amber-400/15 bg-amber-400/[0.05] p-3">
-            <p className="text-[0.72rem] text-amber-200">
+          <div className="rounded-xl border border-amber-400/30 bg-amber-400/8 px-4 py-3">
+            <p className="text-[0.78rem] text-amber-200">
               Re-evaluate every media file in the configured watch folders with these rules.
             </p>
             {confirmReprocessAll ? (
-              <div className="mt-2 flex flex-wrap items-center gap-2">
+              <div className="mt-2.5 flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   disabled={reprocessAllActive || startingReprocessAll || !onStartReprocessAll}
                   onClick={() => void startReprocessAll()}
+                  className="rounded-md border border-amber-300/40 bg-amber-300/15 px-3 py-1.5 text-[0.75rem] font-semibold text-amber-100 transition hover:bg-amber-300/25 disabled:opacity-50"
                 >
                   {startingReprocessAll ? 'Starting…' : 'Confirm re-evaluate all media'}
                 </button>
@@ -837,6 +846,7 @@ export default function EncoderSettings({
                   type="button"
                   disabled={startingReprocessAll}
                   onClick={() => setConfirmReprocessAll(false)}
+                  className="rounded-md border border-white/20 bg-white/8 px-3 py-1.5 text-[0.75rem] font-semibold text-white/80 transition hover:bg-white/15 disabled:opacity-50"
                 >
                   Cancel
                 </button>
@@ -846,7 +856,7 @@ export default function EncoderSettings({
                 type="button"
                 disabled={reprocessAllActive || startingReprocessAll || !onStartReprocessAll}
                 onClick={() => setConfirmReprocessAll(true)}
-                className="mt-2"
+                className="mt-2.5 rounded-md border border-amber-300/40 bg-amber-300/12 px-3 py-1.5 text-[0.75rem] font-semibold text-amber-100 transition hover:bg-amber-300/20 disabled:opacity-50"
               >
                 Re-evaluate all media
               </button>
@@ -926,6 +936,7 @@ export default function EncoderSettings({
                 type="button"
                 disabled={testing || !testPath.trim()}
                 onClick={() => void runTest()}
+                className="rounded-lg border border-teal-400/25 bg-teal-400/10 px-3 py-1.5 text-[0.75rem] font-medium text-teal-300 transition hover:bg-teal-400/20 disabled:opacity-50"
               >
                 {testing ? 'Testing…' : 'Test file'}
               </button>
@@ -933,6 +944,7 @@ export default function EncoderSettings({
                 type="button"
                 disabled={reprocessing || !testPath.trim()}
                 onClick={() => void reprocess()}
+                className="rounded-lg border border-white/10 bg-white/4 px-3 py-1.5 text-[0.75rem] text-[var(--text-secondary)] transition hover:text-white disabled:opacity-50"
               >
                 {reprocessing ? 'Reprocessing…' : 'Reprocess file'}
               </button>

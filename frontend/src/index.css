@@ -74,8 +74,8 @@
   --accent-6-glow: rgba(34, 211, 238, 0.18);
 
   --text-primary: #eaeaef;
-  --text-secondary: #8c8ca0;
-  --text-tertiary: #55556a;
+  --text-secondary: #a3a3bc;
+  --text-tertiary: #8e8ea6;
   --border: rgba(255, 255, 255, 0.06);
   --success: #4ade80;
   --success-glow: rgba(74, 222, 128, 0.15);
@@ -99,6 +99,25 @@
     min-height: 100vh;
     overflow-x: hidden;
     -webkit-font-smoothing: antialiased;
+  }
+
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']):not(:disabled),
+  select:not(:disabled),
+  summary {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [role='button'][aria-disabled='true'],
+  select:disabled {
+    cursor: not-allowed;
+  }
+
+  input[type='checkbox'],
+  input[type='radio'] {
+    cursor: pointer;
+    width: auto;
   }
 
   /* Animated gradient background */
@@ -281,7 +300,7 @@
       0 12px 34px rgba(0, 0, 0, 0.24);
   }
 
-  .encoder-panel input:not([type='file']),
+  .encoder-panel input:not([type='file']):not([type='checkbox']):not([type='radio']):not([type='range']),
   .encoder-panel textarea,
   .encoder-panel select {
     width: 100%;
@@ -295,12 +314,18 @@
     outline: none;
     transition: all 200ms;
   }
-  .encoder-panel input:not([type='file']):focus,
+  .encoder-panel input:not([type='file']):not([type='checkbox']):not([type='radio']):not([type='range']):focus,
   .encoder-panel textarea:focus,
   .encoder-panel select:focus {
     border-color: var(--accent-5);
     background: var(--bg-input-focus);
     box-shadow: 0 0 0 3px var(--accent-5-glow);
+  }
+  .encoder-panel button {
+    cursor: pointer;
+  }
+  .encoder-panel button:disabled {
+    cursor: not-allowed;
   }
   .encoder-panel button:not([class]) {
     cursor: pointer;

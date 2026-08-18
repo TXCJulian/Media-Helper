@@ -832,6 +832,16 @@ def test_directories_hide_trickplay_and_top_level_music(client, monkeypatch, tmp
     assert str(base / "Music") not in paths
 
 
+def test_config_rejects_watch_paths_inside_trickplay(client, monkeypatch, tmp_path):
+    base = tmp_path / "media"
+    (base / ".trickplay" / "sub").mkdir(parents=True)
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
+    resp = client.put(
+        "/api/encoder/config", json={"watch_paths": [str(base / ".trickplay" / "sub")]}
+    )
+    assert resp.status_code == 400
+
+
 def test_files_hide_excluded_roots_and_descendants(client, monkeypatch, tmp_path):
     base = tmp_path / "media"
     (base / "Movies" / ".hidden").mkdir(parents=True)
