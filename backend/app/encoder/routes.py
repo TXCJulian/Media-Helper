@@ -570,6 +570,29 @@ def _validate_preset_leaf(name: str, body: dict) -> NamedPreset:
     return presets[0]
 
 
+def _preset_candidates(document: dict) -> tuple[list[NamedPreset], set[str]]:
+    """Parse leaves once and pair them with the encoder's capabilities."""
+    presets = parse_document(document)
+    if not presets:
+        raise PresetError("The document contains no presets")
+    available = set(get_client().health().get("encoders") or [])
+    if not available:
+        raise EncoderUnavailable(
+            "Cannot validate presets: the encoder did not report its encoders"
+        )
+    return presets, available
+
+
+def _unsupported_preset_reason(preset: NamedPreset) -> str:
+    return f"The connected encoder does not provide {preset.encoder!r}"
+
+
+def _preset_error_response(exc: PresetError | EncoderUnavailable) -> JSONResponse:
+    if isinstance(exc, EncoderUnavailable):
+        return _error(503, "encoder_unreachable", str(exc))
+    return _error(400, "invalid_preset", str(exc))
+
+
 @router.get("/presets/{name}", response_model=None)
 def get_preset(name: str) -> dict | JSONResponse:
     preset = next((p for p in get_store().list_presets() if p.name == name), None)
@@ -592,46 +615,61 @@ def replace_preset(name: str, payload: PresetLeaf) -> dict | JSONResponse:
     return {"body": preset.body}
 
 
+@router.post("/presets/preview", response_model=None)
+def preview_presets(payload: PresetPreview) -> dict | JSONResponse:
+    """Report which document leaves the connected encoder can import."""
+    try:
+        presets, available = _preset_candidates(payload.document)
+    except (PresetError, EncoderUnavailable) as exc:
+        return _preset_error_response(exc)
+    return {
+        "presets": [
+            {
+                "name": preset.name,
+                "encoder": preset.encoder,
+                "supported": preset.encoder in available,
+                "reason": (
+                    None
+                    if preset.encoder in available
+                    else _unsupported_preset_reason(preset)
+                ),
+            }
+            for preset in presets
+        ]
+    }
+
+
 @router.post("/presets", response_model=None)
 def import_presets(payload: PresetImport) -> dict | JSONResponse:
     try:
-        presets = parse_document(payload.document)
-    except PresetError as exc:
-        return _error(400, "invalid_preset", str(exc))
-    if not presets:
-        return _error(400, "invalid_preset", "The document contains no presets")
+        presets, available = _preset_candidates(payload.document)
+    except (PresetError, EncoderUnavailable) as exc:
+        return _preset_error_response(exc)
 
-    # Filter at upload rather than at dispatch: an unusable preset should never
-    # enter the system, so the news arrives while the user is looking at the
-    # upload rather than an hour into an encode that cannot run.
-    #
-    # Skipped rather than rejected wholesale, because a stock HandBrake export
-    # describes every vendor's hardware presets -- QSV, VCN, Media Foundation,
-    # VideoToolbox -- and no single machine has them all. Refusing the document
-    # over presets the user was never going to use made the export from their
-    # own HandBrake un-importable.
-    available = set(get_client().health().get("encoders") or [])
-    if not available:
-        # Distinguish "cannot check" from "checked, and unsupported": without
-        # this the message would claim the encoder lacks every encoder in the
-        # document, when in fact it is simply unreachable.
+    document_names = {preset.name for preset in presets}
+    selected_names = (
+        document_names if payload.include_names is None else set(payload.include_names)
+    )
+    unknown_names = selected_names - document_names
+    if unknown_names:
         return _error(
-            503,
-            "encoder_unreachable",
-            "Cannot validate presets: the encoder did not report its encoders",
+            400,
+            "invalid_preset",
+            f"The document contains no presets named: {', '.join(sorted(unknown_names))}",
         )
 
-    usable = [p for p in presets if p.encoder in available]
+    selected = [preset for preset in presets if preset.name in selected_names]
+    usable = [preset for preset in selected if preset.encoder in available]
     skipped = [
         {
             "name": p.name,
             "encoder": p.encoder,
-            "reason": f"The connected encoder does not provide {p.encoder!r}",
+            "reason": _unsupported_preset_reason(p),
         }
-        for p in presets
+        for p in selected
         if p.encoder not in available
     ]
-    if not usable:
+    if payload.include_names is None and not usable:
         return _error(
             400,
             "encoder_unavailable",
@@ -641,7 +679,11 @@ def import_presets(payload: PresetImport) -> dict | JSONResponse:
         )
 
     get_store().replace_presets(usable)
-    return {"imported": [p.name for p in usable], "skipped": skipped}
+    return {
+        "imported": [p.name for p in usable],
+        "skipped": skipped,
+        "unselected": [p.name for p in presets if p.name not in selected_names],
+    }
 
 
 @router.delete("/presets/{name}", status_code=204, response_model=None)

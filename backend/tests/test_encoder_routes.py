@@ -351,6 +351,64 @@ def test_importing_a_preset_document_stores_its_leaves(client):
     assert [p["name"] for p in client.get("/api/encoder/presets").json()] == ["NVENC"]
 
 
+def test_preview_marks_unsupported_without_storing(client, monkeypatch):
+    document = {
+        "PresetList": [
+            {"PresetName": "NVENC", "VideoEncoder": "nvenc_h265",
+             "VideoPreset": "medium", "FileFormat": "av_mkv", "Custom": {"kept": True}},
+            {"PresetName": "QSV", "VideoEncoder": "qsv_h265",
+             "VideoPreset": "speed", "FileFormat": "av_mp4"},
+        ]
+    }
+    monkeypatch.setattr(routes_mod, "_client", FakeClient(encoders=("nvenc_h265",)))
+
+    response = client.post("/api/encoder/presets/preview", json={"document": document})
+
+    assert response.status_code == 200
+    assert response.json()["presets"] == [
+        {"name": "NVENC", "encoder": "nvenc_h265", "supported": True, "reason": None},
+        {
+            "name": "QSV",
+            "encoder": "qsv_h265",
+            "supported": False,
+            "reason": "The connected encoder does not provide 'qsv_h265'",
+        },
+    ]
+    assert routes_mod.get_store().list_presets() == []
+
+
+def test_selected_import_reports_unselected_and_preserves_leaf_fields(client, monkeypatch):
+    document = {
+        "PresetList": [
+            {"PresetName": "NVENC", "VideoEncoder": "nvenc_h265",
+             "VideoPreset": "medium", "FileFormat": "av_mkv", "Custom": {"kept": True}},
+            {"PresetName": "QSV", "VideoEncoder": "qsv_h265",
+             "VideoPreset": "speed", "FileFormat": "av_mp4"},
+        ]
+    }
+    monkeypatch.setattr(routes_mod, "_client", FakeClient(encoders=("nvenc_h265",)))
+
+    response = client.post(
+        "/api/encoder/presets",
+        json={"document": document, "include_names": ["NVENC"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"imported": ["NVENC"], "skipped": [], "unselected": ["QSV"]}
+    assert routes_mod.get_store().list_presets()[0].body["Custom"] == {"kept": True}
+
+
+def test_selected_import_rejects_names_absent_from_the_document(client):
+    response = client.post(
+        "/api/encoder/presets",
+        json={"document": PRESET_DOC, "include_names": ["missing"]},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_preset"
+    assert "missing" in response.json()["reason"]
+
+
 def test_individual_preset_round_trips_the_complete_leaf(client):
     """An edit must retain HandBrake fields the app does not model itself."""
     body = {

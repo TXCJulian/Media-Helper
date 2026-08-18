@@ -435,13 +435,27 @@ export function saveEncoderPreset(
   )
 }
 
-export function importEncoderPresets(
+export function previewEncoderPresets(
   document: Record<string, unknown>,
-): Promise<{ imported: string[]; skipped: { name: string; encoder: string; reason: string }[] }> {
-  return fetchJson('/api/encoder/presets', undefined, DEFAULT_TIMEOUT_MS, {
+): Promise<{ presets: import('@/types').EncoderPresetPreview[] }> {
+  return fetchJson('/api/encoder/presets/preview', undefined, DEFAULT_TIMEOUT_MS, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ document }),
+  })
+}
+
+export function importEncoderPresets(
+  document: Record<string, unknown>,
+  includeNames?: string[],
+): Promise<import('@/types').EncoderPresetImportResult> {
+  return fetchJson('/api/encoder/presets', undefined, DEFAULT_TIMEOUT_MS, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      document,
+      ...(includeNames === undefined ? {} : { include_names: includeNames }),
+    }),
   })
 }
 

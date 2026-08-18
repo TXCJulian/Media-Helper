@@ -10,6 +10,7 @@ import {
   fetchEncoderPresets,
   fetchEncoderRules,
   importEncoderPresets,
+  previewEncoderPresets,
   reprocessEncoderFile,
   saveEncoderConfig,
   saveEncoderPreset,
@@ -95,11 +96,12 @@ describe('encoder configuration transport', () => {
 })
 
 describe('encoder preset transport', () => {
-  it('uses JSON for preset save and document import', async () => {
+  it('uses JSON for preset save, preview, and selected document import', async () => {
     const leaf = { PresetName: 'NVENC', VideoEncoder: 'nvenc_h265' }
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({ body: leaf }))
+      .mockResolvedValueOnce(jsonResponse({ presets: [] }))
       .mockResolvedValueOnce(jsonResponse({ imported: ['NVENC'], skipped: [] }))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -109,10 +111,16 @@ describe('encoder preset transport', () => {
     )
     expect(bodyOf(fetchMock)).toEqual({ body: leaf })
 
-    await importEncoderPresets({ PresetList: [leaf] })
+    await previewEncoderPresets({ PresetList: [leaf] })
     const [, init] = fetchMock.mock.calls[1]!
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual({ document: { PresetList: [leaf] } })
+
+    await importEncoderPresets({ PresetList: [leaf] }, ['NVENC'])
+    expect(JSON.parse(fetchMock.mock.calls[2]![1].body as string)).toEqual({
+      document: { PresetList: [leaf] },
+      include_names: ['NVENC'],
+    })
   })
 
   it('loads preset summaries and a complete leaf', async () => {

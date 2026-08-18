@@ -285,6 +285,25 @@ export interface EncoderPreset {
   body?: Record<string, unknown>
 }
 
+export interface EncoderPresetPreview {
+  name: string
+  encoder: string
+  supported: boolean
+  reason: string | null
+}
+
+export interface EncoderPresetImportSkip {
+  name: string
+  encoder: string
+  reason: string
+}
+
+export interface EncoderPresetImportResult {
+  imported: string[]
+  skipped: EncoderPresetImportSkip[]
+  unselected: string[]
+}
+
 export type EncoderJobStage =
   | 'settling'
   | 'pending'
