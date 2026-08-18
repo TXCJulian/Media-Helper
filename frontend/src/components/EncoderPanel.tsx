@@ -12,6 +12,8 @@ import {
   fetchEncoderPreset,
   fetchEncoderPresets,
   fetchEncoderRules,
+  reprocessEncoderJob,
+  startEncoderReprocessAll,
 } from '@/lib/api'
 import type { EncoderConfig, EncoderHealth, EncoderJob, EncoderPreset, EncoderRule } from '@/types'
 
@@ -45,7 +47,12 @@ function isAtLeastAsRecent(candidate: EncoderJob, current: EncoderJob): boolean 
 }
 
 export default function EncoderPanel({ onBack }: EncoderPanelProps) {
-  const { jobs: streamedJobs, connected, snapshotReceived } = useEncoderStream()
+  const {
+    jobs: streamedJobs,
+    connected,
+    snapshotReceived,
+    latestReprocessEvent,
+  } = useEncoderStream()
   const [health, setHealth] = useState<EncoderHealth | null>(null)
   const [checkingHealth, setCheckingHealth] = useState(true)
   const [config, setConfig] = useState<EncoderConfig | null>(null)
@@ -65,6 +72,8 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
   const healthRequest = useRef(0)
   const resourceRequest = useRef(0)
   const approvingJobs = useRef(new Set<string>())
+  const reprocessingJobs = useRef(new Set<string>())
+  const [reprocessingJobIds, setReprocessingJobIds] = useState<Set<string>>(() => new Set())
 
   const checkHealth = useCallback(async () => {
     const request = ++healthRequest.current
@@ -189,6 +198,26 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
     }
   }
 
+  const reprocess = async (jobId: string) => {
+    if (reprocessingJobs.current.has(jobId)) return
+    reprocessingJobs.current.add(jobId)
+    setReprocessingJobIds((current) => new Set(current).add(jobId))
+    const operation = `reprocess:${jobId}`
+    try {
+      await reprocessEncoderJob(jobId)
+      updateJobError(operation)
+    } catch (actionError) {
+      updateJobError(operation, errorMessage(actionError, 'Failed to re-evaluate encoder job.'))
+    } finally {
+      reprocessingJobs.current.delete(jobId)
+      setReprocessingJobIds((current) => {
+        const next = new Set(current)
+        next.delete(jobId)
+        return next
+      })
+    }
+  }
+
   const healthy = health?.status === 'ok'
   const healthLabel = checkingHealth
     ? 'Checking...'
@@ -260,6 +289,8 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
               void refreshResources(false)
             }}
             onError={setSettingsError}
+            onStartReprocessAll={startEncoderReprocessAll}
+            latestReprocessEvent={latestReprocessEvent}
           />
         ) : (
           <button
@@ -288,6 +319,8 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
                   job={job}
                   onApprove={(id) => void approve(id)}
                   onDelete={(id) => void remove(id)}
+                  onReprocess={(id) => void reprocess(id)}
+                  reprocessing={reprocessingJobIds.has(job.job_id)}
                 />
               ))
             ) : (
@@ -320,6 +353,8 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
                     job={job}
                     onApprove={(id) => void approve(id)}
                     onDelete={(id) => void remove(id)}
+                    onReprocess={(id) => void reprocess(id)}
+                    reprocessing={reprocessingJobIds.has(job.job_id)}
                   />
                 ))
               ) : (

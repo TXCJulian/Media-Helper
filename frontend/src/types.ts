@@ -341,6 +341,25 @@ export interface ReprocessResult {
   created: boolean
 }
 
+export type EncoderReprocessStatus = 'started' | 'running' | 'completed' | 'failed'
+
+export interface EncoderReprocessEvent {
+  type: 'reprocess'
+  run_id: string
+  status: EncoderReprocessStatus
+  scanned: number
+  created: number
+  skipped: number
+  failed: number
+  path: string | null
+  error: string | null
+}
+
+export interface EncoderReprocessRun {
+  run_id: string
+  status: string
+}
+
 export interface EncoderRuleCondition {
   field: string
   op: string

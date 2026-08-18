@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { openEncoderStream } from '@/lib/api'
-import type { EncoderJob } from '@/types'
+import type { EncoderJob, EncoderReprocessEvent } from '@/types'
 
 const encoderJobStages = new Set<EncoderJob['stage']>([
   'settling',
@@ -55,6 +55,30 @@ function isSnapshot(value: unknown): value is { type: 'snapshot'; jobs: EncoderJ
   return object.type === 'snapshot' && Array.isArray(object.jobs) && object.jobs.every(isEncoderJob)
 }
 
+const encoderReprocessStatuses = new Set<EncoderReprocessEvent['status']>([
+  'started',
+  'running',
+  'completed',
+  'failed',
+])
+
+function isEncoderReprocessEvent(value: unknown): value is EncoderReprocessEvent {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const event = value as Record<string, unknown>
+  return (
+    event.type === 'reprocess' &&
+    typeof event.run_id === 'string' &&
+    event.run_id.length > 0 &&
+    typeof event.status === 'string' &&
+    encoderReprocessStatuses.has(event.status as EncoderReprocessEvent['status']) &&
+    ['scanned', 'created', 'skipped', 'failed'].every(
+      (key) => typeof event[key] === 'number' && Number.isInteger(event[key]) && event[key] >= 0,
+    ) &&
+    isNullableString(event.path) &&
+    isNullableString(event.error)
+  )
+}
+
 /** Fold a server job event into the local stream state. */
 export function applyEncoderStreamEvent(jobs: EncoderJob[], raw: string): EncoderJob[] {
   let parsed: unknown
@@ -87,16 +111,21 @@ export function useEncoderStream(): {
   jobs: EncoderJob[]
   connected: boolean
   snapshotReceived: boolean
+  latestReprocessEvent: EncoderReprocessEvent | null
 } {
   const [jobs, setJobs] = useState<EncoderJob[]>([])
   const [connected, setConnected] = useState(false)
   const [snapshotReceived, setSnapshotReceived] = useState(false)
+  const [latestReprocessEvent, setLatestReprocessEvent] = useState<EncoderReprocessEvent | null>(
+    null,
+  )
 
   useEffect(() => {
     return openEncoderStream((data) => {
       try {
         const parsed: unknown = JSON.parse(data)
         if (isSnapshot(parsed)) setSnapshotReceived(true)
+        if (isEncoderReprocessEvent(parsed)) setLatestReprocessEvent(parsed)
       } catch {
         // applyEncoderStreamEvent owns malformed-frame handling.
       }
@@ -104,5 +133,5 @@ export function useEncoderStream(): {
     }, setConnected)
   }, [])
 
-  return { jobs, connected, snapshotReceived }
+  return { jobs, connected, snapshotReceived, latestReprocessEvent }
 }

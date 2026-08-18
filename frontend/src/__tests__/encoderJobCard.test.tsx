@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import EncoderJobCard from '@/components/encoder/EncoderJobCard'
+import {
+  formatAudioTracks,
+  formatDuration,
+  formatFactValue,
+  formatFrameRate,
+} from '@/components/encoder/mediaFacts'
 import type { EncoderJob } from '@/types'
 
 const GiB = 1024 ** 3
@@ -124,5 +130,28 @@ describe('EncoderJobCard', () => {
     screen.getByRole('button', { name: 'Delete job' }).click()
     expect(onDelete).toHaveBeenCalledWith('encode-1')
     expect(screen.queryByRole('button', { name: 'Approve encoding' })).toBeNull()
+  })
+
+  it('offers re-evaluation for a failed job', () => {
+    const onReprocess = vi.fn()
+    render(
+      <EncoderJobCard
+        job={job({ stage: 'failed' })}
+        onApprove={vi.fn()}
+        onDelete={vi.fn()}
+        onReprocess={onReprocess}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Re-evaluate file' }))
+
+    expect(onReprocess).toHaveBeenCalledWith('encode-1')
+  })
+
+  it('formats the common media facts for readable diagnostics', () => {
+    expect(formatDuration(6565.183)).toBe('1:49:25')
+    expect(formatFrameRate(23.976023978)).toBe('23.976 fps')
+    expect(formatAudioTracks([{ codec: 'aac', channels: 6, language: 'eng' }])).toContain('aac')
+    expect(formatFactValue('metadata', { title: 'Demo' }, {})).toBe('metadata: {"title":"Demo"}')
   })
 })

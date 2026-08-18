@@ -513,6 +513,10 @@ export function reprocessEncoderJob(jobId: string): Promise<import('@/types').Re
   )
 }
 
+export function startEncoderReprocessAll(): Promise<import('@/types').EncoderReprocessRun> {
+  return fetchJson('/api/encoder/reprocess-all', undefined, DEFAULT_TIMEOUT_MS, { method: 'POST' })
+}
+
 export function fetchEncoderJobs(): Promise<import('@/types').EncoderJob[]> {
   return fetchJson('/api/encoder/jobs')
 }

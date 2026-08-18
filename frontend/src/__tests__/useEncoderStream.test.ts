@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import { applyEncoderStreamEvent, useEncoderStream } from '@/hooks/useEncoderStream'
 import { openEncoderStream } from '@/lib/api'
-import type { EncoderJob } from '@/types'
+import type { EncoderJob, EncoderReprocessEvent } from '@/types'
 
 const stream = vi.hoisted(() => ({
   onEvent: undefined as undefined | ((data: string) => void),
@@ -100,7 +100,12 @@ describe('useEncoderStream', () => {
     const { result, unmount } = renderHook(() => useEncoderStream())
 
     expect(openEncoderStream).toHaveBeenCalledTimes(1)
-    expect(result.current).toEqual({ jobs: [], connected: false, snapshotReceived: false })
+    expect(result.current).toEqual({
+      jobs: [],
+      connected: false,
+      snapshotReceived: false,
+      latestReprocessEvent: null,
+    })
 
     act(() => {
       stream.onStateChange?.(true)
@@ -122,5 +127,27 @@ describe('useEncoderStream', () => {
     })
     expect(result.current.snapshotReceived).toBe(true)
     expect(result.current.jobs).toEqual([job()])
+  })
+
+  it('exposes a validated reprocess event without folding it into jobs', () => {
+    const { result } = renderHook(() => useEncoderStream())
+    const event: EncoderReprocessEvent = {
+      type: 'reprocess',
+      run_id: 'bulk-1',
+      status: 'running',
+      scanned: 12,
+      created: 4,
+      skipped: 7,
+      failed: 1,
+      path: '/media/Movies/Demo.mkv',
+      error: null,
+    }
+
+    act(() => {
+      stream.onEvent?.(JSON.stringify(event))
+    })
+
+    expect(result.current.latestReprocessEvent).toEqual(event)
+    expect(result.current.jobs).toEqual([])
   })
 })

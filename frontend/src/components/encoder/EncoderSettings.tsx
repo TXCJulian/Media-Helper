@@ -16,6 +16,8 @@ import type {
   EncoderFile,
   EncoderHealth,
   EncoderPreset,
+  EncoderReprocessEvent,
+  EncoderReprocessRun,
   EncoderRule,
   EncoderRuleCondition,
   EncoderTestResult,
@@ -33,6 +35,8 @@ export interface EncoderSettingsProps {
   rules: RuleSet
   onRefresh: () => void
   onError: (message: string) => void
+  onStartReprocessAll?: () => Promise<EncoderReprocessRun>
+  latestReprocessEvent?: EncoderReprocessEvent | null
 }
 
 type Section = 'watch' | 'presets' | 'rules'
@@ -136,6 +140,8 @@ export default function EncoderSettings({
   rules,
   onRefresh,
   onError,
+  onStartReprocessAll,
+  latestReprocessEvent = null,
 }: EncoderSettingsProps) {
   const [openSection, setOpenSection] = useState<Section | null>(null)
   const [watchPaths, setWatchPaths] = useState(() => [...config.watch_paths])
@@ -150,6 +156,8 @@ export default function EncoderSettings({
   const [testing, setTesting] = useState(false)
   const [reprocessing, setReprocessing] = useState(false)
   const [reprocessMessage, setReprocessMessage] = useState<string | null>(null)
+  const [confirmReprocessAll, setConfirmReprocessAll] = useState(false)
+  const [startingReprocessAll, setStartingReprocessAll] = useState(false)
   const testPathRef = useRef('')
   const testRequestRef = useRef(0)
   const reprocessRequestRef = useRef(0)
@@ -387,6 +395,26 @@ export default function EncoderSettings({
     setTesting(false)
     setReprocessing(false)
   }
+
+  const reprocessAllActive =
+    latestReprocessEvent?.status === 'started' || latestReprocessEvent?.status === 'running'
+
+  const startReprocessAll = async () => {
+    if (!onStartReprocessAll || reprocessAllActive || startingReprocessAll) return
+    setStartingReprocessAll(true)
+    try {
+      await onStartReprocessAll()
+      setConfirmReprocessAll(false)
+    } catch (error) {
+      onError(errorMessage(error))
+    } finally {
+      setStartingReprocessAll(false)
+    }
+  }
+
+  const reprocessAllMessage = latestReprocessEvent
+    ? `Bulk re-evaluation ${latestReprocessEvent.status} — ${latestReprocessEvent.scanned} scanned, ${latestReprocessEvent.created} queued, ${latestReprocessEvent.skipped} skipped, ${latestReprocessEvent.failed} failed${latestReprocessEvent.error ? `: ${latestReprocessEvent.error}` : ''}`
+    : null
 
   const selectWatchPath = (index: number, path: string) => {
     pendingWatchPaths.current = null
@@ -754,6 +782,44 @@ export default function EncoderSettings({
             <button type="button" disabled={savingRules} onClick={() => void saveRules()}>
               {savingRules ? 'Saving…' : 'Save rules'}
             </button>
+          </div>
+
+          <div className="rounded-xl border border-amber-400/15 bg-amber-400/[0.05] p-3">
+            <p className="text-[0.72rem] text-amber-200">
+              Re-evaluate every media file in the configured watch folders with these rules.
+            </p>
+            {confirmReprocessAll ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={reprocessAllActive || startingReprocessAll || !onStartReprocessAll}
+                  onClick={() => void startReprocessAll()}
+                >
+                  {startingReprocessAll ? 'Starting…' : 'Confirm re-evaluate all media'}
+                </button>
+                <button
+                  type="button"
+                  disabled={startingReprocessAll}
+                  onClick={() => setConfirmReprocessAll(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={reprocessAllActive || startingReprocessAll || !onStartReprocessAll}
+                onClick={() => setConfirmReprocessAll(true)}
+                className="mt-2"
+              >
+                Re-evaluate all media
+              </button>
+            )}
+            {reprocessAllMessage && (
+              <p role="status" className="mt-2 text-[0.72rem] text-amber-300">
+                {reprocessAllMessage}
+              </p>
+            )}
           </div>
 
           <div className="rounded-xl border border-white/8 bg-white/3 p-3">

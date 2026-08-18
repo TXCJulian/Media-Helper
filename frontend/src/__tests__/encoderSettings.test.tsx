@@ -6,6 +6,7 @@ import * as api from '@/lib/api'
 import type {
   EncoderConfig,
   EncoderPreset,
+  EncoderReprocessEvent,
   EncoderRule,
   EncoderTestResult,
   ReprocessResult,
@@ -81,7 +82,7 @@ function testResult(overrides: Partial<EncoderTestResult> = {}): EncoderTestResu
 function renderSettings(overrides: Partial<React.ComponentProps<typeof EncoderSettings>> = {}) {
   const onRefresh = vi.fn()
   const onError = vi.fn()
-  render(
+  const rendered = render(
     <EncoderSettings
       config={config}
       presets={presets}
@@ -91,7 +92,7 @@ function renderSettings(overrides: Partial<React.ComponentProps<typeof EncoderSe
       {...overrides}
     />,
   )
-  return { onRefresh, onError }
+  return { onRefresh, onError, ...rendered }
 }
 
 beforeEach(() => {
@@ -151,6 +152,45 @@ describe('EncoderSettings sections', () => {
     expect(screen.queryByRole('button', { name: /Move fallback/i })).toBeNull()
   })
 
+  it('requires confirmation before re-evaluating all media and reports run progress', async () => {
+    const onStartReprocessAll = vi.fn().mockResolvedValue({ run_id: 'bulk-1', status: 'started' })
+    const latestReprocessEvent: EncoderReprocessEvent = {
+      type: 'reprocess',
+      run_id: 'bulk-1',
+      status: 'running',
+      scanned: 12,
+      created: 4,
+      skipped: 7,
+      failed: 1,
+      path: '/media/Movies/Demo.mkv',
+      error: null,
+    }
+    const { rerender } = renderSettings({ onStartReprocessAll })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    const reprocess = screen.getByRole('button', { name: 'Re-evaluate all media' })
+    fireEvent.click(reprocess)
+    expect(onStartReprocessAll).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm re-evaluate all media' }))
+    await waitFor(() => expect(onStartReprocessAll).toHaveBeenCalledTimes(1))
+    rerender(
+      <EncoderSettings
+        config={config}
+        presets={presets}
+        rules={{ rules: orderedRules, fallback: 'skip' }}
+        onRefresh={vi.fn()}
+        onError={vi.fn()}
+        onStartReprocessAll={onStartReprocessAll}
+        latestReprocessEvent={latestReprocessEvent}
+      />,
+    )
+    expect(screen.getByText(/12 scanned.*4 queued.*7 skipped.*1 failed/i)).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: 'Re-evaluate all media' }).hasAttribute('disabled'),
+    ).toBe(true)
+  })
+
   it('uses compact encoder select labels for rules and fallback targets', () => {
     renderSettings()
 
@@ -161,9 +201,7 @@ describe('EncoderSettings sections', () => {
       'text-[0.7rem]',
     )
     expect(screen.getAllByText('Value')[0]?.closest('label')?.className).toContain('text-[0.7rem]')
-    expect(screen.getAllByText('Target')[0]?.closest('label')?.className).toContain(
-      'text-[0.7rem]',
-    )
+    expect(screen.getAllByText('Target')[0]?.closest('label')?.className).toContain('text-[0.7rem]')
     expect(screen.getByText('Fallback target').closest('label')?.className).toContain(
       'text-[0.7rem]',
     )
