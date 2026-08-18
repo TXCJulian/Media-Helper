@@ -148,10 +148,50 @@ describe('EncoderJobCard', () => {
     expect(onReprocess).toHaveBeenCalledWith('encode-1')
   })
 
+  it.each([
+    { error_code: null, keepsApproval: true },
+    { error_code: 'swap_interrupted', keepsApproval: false },
+  ])('offers re-evaluation for a blocked job (%s)', ({ error_code, keepsApproval }) => {
+    const onReprocess = vi.fn()
+    render(
+      <EncoderJobCard
+        job={job({ stage: 'blocked', error_code })}
+        onApprove={vi.fn()}
+        onDelete={vi.fn()}
+        onReprocess={onReprocess}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Re-evaluate file' }))
+
+    expect(onReprocess).toHaveBeenCalledWith('encode-1')
+    expect(Boolean(screen.queryByRole('button', { name: 'Approve encoding' }))).toBe(keepsApproval)
+  })
+
+  it('does not offer re-evaluation while a job is swapping', () => {
+    render(
+      <EncoderJobCard
+        job={job({ stage: 'swapping' })}
+        onApprove={vi.fn()}
+        onDelete={vi.fn()}
+        onReprocess={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Re-evaluate file' })).toBeNull()
+  })
+
   it('formats the common media facts for readable diagnostics', () => {
     expect(formatDuration(6565.183)).toBe('1:49:25')
     expect(formatFrameRate(23.976023978)).toBe('23.976 fps')
     expect(formatAudioTracks([{ codec: 'aac', channels: 6, language: 'eng' }])).toContain('aac')
     expect(formatFactValue('metadata', { title: 'Demo' }, {})).toBe('metadata: {"title":"Demo"}')
+  })
+
+  it('formats malformed object-valued numeric facts as compact JSON', () => {
+    expect(formatDuration({ seconds: 6565 })).toBe('{"seconds":6565}')
+    expect(formatFrameRate({ numerator: 24000, denominator: 1001 })).toBe(
+      '{"numerator":24000,"denominator":1001}',
+    )
   })
 })

@@ -70,6 +70,7 @@ export default function EncoderJobCard({
   const canApprove =
     (job.stage === 'pending' || job.stage === 'blocked') && job.error_code !== 'swap_interrupted'
   const canDelete = job.stage !== 'swapping'
+  const canReprocess = (job.stage === 'failed' || job.stage === 'blocked') && onReprocess
   const hasFacts = Object.keys(job.facts).length > 0
   const factLabels = Object.entries(job.facts)
     .map(([key, value]) => formatFactValue(key, value, job.facts))
@@ -101,39 +102,39 @@ export default function EncoderJobCard({
               <InfoIcon />
             </button>
           )}
-          {canApprove ? (
-            <button
-              type="button"
-              aria-label="Approve encoding"
-              title="Approve encoding"
-              onClick={() => onApprove(job.job_id)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-teal-400/20 bg-teal-400/10 px-2.5 py-1.5 text-[0.72rem] font-medium text-teal-300"
-            >
-              <PlayIcon size={13} />
-              Approve
-            </button>
-          ) : (
-            <>
-              {job.stage === 'failed' && onReprocess && (
-                <button
-                  type="button"
-                  aria-label="Re-evaluate file"
-                  disabled={reprocessing}
-                  onClick={() => onReprocess(job.job_id)}
-                  className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-2.5 py-1.5 text-[0.72rem] font-medium text-amber-300 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {reprocessing ? 'Re-evaluating…' : 'Re-evaluate'}
-                </button>
-              )}
-              {canDelete ? (
+          <>
+            {canApprove && (
+              <button
+                type="button"
+                aria-label="Approve encoding"
+                title="Approve encoding"
+                onClick={() => onApprove(job.job_id)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-teal-400/20 bg-teal-400/10 px-2.5 py-1.5 text-[0.72rem] font-medium text-teal-300"
+              >
+                <PlayIcon size={13} />
+                Approve
+              </button>
+            )}
+            {canReprocess && (
+              <button
+                type="button"
+                aria-label="Re-evaluate file"
+                disabled={reprocessing}
+                onClick={() => onReprocess(job.job_id)}
+                className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-2.5 py-1.5 text-[0.72rem] font-medium text-amber-300 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {reprocessing ? 'Re-evaluating…' : 'Re-evaluate'}
+              </button>
+            )}
+            {!canApprove &&
+              (canDelete ? (
                 <IconButton label="Delete job" onClick={() => onDelete(job.job_id)} tone="danger">
                   <TrashIcon />
                 </IconButton>
               ) : (
                 <span className="text-[0.68rem] text-[var(--text-tertiary)]">Publishing…</span>
-              )}
-            </>
-          )}
+              ))}
+          </>
         </div>
       </div>
 

@@ -158,6 +158,7 @@ export default function EncoderSettings({
   const [reprocessMessage, setReprocessMessage] = useState<string | null>(null)
   const [confirmReprocessAll, setConfirmReprocessAll] = useState(false)
   const [startingReprocessAll, setStartingReprocessAll] = useState(false)
+  const [activeReprocessRunId, setActiveReprocessRunId] = useState<string | null>(null)
   const testPathRef = useRef('')
   const testRequestRef = useRef(0)
   const reprocessRequestRef = useRef(0)
@@ -170,6 +171,9 @@ export default function EncoderSettings({
   const [filesLoading, setFilesLoading] = useState(false)
   const pendingWatchPaths = useRef<string[] | null>(null)
   const pendingRules = useRef<RuleSet | null>(null)
+  const activeReprocessRunIdRef = useRef<string | null>(null)
+  const latestReprocessEventRef = useRef(latestReprocessEvent)
+  latestReprocessEventRef.current = latestReprocessEvent
 
   const samePaths = (left: string[], right: string[]) =>
     left.length === right.length && left.every((path, index) => path === right[index])
@@ -396,14 +400,39 @@ export default function EncoderSettings({
     setReprocessing(false)
   }
 
-  const reprocessAllActive =
+  const hasActiveReprocessEvent =
     latestReprocessEvent?.status === 'started' || latestReprocessEvent?.status === 'running'
+  const reprocessAllActive =
+    startingReprocessAll || activeReprocessRunId !== null || hasActiveReprocessEvent
+
+  useEffect(() => {
+    if (
+      !latestReprocessEvent ||
+      latestReprocessEvent.run_id !== activeReprocessRunId ||
+      (latestReprocessEvent.status !== 'completed' && latestReprocessEvent.status !== 'failed')
+    ) {
+      return
+    }
+    activeReprocessRunIdRef.current = null
+    setActiveReprocessRunId(null)
+  }, [activeReprocessRunId, latestReprocessEvent])
 
   const startReprocessAll = async () => {
-    if (!onStartReprocessAll || reprocessAllActive || startingReprocessAll) return
+    if (!onStartReprocessAll || reprocessAllActive || activeReprocessRunIdRef.current) return
     setStartingReprocessAll(true)
     try {
-      await onStartReprocessAll()
+      const run = await onStartReprocessAll()
+      const latest = latestReprocessEventRef.current
+      if (
+        latest?.run_id === run.run_id &&
+        (latest.status === 'completed' || latest.status === 'failed')
+      ) {
+        activeReprocessRunIdRef.current = null
+        setActiveReprocessRunId(null)
+      } else {
+        activeReprocessRunIdRef.current = run.run_id
+        setActiveReprocessRunId(run.run_id)
+      }
       setConfirmReprocessAll(false)
     } catch (error) {
       onError(errorMessage(error))

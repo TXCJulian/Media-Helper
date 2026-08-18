@@ -7,6 +7,7 @@ import type {
   EncoderConfig,
   EncoderPreset,
   EncoderReprocessEvent,
+  EncoderReprocessRun,
   EncoderRule,
   EncoderTestResult,
   ReprocessResult,
@@ -189,6 +190,91 @@ describe('EncoderSettings sections', () => {
     expect(
       screen.getByRole('button', { name: 'Re-evaluate all media' }).hasAttribute('disabled'),
     ).toBe(true)
+  })
+
+  it('keeps a started bulk run single-flight until its matching terminal event arrives', async () => {
+    const pending = deferred<EncoderReprocessRun>()
+    const onStartReprocessAll = vi.fn().mockReturnValue(pending.promise)
+    const { rerender } = renderSettings({ onStartReprocessAll })
+    const renderWithEvent = (latestReprocessEvent: EncoderReprocessEvent | null) =>
+      rerender(
+        <EncoderSettings
+          config={config}
+          presets={presets}
+          rules={{ rules: orderedRules, fallback: 'skip' }}
+          onRefresh={vi.fn()}
+          onError={vi.fn()}
+          onStartReprocessAll={onStartReprocessAll}
+          latestReprocessEvent={latestReprocessEvent}
+        />,
+      )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Re-evaluate all media' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm re-evaluate all media' }))
+    await waitFor(() => expect(onStartReprocessAll).toHaveBeenCalledTimes(1))
+
+    await act(async () => pending.resolve({ run_id: 'bulk-1', status: 'started' }))
+    expect(
+      screen.getByRole('button', { name: 'Re-evaluate all media' }).hasAttribute('disabled'),
+    ).toBe(true)
+
+    renderWithEvent({
+      type: 'reprocess',
+      run_id: 'bulk-1',
+      status: 'completed',
+      scanned: 12,
+      created: 4,
+      skipped: 7,
+      failed: 1,
+      path: null,
+      error: null,
+    })
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Re-evaluate all media' }).hasAttribute('disabled'),
+      ).toBe(false),
+    )
+  })
+
+  it('does not retain a run lock when its terminal event arrives before the start response', async () => {
+    const pending = deferred<EncoderReprocessRun>()
+    const onStartReprocessAll = vi.fn().mockReturnValue(pending.promise)
+    const { rerender } = renderSettings({ onStartReprocessAll })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Re-evaluate all media' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm re-evaluate all media' }))
+    await waitFor(() => expect(onStartReprocessAll).toHaveBeenCalledTimes(1))
+
+    rerender(
+      <EncoderSettings
+        config={config}
+        presets={presets}
+        rules={{ rules: orderedRules, fallback: 'skip' }}
+        onRefresh={vi.fn()}
+        onError={vi.fn()}
+        onStartReprocessAll={onStartReprocessAll}
+        latestReprocessEvent={{
+          type: 'reprocess',
+          run_id: 'bulk-2',
+          status: 'completed',
+          scanned: 0,
+          created: 0,
+          skipped: 0,
+          failed: 0,
+          path: null,
+          error: null,
+        }}
+      />,
+    )
+    await act(async () => pending.resolve({ run_id: 'bulk-2', status: 'started' }))
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Re-evaluate all media' }).hasAttribute('disabled'),
+      ).toBe(false),
+    )
   })
 
   it('uses compact encoder select labels for rules and fallback targets', () => {

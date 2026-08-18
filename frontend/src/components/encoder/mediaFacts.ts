@@ -1,13 +1,17 @@
 function compactJson(value: object): string {
   try {
-    return JSON.stringify(value)
+    return JSON.stringify(value) ?? '[unserializable value]'
   } catch {
     return '[unserializable value]'
   }
 }
 
+function formatValue(value: unknown): string {
+  return typeof value === 'object' && value !== null ? compactJson(value) : String(value)
+}
+
 export function formatBytes(value: unknown): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return String(value)
+  if (typeof value !== 'number' || !Number.isFinite(value)) return formatValue(value)
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
   let bytes = value
   let unit = 0
@@ -19,7 +23,7 @@ export function formatBytes(value: unknown): string {
 }
 
 export function formatDuration(value: unknown): string {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return String(value)
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return formatValue(value)
   const seconds = Math.round(value)
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
@@ -30,7 +34,7 @@ export function formatDuration(value: unknown): string {
 }
 
 export function formatFrameRate(value: unknown): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return String(value)
+  if (typeof value !== 'number' || !Number.isFinite(value)) return formatValue(value)
   return `${Number(value.toFixed(3))} fps`
 }
 
@@ -44,10 +48,12 @@ function audioChannelLabel(value: unknown): string {
 }
 
 export function formatAudioTracks(value: unknown): string {
-  if (!Array.isArray(value)) return ''
+  if (!Array.isArray(value))
+    return typeof value === 'object' && value !== null ? compactJson(value) : ''
   return value
     .map((track) => {
-      if (typeof track !== 'object' || track === null || Array.isArray(track)) return String(track)
+      if (typeof track !== 'object' || track === null || Array.isArray(track))
+        return formatValue(track)
       const details = track as Record<string, unknown>
       const codec = typeof details.codec === 'string' ? details.codec : ''
       const channels = audioChannelLabel(details.channels)
@@ -68,15 +74,15 @@ export function formatFactValue(
   if (value === null || value === undefined || value === '') return null
   switch (key) {
     case 'height':
-      return `${String(value)}p`
+      return `${formatValue(value)}p`
     case 'width':
-      return facts.height == null ? `${String(value)}px wide` : null
+      return facts.height == null ? `${formatValue(value)}px wide` : null
     case 'hdr':
-      return value ? 'HDR' : 'SDR'
+      return typeof value === 'boolean' ? (value ? 'HDR' : 'SDR') : formatValue(value)
     case 'dolby_vision':
-      return value ? 'Dolby Vision' : null
+      return typeof value === 'boolean' ? (value ? 'Dolby Vision' : null) : formatValue(value)
     case 'bit_depth':
-      return `${String(value)}-bit`
+      return `${formatValue(value)}-bit`
     case 'duration':
       return formatDuration(value)
     case 'frame_rate':
@@ -84,16 +90,18 @@ export function formatFactValue(
     case 'audio':
       return formatAudioTracks(value)
     case 'bit_rate':
-      return typeof value === 'number' ? `${(value / 1_000_000).toFixed(1)} Mbps` : String(value)
+      return typeof value === 'number'
+        ? `${(value / 1_000_000).toFixed(1)} Mbps`
+        : formatValue(value)
     case 'size':
       return formatBytes(value)
     case 'video_codec':
-      return String(value).toUpperCase()
+      return typeof value === 'string' ? value.toUpperCase() : formatValue(value)
     default: {
       const label = key.replace(/_/g, ' ')
       if (typeof value === 'boolean') return value ? label : null
       if (typeof value === 'object') return `${label}: ${compactJson(value)}`
-      return `${label}: ${String(value)}`
+      return `${label}: ${formatValue(value)}`
     }
   }
 }
