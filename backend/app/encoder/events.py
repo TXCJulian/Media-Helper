@@ -11,6 +11,42 @@ from typing import Any
 
 from app.encoder.store import Job
 
+_REPROCESS_STATUSES = frozenset({"started", "running", "completed", "failed"})
+
+
+def reprocess_to_payload(
+    run_id: str,
+    status: str,
+    *,
+    scanned: int,
+    created: int,
+    skipped: int,
+    failed: int,
+    path: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Build the complete, serialisable SSE contract for a reprocess run."""
+    if not run_id or status not in _REPROCESS_STATUSES:
+        raise ValueError("Invalid reprocess event")
+    counts = (scanned, created, skipped, failed)
+    if any(not isinstance(count, int) or count < 0 for count in counts):
+        raise ValueError("Reprocess counts must be non-negative integers")
+    if path is not None and not isinstance(path, str):
+        raise ValueError("Reprocess path must be a string or null")
+    if error is not None and not isinstance(error, str):
+        raise ValueError("Reprocess error must be a string or null")
+    return {
+        "type": "reprocess",
+        "run_id": run_id,
+        "status": status,
+        "scanned": scanned,
+        "created": created,
+        "skipped": skipped,
+        "failed": failed,
+        "path": path,
+        "error": error,
+    }
+
 
 def job_to_payload(job: Job) -> dict[str, Any]:
     """Serialise a job for the wire.

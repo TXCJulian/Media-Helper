@@ -20,6 +20,11 @@ from app.encoder.events import EventBroadcaster, job_to_payload
 from app.encoder.presets import NamedPreset, PresetError, parse_document
 from app.encoder.probe import ProbeError, probe
 from app.encoder.queue import EncodeQueue
+from app.encoder.reprocess import (
+    has_excluded_ancestor,
+    is_excluded_path,
+    prune_excluded_dirs,
+)
 from app.encoder.rules import (
     _BOOL_FIELDS,
     SKIP,
@@ -372,43 +377,6 @@ def _ignore_walk_error(_error: OSError) -> None:
     """Skip directories that disappear or cannot be read during a picker scan."""
 
 
-def _excluded_walk_path(path: str, base: str) -> bool:
-    """Whether a picker walk must omit *path* and everything below it."""
-    name = os.path.basename(os.path.normpath(path))
-    if name.startswith(".") or name == ".trickplay":
-        return True
-    return (
-        name == config.MUSIC_FOLDER_NAME
-        and os.path.normcase(os.path.dirname(os.path.normpath(path)))
-        == os.path.normcase(os.path.normpath(base))
-    )
-
-
-def _prune_walk_dirs(root: str, dirs: list[str], bases: list[str]) -> None:
-    dirs[:] = [
-        name
-        for name in dirs
-        if not any(_excluded_walk_path(os.path.join(root, name), base) for base in bases)
-    ]
-
-
-def _has_excluded_ancestor(path: str, base: str) -> bool:
-    """Whether any component between *base* and *path* is excluded."""
-    resolved_path = os.path.normpath(path)
-    resolved_base = os.path.normpath(base)
-    if not _is_within_base(resolved_path, resolved_base):
-        return False
-    relative = os.path.relpath(resolved_path, resolved_base)
-    if relative == ".":
-        return False
-    current = resolved_base
-    for component in relative.split(os.sep):
-        current = os.path.join(current, component)
-        if _excluded_walk_path(current, resolved_base):
-            return True
-    return False
-
-
 @router.get("/directories")
 def encoder_directories(
     search: str | None = Query(None, max_length=200),
@@ -427,9 +395,9 @@ def encoder_directories(
             if visited > _MAX_WALK_ENTRIES:
                 truncated = True
                 break
-            if _excluded_walk_path(root, resolved_base):
+            if is_excluded_path(root, resolved_base):
                 break
-            _prune_walk_dirs(root, dirs, [resolved_base])
+            prune_excluded_dirs(root, dirs, [resolved_base])
             resolved = os.path.realpath(root)
             if needle and needle not in resolved.lower():
                 continue
@@ -463,16 +431,16 @@ def encoder_files(
     files: list[dict[str, str]] = []
     visited = 0
     truncated = False
-    if any(_has_excluded_ancestor(resolved, base) for base in bases):
+    if any(has_excluded_ancestor(resolved, base) for base in bases):
         return {"files": [], "truncated": False}
     for root, dirs, names in os.walk(resolved, onerror=_ignore_walk_error):
         visited += 1
         if visited > _MAX_WALK_ENTRIES:
             truncated = True
             break
-        if any(_has_excluded_ancestor(root, base) for base in bases):
+        if any(has_excluded_ancestor(root, base) for base in bases):
             break
-        _prune_walk_dirs(root, dirs, bases)
+        prune_excluded_dirs(root, dirs, bases)
         for name in names:
             if name.startswith("."):
                 continue
@@ -870,6 +838,16 @@ def reprocess(payload: ReprocessIn) -> dict | JSONResponse:
     if not os.path.isfile(resolved):
         return _error(400, "invalid_path", "No such file")
     return {"path": resolved, "cleared": get_store().forget_seen(resolved)}
+
+
+@router.post("/reprocess-all", response_model=None)
+def reprocess_all() -> dict | JSONResponse:
+    """Start one background pass that re-evaluates every configured source."""
+    runtime = get_runtime()
+    try:
+        return runtime.start_reprocess_all()
+    except RuntimeError as exc:
+        return _error(500, "reprocess_start_failed", str(exc))
 
 
 @router.get("/jobs")

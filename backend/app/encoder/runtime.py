@@ -5,6 +5,7 @@ import threading
 from collections.abc import Callable
 
 from app.encoder.store import EncoderStore
+from app.encoder.reprocess import ReprocessManager
 from app.encoder.watcher import EncoderWatcher
 
 
@@ -28,6 +29,7 @@ class EncoderRuntime:
         self._valid_extensions = valid_extensions
         self._validate_paths = validate_paths or (lambda paths: list(paths))
         self._watcher: EncoderWatcher | None = None
+        self._reprocess: ReprocessManager | None = None
         self._failure: str | None = None
         self._resolved_paths: list[str] | None = None
         self._lock = threading.RLock()
@@ -121,6 +123,18 @@ class EncoderRuntime:
                 self._watcher.stop()
                 self._watcher = None
             self._resolved_paths = None
+
+    def start_reprocess_all(self) -> dict[str, str]:
+        """Re-evaluate the current library once without restarting its watcher."""
+        with self._lock:
+            paths = self.watch_paths
+            if self._watcher is None:
+                raise RuntimeError("Encoder watch runtime is unavailable")
+            if self._reprocess is None:
+                self._reprocess = ReprocessManager(
+                    self._queue, valid_extensions=self._valid_extensions
+                )
+            return self._reprocess.start(paths)
 
     def replace_watch_paths(self, paths: list[str]) -> list[str]:
         """Replace paths without ever overlapping two active watchers.

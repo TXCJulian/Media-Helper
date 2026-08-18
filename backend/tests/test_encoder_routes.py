@@ -35,6 +35,9 @@ class FakeRuntime:
         self.watch_paths = paths
         return paths
 
+    def start_reprocess_all(self):
+        return {"run_id": "bulk-run", "status": "started"}
+
 
 class FailingRuntime(FakeRuntime):
     def replace_watch_paths(self, paths):
@@ -1072,3 +1075,10 @@ def test_reprocess_refuses_a_path_outside_every_root(client, monkeypatch, tmp_pa
     r = client.post("/api/encoder/reprocess", json={"path": str(outside)})
     assert r.status_code == 400
     assert r.json()["code"] == "invalid_path"
+
+
+def test_reprocess_all_starts_the_runtime_scan(client):
+    response = client.post("/api/encoder/reprocess-all")
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "bulk-run", "status": "started"}
