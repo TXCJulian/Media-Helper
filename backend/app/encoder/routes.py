@@ -172,6 +172,42 @@ def reset_state_for_tests() -> None:
 
 class PresetImport(BaseModel):
     document: dict
+    include_names: list[str] | None = None
+
+
+class PresetPreview(BaseModel):
+    document: dict
+
+
+class ReprocessIn(BaseModel):
+    path: str
+
+
+class ReprocessOut(BaseModel):
+    job_id: str
+    path: str
+    stage: str
+    created: bool
+
+
+class BulkRunIn(BaseModel):
+    paths: list[str]
+
+
+class BulkRunOut(BaseModel):
+    jobs: list[ReprocessOut]
+
+
+# Descriptive aliases keep the wire contracts discoverable to callers while
+# retaining the concise names used by the handlers.
+ReprocessRequest = ReprocessIn
+ReprocessResponse = ReprocessOut
+BulkRunRequest = BulkRunIn
+BulkRunResponse = BulkRunOut
+JobReevaluationRequest = ReprocessIn
+JobReevaluationResponse = ReprocessOut
+BulkRunStartRequest = BulkRunIn
+BulkRunStartResponse = BulkRunOut
 
 
 class PresetLeaf(BaseModel):
@@ -351,6 +387,26 @@ def _ignore_walk_error(_error: OSError) -> None:
     """Skip directories that disappear or cannot be read during a picker scan."""
 
 
+def _excluded_walk_path(path: str, base: str) -> bool:
+    """Whether a picker walk must omit *path* and everything below it."""
+    name = os.path.basename(os.path.normpath(path))
+    if name.startswith(".") or name == ".trickplay":
+        return True
+    return (
+        name == config.MUSIC_FOLDER_NAME
+        and os.path.normcase(os.path.dirname(os.path.normpath(path)))
+        == os.path.normcase(os.path.normpath(base))
+    )
+
+
+def _prune_walk_dirs(root: str, dirs: list[str], bases: list[str]) -> None:
+    dirs[:] = [
+        name
+        for name in dirs
+        if not any(_excluded_walk_path(os.path.join(root, name), base) for base in bases)
+    ]
+
+
 @router.get("/directories")
 def encoder_directories(
     search: str | None = Query(None, max_length=200),
@@ -369,7 +425,9 @@ def encoder_directories(
             if visited > _MAX_WALK_ENTRIES:
                 truncated = True
                 break
-            dirs[:] = [d for d in dirs if d != ".trickplay" and not d.startswith(".")]
+            if _excluded_walk_path(root, resolved_base):
+                break
+            _prune_walk_dirs(root, dirs, [resolved_base])
             resolved = os.path.realpath(root)
             if needle and needle not in resolved.lower():
                 continue
@@ -403,13 +461,19 @@ def encoder_files(
     files: list[dict[str, str]] = []
     visited = 0
     truncated = False
+    if any(_excluded_walk_path(resolved, base) for base in bases):
+        return {"files": [], "truncated": False}
     for root, dirs, names in os.walk(resolved, onerror=_ignore_walk_error):
         visited += 1
         if visited > _MAX_WALK_ENTRIES:
             truncated = True
             break
-        dirs[:] = [d for d in dirs if d != ".trickplay" and not d.startswith(".")]
+        if any(_excluded_walk_path(root, base) for base in bases):
+            break
+        _prune_walk_dirs(root, dirs, bases)
         for name in names:
+            if name.startswith("."):
+                continue
             if os.path.splitext(name)[1].lower() not in valid_extensions:
                 continue
             path = os.path.realpath(os.path.join(root, name))
@@ -555,14 +619,25 @@ def import_presets(payload: PresetImport) -> dict | JSONResponse:
             "Cannot validate presets: the encoder did not report its encoders",
         )
 
-    usable = [p for p in presets if p.encoder in available]
+    selected = (
+        presets
+        if payload.include_names is None
+        else [p for p in presets if p.name in set(payload.include_names)]
+    )
+    if not selected:
+        return _error(
+            400,
+            "invalid_preset_selection",
+            "The selected names do not identify any presets in this document",
+        )
+    usable = [p for p in selected if p.encoder in available]
     skipped = [
         {
             "name": p.name,
             "encoder": p.encoder,
             "reason": f"The connected encoder does not provide {p.encoder!r}",
         }
-        for p in presets
+        for p in selected
         if p.encoder not in available
     ]
     if not usable:
@@ -571,7 +646,7 @@ def import_presets(payload: PresetImport) -> dict | JSONResponse:
             "encoder_unavailable",
             "None of the presets in this document can run on the connected "
             f"encoder; it does not provide: "
-            f"{', '.join(sorted({p.encoder for p in presets}))}",
+            f"{', '.join(sorted({p.encoder for p in selected}))}",
         )
 
     get_store().replace_presets(usable)
@@ -745,7 +820,7 @@ def test_against_file(payload: TestIn) -> dict | JSONResponse:
 
 
 @router.post("/reprocess", response_model=None)
-def reprocess(payload: TestIn) -> dict | JSONResponse:
+def reprocess(payload: ReprocessIn) -> dict | JSONResponse:
     """Clear the dedup record for a file so the watcher considers it again.
 
     The escape hatch for "I changed my rules, encode this one again". The

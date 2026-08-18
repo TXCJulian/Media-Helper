@@ -442,6 +442,16 @@ def test_import_says_so_when_the_encoder_list_cannot_be_read(client, monkeypatch
     assert r.json()["code"] == "encoder_unreachable"
 
 
+def test_import_can_select_named_presets_without_changing_response_envelope(client):
+    response = client.post(
+        "/api/encoder/presets",
+        json={"document": PRESET_DOC, "include_names": ["NVENC"]},
+    )
+    assert response.status_code == 200
+    assert response.json()["imported"] == ["NVENC"]
+    assert "skipped" in response.json()
+
+
 def test_a_malformed_document_is_rejected(client):
     r = client.post("/api/encoder/presets", json={"document": {"PresetList": [{}]}})
     assert r.status_code == 400
@@ -612,6 +622,40 @@ def test_test_endpoint_rejects_a_nonexistent_path_inside_the_watch_root(client, 
 
 def test_jobs_list_is_empty_initially(client):
     assert client.get("/api/encoder/jobs").json() == []
+
+
+def test_directories_hide_trickplay_and_top_level_music(client, monkeypatch, tmp_path):
+    base = tmp_path / "media"
+    (base / "Movies").mkdir(parents=True)
+    (base / ".trickplay").mkdir()
+    (base / "Music").mkdir()
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
+    monkeypatch.setattr(routes_mod.config, "MUSIC_FOLDER_NAME", "Music")
+    paths = {
+        entry["path"]
+        for entry in client.get("/api/encoder/directories").json()["directories"]
+    }
+    assert str(base / ".trickplay") not in paths
+    assert str(base / "Music") not in paths
+
+
+def test_files_hide_excluded_roots_and_descendants(client, monkeypatch, tmp_path):
+    base = tmp_path / "media"
+    (base / "Movies" / ".hidden").mkdir(parents=True)
+    (base / "Movies" / ".hidden" / "secret.mkv").write_bytes(b"")
+    (base / ".trickplay" / "cache").mkdir(parents=True)
+    (base / ".trickplay" / "cache" / "preview.mkv").write_bytes(b"")
+    (base / "Music" / "album").mkdir(parents=True)
+    (base / "Music" / "album" / "song.mkv").write_bytes(b"")
+    (base / "Movies" / "film.mkv").write_bytes(b"")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
+    monkeypatch.setattr(routes_mod.config, "MUSIC_FOLDER_NAME", "Music")
+
+    visible = client.get("/api/encoder/files", params={"directory": str(base)}).json()
+    assert [entry["path"] for entry in visible["files"]] == [str(base / "Movies" / "film.mkv")]
+    for excluded in (base / ".trickplay", base / "Music"):
+        response = client.get("/api/encoder/files", params={"directory": str(excluded)})
+        assert response.json()["files"] == []
 
 
 def test_deleting_an_unknown_job_is_404(client):
