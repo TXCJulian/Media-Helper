@@ -15,6 +15,7 @@ The stage machine:
 import logging
 import os
 import queue as queue_mod
+import sqlite3
 import threading
 import time
 
@@ -247,6 +248,49 @@ class EncodeQueue:
                 job.id, "Internal planning error; see server logs", "plan_failed"
             )
             return "failed"
+
+    def reprocess_path(self, source_path: str) -> dict[str, object]:
+        """Immediately reconsider a path, bypassing watcher deduplication."""
+        active = self._store.active_job_for_source(source_path)
+        if active is not None:
+            return {
+                "job_id": active.id,
+                "path": active.source_path,
+                "stage": active.stage,
+                "created": False,
+            }
+
+        stat = os.stat(source_path)
+        self._store.forget_seen(source_path)
+        try:
+            stage = self.plan_new(source_path, stat.st_size, stat.st_mtime_ns)
+        except sqlite3.IntegrityError:
+            # Another caller won the unique active-source race between the
+            # lookup above and create_job(). Return that job as the idempotent
+            # result of this request.
+            active = self._store.active_job_for_source(source_path)
+            if active is None:
+                raise
+            return {
+                "job_id": active.id,
+                "path": active.source_path,
+                "stage": active.stage,
+                "created": False,
+            }
+
+        active = self._store.active_job_for_source(source_path)
+        if active is not None:
+            job_id = active.id
+            path = active.source_path
+            stage = active.stage
+        else:
+            # plan_new can produce a terminal result (skip/failure), so find
+            # the just-created row from the newest job when no active row is
+            # left to return.
+            jobs = [job for job in self._store.list_jobs() if job.source_path == source_path]
+            job = jobs[0]
+            job_id, path, stage = job.id, job.source_path, job.stage
+        return {"job_id": job_id, "path": path, "stage": stage, "created": True}
 
     def plan(self, job_id: str) -> str:
         """Probe the file, pick a target, and record the decision.

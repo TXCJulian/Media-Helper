@@ -95,6 +95,24 @@ def test_auto_mode_queues_immediately(env):
     assert store.get_job(job.id).stage == "queued"
 
 
+def test_reprocess_path_forgets_seen_and_replans_existing_file(env):
+    store, client, movies, source, _ = env
+    q = _queue(store, client, mode="review")
+    store.mark_seen(str(source), source.stat().st_size, source.stat().st_mtime_ns)
+    result = q.reprocess_path(str(source))
+    assert result["created"] is True
+    assert result["stage"] == "pending"
+
+
+def test_reprocess_path_returns_existing_active_job(env):
+    store, client, movies, source, _ = env
+    q = _queue(store, client, mode="review")
+    q.plan_new(str(source), source.stat().st_size, source.stat().st_mtime_ns)
+    result = q.reprocess_path(str(source))
+    assert result["created"] is False
+    assert result["job_id"] == store.active_job_for_source(str(source)).id
+
+
 def test_a_skip_target_ends_the_job_without_dispatching(env):
     store, client, movies, source, _ = env
     store.replace_rules([Rule("r1", [Condition("height", ">=", 720)], "skip")])

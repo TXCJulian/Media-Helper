@@ -299,6 +299,18 @@ class EncoderStore:
             ).fetchall()
         return {r["source_path"] for r in rows}
 
+    def active_job_for_source(self, source_path: str) -> Job | None:
+        """Return the newest non-terminal job for *source_path*, if any."""
+        placeholders = ",".join("?" * len(TERMINAL_STAGES))
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT * FROM jobs WHERE source_path = ? "
+                f"AND stage NOT IN ({placeholders}) "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (source_path, *TERMINAL_STAGES),
+            ).fetchone()
+        return _to_job(row) if row else None
+
     def seen_fingerprints(self) -> dict[str, tuple[int, int]]:
         """`{path: (size, mtime_ns)}` for every file already decided about.
 
