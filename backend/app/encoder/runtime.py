@@ -124,10 +124,12 @@ class EncoderRuntime:
                 if self._reprocess is not None:
                     self._reprocess.stop()
             finally:
-                if self._watcher is not None:
-                    self._watcher.stop()
+                try:
+                    if self._watcher is not None:
+                        self._watcher.stop()
+                finally:
                     self._watcher = None
-                self._resolved_paths = None
+                    self._resolved_paths = None
 
     def reprocess_status(self) -> dict:
         with self._lock:

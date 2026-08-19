@@ -743,8 +743,8 @@ def _stop_process(proc: object, kill: bool = False) -> None:
     try:
         if callable(poll) and poll() is not None:
             return
-    except (OSError, RuntimeError):
-        return
+    except Exception:
+        pass
     action = getattr(proc, "kill" if kill else "terminate", None)
     if callable(action):
         try:

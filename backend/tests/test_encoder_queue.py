@@ -365,6 +365,36 @@ def test_a_cancel_racing_a_completing_encode_does_not_touch_the_source(env):
     assert source.read_bytes() == b"O" * 4096
 
 
+def test_a_cancel_racing_dispatch_does_not_rearm_job(env):
+    """If cancel() runs while a job is being reevaluated before dispatch,
+    _run() must not submit it to the remote encoder or overwrite 'cancelled'
+    with 'encoding'."""
+    store, client, movies, source, _ = env
+    q = _queue(store, client, mode="auto")
+    job = store.create_job(str(source))
+    q.plan(job.id)
+
+    original_reevaluate = q._reevaluate_before_dispatch
+
+    def racing_reevaluate(*args, **kwargs):
+        res = original_reevaluate(*args, **kwargs)
+        q.cancel(job.id)
+        return res
+
+    q._reevaluate_before_dispatch = racing_reevaluate
+
+    q.start()
+    try:
+        _wait(lambda: store.get_job(job.id).stage == "cancelled")
+    finally:
+        q.stop()
+
+    fetched = store.get_job(job.id)
+    assert fetched.stage == "cancelled"
+    assert client.submitted == []
+
+
+
 def test_stop_then_start_dispatches_normally(env):
     """A stop()/start() cycle must not poison the dispatcher: a stale `None`
     sentinel left in the queue (the old shutdown mechanism) would make the

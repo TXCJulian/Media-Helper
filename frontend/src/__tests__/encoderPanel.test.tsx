@@ -237,6 +237,39 @@ describe('EncoderPanel', () => {
     expect(screen.getByText('Reconnecting…')).toBeTruthy()
   })
 
+  it('re-enables approval if an approved job later becomes blocked on the stream', async () => {
+    const pending = job({ stage: 'pending', progress: 0, updated_at: '2026-08-17T08:00:00Z' })
+    const fetchMock = vi.fn(async (request: string | URL | Request) => {
+      const url = String(request)
+      if (url.includes('/approve')) return jsonResponse({ stage: 'queued' })
+      if (url.includes('/encoder/health')) {
+        return jsonResponse({ status: 'ok', vendor: 'QSV', encoders: ['qsv_h265'] })
+      }
+      return responseFor(url, [pending])
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const rendered = render(<EncoderPanel onBack={vi.fn()} />)
+
+    const approve = await screen.findByRole('button', { name: 'Approve encoding' })
+    fireEvent.click(approve)
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Approve encoding' })).toBeNull(),
+    )
+
+    // Later, stream receives a new event where the job is blocked due to an encoder error
+    const blocked = job({
+      stage: 'blocked',
+      error: 'Encoder unavailable',
+      error_code: 'encoder_unavailable',
+      updated_at: '2026-08-17T08:05:00Z',
+    })
+    stream.jobs = [blocked]
+    rendered.rerender(<EncoderPanel onBack={vi.fn()} />)
+
+    expect(await screen.findByRole('button', { name: 'Approve encoding' })).toBeTruthy()
+    expect(screen.getByText('Blocked')).toBeTruthy()
+  })
+
   it('moves a recovered blocked job into history without waiting for SSE', async () => {
     stream.connected = false
     const blocked = job({ stage: 'blocked', progress: 0, error_code: 'offline' })

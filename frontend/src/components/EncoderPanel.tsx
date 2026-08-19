@@ -47,6 +47,11 @@ function isAtLeastAsRecent(candidate: EncoderJob, current: EncoderJob): boolean 
   return candidate.updated_at >= current.updated_at
 }
 
+type AcknowledgedStage = {
+  stage: EncoderJob['stage']
+  baseUpdatedAt: string
+}
+
 export default function EncoderPanel({ onBack }: EncoderPanelProps) {
   const {
     jobs: streamedJobs,
@@ -67,7 +72,7 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
   const [jobErrors, setJobErrors] = useState<Map<string, string>>(() => new Map())
   const [historyOpen, setHistoryOpen] = useState(false)
   const [deletedJobIds, setDeletedJobIds] = useState<Set<string>>(() => new Set())
-  const [acknowledgedStages, setAcknowledgedStages] = useState<Map<string, EncoderJob['stage']>>(
+  const [acknowledgedStages, setAcknowledgedStages] = useState<Map<string, AcknowledgedStage>>(
     () => new Map(),
   )
   const mounted = useRef(true)
@@ -149,9 +154,15 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
       })
       .map((job) => {
         const acknowledged = acknowledgedStages.get(job.job_id)
-        return acknowledged && (job.stage === 'pending' || job.stage === 'blocked')
-          ? { ...job, stage: acknowledged }
-          : job
+        if (!acknowledged) return job
+        if (job.stage !== 'pending' && job.stage !== 'blocked') return job
+        if (
+          isAtLeastAsRecent(job, { ...job, updated_at: acknowledged.baseUpdatedAt }) &&
+          job.updated_at !== acknowledged.baseUpdatedAt
+        ) {
+          return job
+        }
+        return { ...job, stage: acknowledged.stage }
       })
       .filter((job) => job.stage !== 'skipped')
   }, [acknowledgedStages, deletedJobIds, initialJobs, snapshotReceived, streamedJobs])
@@ -172,9 +183,12 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
     approvingJobs.current.add(jobId)
     const operation = `approve:${jobId}`
     try {
+      const baseUpdatedAt = jobs.find((job) => job.job_id === jobId)?.updated_at ?? ''
       const result = await approveEncoderJob(jobId)
       if (result.stage === 'queued') {
-        setAcknowledgedStages((current) => new Map(current).set(jobId, 'queued'))
+        setAcknowledgedStages((current) =>
+          new Map(current).set(jobId, { stage: 'queued', baseUpdatedAt }),
+        )
       }
       updateJobError(operation)
     } catch (actionError) {
@@ -206,9 +220,12 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
     setReprocessingJobIds((current) => new Set(current).add(jobId))
     const operation = `reprocess:${jobId}`
     try {
+      const baseUpdatedAt = jobs.find((job) => job.job_id === jobId)?.updated_at ?? ''
       const result = await reprocessEncoderJob(jobId)
       if (result.created) {
-        setAcknowledgedStages((current) => new Map(current).set(jobId, 'cancelled'))
+        setAcknowledgedStages((current) =>
+          new Map(current).set(jobId, { stage: 'cancelled', baseUpdatedAt }),
+        )
       }
       updateJobError(operation)
     } catch (actionError) {

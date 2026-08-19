@@ -851,3 +851,61 @@ def test_watcher_preserves_blocked_job_with_remote_work_when_file_modified(store
     assert recheck_job.remote_job_id == "remote-task-42"
     # No new planning triggered
     assert planner.paths == [str(target)]
+
+
+def test_watcher_preserves_queued_job_when_file_unmodified(store, tmp_path):
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"original data" * 100)
+
+    planner = Planner(store)
+    watcher = make_watcher(store, tmp_path, planner)
+
+    # Initial scan creates a job
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert planner.paths == [str(target)]
+    job = store.newest_job_for_source(str(target))
+    assert job is not None
+
+    # Job is queued
+    store.set_stage(job.id, "queued")
+
+    # Rescans must preserve the queued job and not attempt to re-plan
+    watcher.scan_existing()
+    watcher.scan_existing()
+    recheck_job = store.get_job(job.id)
+    assert recheck_job.stage == "queued"
+    assert planner.paths == [str(target)]
+
+
+def test_watcher_cancels_queued_job_when_file_modified(store, tmp_path):
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"original data" * 100)
+    st1 = target.stat()
+
+    planner = Planner(store)
+    watcher = make_watcher(store, tmp_path, planner)
+
+    # Initial scan creates a job
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert planner.paths == [str(target)]
+    job = store.newest_job_for_source(str(target))
+    assert job is not None
+    store.set_stage(job.id, "queued")
+
+    # File on disk is modified
+    target.write_bytes(b"modified data" * 200)
+    st2 = target.stat()
+    assert (st2.st_size, st2.st_mtime_ns) != (st1.st_size, st1.st_mtime_ns)
+
+    # Watcher detects on-disk change, cancels the stale queued job
+    watcher.scan_existing()
+    stale_job = store.get_job(job.id)
+    assert stale_job.stage == "cancelled"
+    assert stale_job.error_code == "file_modified"
+
+    # Watcher tracks and settles the new modified file on subsequent scans
+    watcher.scan_existing()
+    assert planner.paths == [str(target), str(target)]
+

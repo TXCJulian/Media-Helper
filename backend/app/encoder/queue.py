@@ -578,16 +578,21 @@ class EncodeQueue:
             if preset is None:
                 return
 
-            try:
-                remote_id = self._client.submit(
-                    job.source_path, preset.body, preset.name
-                )
-            except (EncoderRejected, EncoderUnreachable) as exc:
-                self._handle_dispatch_error(job_id, exc)
-                return
-            self._store.set_remote_job(job_id, remote_id)
-            self._store.set_stage(job_id, "encoding")
-            self._publish(job_id)
+            with self._job_lock(job_id):
+                current = self._store.get_job(job_id)
+                if current is None or current.stage == "cancelled":
+                    return
+
+                try:
+                    remote_id = self._client.submit(
+                        job.source_path, preset.body, preset.name
+                    )
+                except (EncoderRejected, EncoderUnreachable) as exc:
+                    self._handle_dispatch_error(job_id, exc)
+                    return
+                self._store.set_remote_job(job_id, remote_id)
+                self._store.set_stage(job_id, "encoding")
+                self._publish(job_id)
 
         result = self._await_remote(job_id, remote_id)
         if result is None:
@@ -627,18 +632,30 @@ class EncodeQueue:
             if not gone:
                 self._fail(job_id, exc.reason, exc.code)
                 return None
-            try:
-                remote_id = self._client.submit(
-                    job.source_path, preset.body, preset.name
-                )
-            except (EncoderRejected, EncoderUnreachable) as submit_exc:
-                self._handle_dispatch_error(job_id, submit_exc)
-                return None
+            with self._job_lock(job_id):
+                current = self._store.get_job(job_id)
+                if current is None or current.stage == "cancelled":
+                    return None
+                try:
+                    remote_id = self._client.submit(
+                        job.source_path, preset.body, preset.name
+                    )
+                except (EncoderRejected, EncoderUnreachable) as submit_exc:
+                    self._handle_dispatch_error(job_id, submit_exc)
+                    return None
+                self._store.set_remote_job(job_id, remote_id)
+                self._store.set_stage(job_id, "encoding")
+                self._publish(job_id)
+                return remote_id
 
-        self._store.set_remote_job(job_id, remote_id)
-        self._store.set_stage(job_id, "encoding")
-        self._publish(job_id)
-        return remote_id
+        with self._job_lock(job_id):
+            current = self._store.get_job(job_id)
+            if current is None or current.stage == "cancelled":
+                return None
+            self._store.set_remote_job(job_id, remote_id)
+            self._store.set_stage(job_id, "encoding")
+            self._publish(job_id)
+            return remote_id
 
     def _await_remote(self, job_id: str, remote_id: str) -> dict | None:
         """Poll until the remote job is terminal. Returns its final body."""

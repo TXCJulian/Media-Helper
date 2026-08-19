@@ -452,3 +452,24 @@ def test_reprocess_events_reject_non_string_ids_and_boolean_counts(field, value)
 
     with pytest.raises(ValueError):
         reprocess_to_payload(**payload)
+
+
+def test_runtime_stop_clears_state_when_watcher_stop_raises(runtime_env, monkeypatch):
+    """If watcher.stop() raises, runtime._watcher and runtime._resolved_paths
+    must still be reset to None."""
+    _store, _root, _events, build = runtime_env
+    runtime, _queue = build()
+
+    class FailingWatcher:
+        def stop(self):
+            raise RuntimeError("Watcher stop timed out")
+
+    runtime._watcher = FailingWatcher()
+    runtime._resolved_paths = ["/media/Movies"]
+
+    with pytest.raises(RuntimeError, match="Watcher stop timed out"):
+        runtime.stop()
+
+    assert runtime._watcher is None
+    assert runtime._resolved_paths is None
+
