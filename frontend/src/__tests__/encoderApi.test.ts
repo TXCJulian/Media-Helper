@@ -10,7 +10,12 @@ import {
   fetchEncoderPresets,
   fetchEncoderRules,
   importEncoderPresets,
+  previewEncoderPresets,
   reprocessEncoderFile,
+  reprocessEncoderJob,
+  fetchEncoderReprocessStatus,
+  startEncoderReprocessAll,
+  stopEncoderReprocessAll,
   saveEncoderConfig,
   saveEncoderPreset,
   saveEncoderRules,
@@ -95,11 +100,12 @@ describe('encoder configuration transport', () => {
 })
 
 describe('encoder preset transport', () => {
-  it('uses JSON for preset save and document import', async () => {
+  it('uses JSON for preset save, preview, and selected document import', async () => {
     const leaf = { PresetName: 'NVENC', VideoEncoder: 'nvenc_h265' }
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({ body: leaf }))
+      .mockResolvedValueOnce(jsonResponse({ presets: [] }))
       .mockResolvedValueOnce(jsonResponse({ imported: ['NVENC'], skipped: [] }))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -109,10 +115,16 @@ describe('encoder preset transport', () => {
     )
     expect(bodyOf(fetchMock)).toEqual({ body: leaf })
 
-    await importEncoderPresets({ PresetList: [leaf] })
+    await previewEncoderPresets({ PresetList: [leaf] })
     const [, init] = fetchMock.mock.calls[1]!
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual({ document: { PresetList: [leaf] } })
+
+    await importEncoderPresets({ PresetList: [leaf] }, ['NVENC'])
+    expect(JSON.parse(fetchMock.mock.calls[2]![1].body as string)).toEqual({
+      document: { PresetList: [leaf] },
+      include_names: ['NVENC'],
+    })
   })
 
   it('loads preset summaries and a complete leaf', async () => {
@@ -158,7 +170,9 @@ describe('encoder rule and job transport', () => {
           not_evaluated: [],
         }),
       )
-      .mockResolvedValueOnce(jsonResponse({ path: '/media/a.mkv', cleared: true }))
+      .mockResolvedValueOnce(
+        jsonResponse({ job_id: 'new', path: '/media/a.mkv', stage: 'pending', created: true }),
+      )
       .mockResolvedValueOnce(jsonResponse({ stage: 'queued' }))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -176,6 +190,54 @@ describe('encoder rule and job transport', () => {
       '/api/encoder/jobs/job%20id/approve',
     )
     expect(bodyOf(fetchMock, 3)).toEqual({})
+  })
+
+  it('reprocesses a failed job through its encoded route', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        job_id: 'replacement',
+        path: '/media/a.mkv',
+        stage: 'pending',
+        created: true,
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(reprocessEncoderJob('failed job')).resolves.toEqual({
+      job_id: 'replacement',
+      path: '/media/a.mkv',
+      stage: 'pending',
+      created: true,
+    })
+
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(
+      '/api/encoder/jobs/failed%20job/reprocess',
+    )
+    expect(fetchMock.mock.calls[0]![1].method).toBe('POST')
+  })
+
+  it('loads the authoritative bulk reprocess status and triggers start/stop', async () => {
+    const status = { active: false, event: null }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(status))
+      .mockResolvedValueOnce(jsonResponse({ run_id: 'bulk-1', status: 'started' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'stopping' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchEncoderReprocessStatus()).resolves.toEqual(status)
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(
+      '/api/encoder/reprocess-all/status',
+    )
+
+    await expect(startEncoderReprocessAll()).resolves.toEqual({
+      run_id: 'bulk-1',
+      status: 'started',
+    })
+    expect(fetchMock.mock.calls[1]![1]?.method).toBe('POST')
+
+    await expect(stopEncoderReprocessAll()).resolves.toEqual({ status: 'stopping' })
+    expect(fetchMock.mock.calls[2]![1]?.method).toBe('DELETE')
   })
 
   it('loads rules and jobs and deletes a job through its no-content endpoint', async () => {

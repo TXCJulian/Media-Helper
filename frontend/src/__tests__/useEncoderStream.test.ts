@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import { applyEncoderStreamEvent, useEncoderStream } from '@/hooks/useEncoderStream'
-import { openEncoderStream } from '@/lib/api'
-import type { EncoderJob } from '@/types'
+import { fetchEncoderReprocessStatus, openEncoderStream } from '@/lib/api'
+import type { EncoderJob, EncoderReprocessEvent } from '@/types'
 
 const stream = vi.hoisted(() => ({
   onEvent: undefined as undefined | ((data: string) => void),
@@ -10,7 +10,16 @@ const stream = vi.hoisted(() => ({
   close: vi.fn(),
 }))
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
 vi.mock('@/lib/api', () => ({
+  fetchEncoderReprocessStatus: vi.fn().mockResolvedValue({ active: false, event: null }),
   openEncoderStream: vi.fn(
     (onEvent: (data: string) => void, onStateChange?: (connected: boolean) => void) => {
       stream.onEvent = onEvent
@@ -30,6 +39,7 @@ function job(overrides: Partial<EncoderJob> = {}): EncoderJob {
     rule_id: 'rule-1',
     error: null,
     error_code: null,
+    remote_job_id: null,
     output_path: null,
     facts: {},
     original_size: null,
@@ -100,7 +110,13 @@ describe('useEncoderStream', () => {
     const { result, unmount } = renderHook(() => useEncoderStream())
 
     expect(openEncoderStream).toHaveBeenCalledTimes(1)
-    expect(result.current).toEqual({ jobs: [], connected: false, snapshotReceived: false })
+    expect(result.current).toEqual({
+      jobs: [],
+      connected: false,
+      snapshotReceived: false,
+      latestReprocessEvent: null,
+      reprocessActive: null,
+    })
 
     act(() => {
       stream.onStateChange?.(true)
@@ -115,6 +131,60 @@ describe('useEncoderStream', () => {
     expect(stream.close).toHaveBeenCalledTimes(1)
   })
 
+  it('recovers bulk status whenever the event stream reconnects', async () => {
+    const terminal: EncoderReprocessEvent = {
+      type: 'reprocess',
+      run_id: 'bulk-1',
+      status: 'completed',
+      scanned: 2,
+      created: 1,
+      skipped: 1,
+      failed: 0,
+      path: null,
+      error: null,
+    }
+    vi.mocked(fetchEncoderReprocessStatus).mockResolvedValue({ active: false, event: terminal })
+    const { result } = renderHook(() => useEncoderStream())
+
+    await act(async () => stream.onStateChange?.(true))
+
+    expect(fetchEncoderReprocessStatus).toHaveBeenCalledTimes(1)
+    expect(result.current.latestReprocessEvent).toEqual(terminal)
+    expect(result.current.reprocessActive).toBe(false)
+  })
+
+  it('does not replace a newer SSE run with an older status response', async () => {
+    const status = deferred<{
+      active: boolean
+      event: EncoderReprocessEvent
+    }>()
+    vi.mocked(fetchEncoderReprocessStatus).mockReturnValue(status.promise)
+    const { result } = renderHook(() => useEncoderStream())
+    const newer: EncoderReprocessEvent = {
+      type: 'reprocess',
+      run_id: 'bulk-2',
+      status: 'running',
+      scanned: 2,
+      created: 1,
+      skipped: 1,
+      failed: 0,
+      path: null,
+      error: null,
+    }
+    const stale: EncoderReprocessEvent = {
+      ...newer,
+      run_id: 'bulk-1',
+      status: 'completed',
+    }
+
+    act(() => stream.onStateChange?.(true))
+    act(() => stream.onEvent?.(JSON.stringify(newer)))
+    await act(async () => status.resolve({ active: false, event: stale }))
+
+    expect(result.current.latestReprocessEvent).toEqual(newer)
+    expect(result.current.reprocessActive).toBe(true)
+  })
+
   it('marks the stream authoritative after receiving a snapshot envelope', () => {
     const { result } = renderHook(() => useEncoderStream())
     act(() => {
@@ -122,5 +192,27 @@ describe('useEncoderStream', () => {
     })
     expect(result.current.snapshotReceived).toBe(true)
     expect(result.current.jobs).toEqual([job()])
+  })
+
+  it('exposes a validated reprocess event without folding it into jobs', () => {
+    const { result } = renderHook(() => useEncoderStream())
+    const event: EncoderReprocessEvent = {
+      type: 'reprocess',
+      run_id: 'bulk-1',
+      status: 'running',
+      scanned: 12,
+      created: 4,
+      skipped: 7,
+      failed: 1,
+      path: '/media/Movies/Demo.mkv',
+      error: null,
+    }
+
+    act(() => {
+      stream.onEvent?.(JSON.stringify(event))
+    })
+
+    expect(result.current.latestReprocessEvent).toEqual(event)
+    expect(result.current.jobs).toEqual([])
   })
 })

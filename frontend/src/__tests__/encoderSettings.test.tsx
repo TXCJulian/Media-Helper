@@ -1,8 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import EncoderSettings from '@/components/encoder/EncoderSettings'
+import DirectorySelect from '@/components/ui/DirectorySelect'
 import * as api from '@/lib/api'
-import type { EncoderConfig, EncoderPreset, EncoderRule, EncoderTestResult } from '@/types'
+import type {
+  EncoderConfig,
+  EncoderPreset,
+  EncoderReprocessEvent,
+  EncoderReprocessRun,
+  EncoderRule,
+  EncoderTestResult,
+  ReprocessResult,
+} from '@/types'
 
 vi.mock('@/lib/api', () => ({
   fetchEncoderDirectories: vi.fn().mockResolvedValue({ directories: [] }),
@@ -74,7 +83,7 @@ function testResult(overrides: Partial<EncoderTestResult> = {}): EncoderTestResu
 function renderSettings(overrides: Partial<React.ComponentProps<typeof EncoderSettings>> = {}) {
   const onRefresh = vi.fn()
   const onError = vi.fn()
-  render(
+  const rendered = render(
     <EncoderSettings
       config={config}
       presets={presets}
@@ -84,7 +93,7 @@ function renderSettings(overrides: Partial<React.ComponentProps<typeof EncoderSe
       {...overrides}
     />,
   )
-  return { onRefresh, onError }
+  return { onRefresh, onError, ...rendered }
 }
 
 beforeEach(() => {
@@ -92,12 +101,45 @@ beforeEach(() => {
   vi.mocked(api.saveEncoderConfig).mockResolvedValue({ watch_paths: [] })
   vi.mocked(api.saveEncoderRules).mockResolvedValue({ saved: 0 })
   vi.mocked(api.reprocessEncoderFile).mockResolvedValue({
+    job_id: 'new-job',
     path: '/media/Movies/demo.mkv',
-    cleared: true,
+    stage: 'pending',
+    created: true,
   })
 })
 
 describe('EncoderSettings sections', () => {
+  it('focuses the first directory result when an open picker lacks the current value', () => {
+    const { rerender } = render(
+      <DirectorySelect
+        directories={[]}
+        value="/media/missing"
+        base=""
+        onChange={vi.fn()}
+        onRefresh={vi.fn()}
+        isLoading={false}
+        ariaLabel="Directory picker"
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Directory picker' }))
+    rerender(
+      <DirectorySelect
+        directories={[{ path: '/media/Movies', base: '/media' }]}
+        value="/media/missing"
+        base=""
+        onChange={vi.fn()}
+        onRefresh={vi.fn()}
+        isLoading={false}
+        ariaLabel="Directory picker"
+      />,
+    )
+
+    expect(screen.getByRole('option', { name: '/media/Movies' }).className).toContain(
+      'bg-[var(--bg-glass-hover)]',
+    )
+  })
+
   it('starts collapsed and keeps the fixed fallback after every ordered rule', async () => {
     renderSettings()
 
@@ -109,6 +151,231 @@ describe('EncoderSettings sections', () => {
     const rows = screen.getByRole('list', { name: 'Encoding rules' }).children
     expect(rows[rows.length - 1]).toBe(fallback)
     expect(screen.queryByRole('button', { name: /Move fallback/i })).toBeNull()
+  })
+
+  it('requires confirmation before re-evaluating all media and reports run progress', async () => {
+    const onStartReprocessAll = vi.fn().mockResolvedValue({ run_id: 'bulk-1', status: 'started' })
+    const latestReprocessEvent: EncoderReprocessEvent = {
+      type: 'reprocess',
+      run_id: 'bulk-1',
+      status: 'running',
+      scanned: 12,
+      created: 4,
+      skipped: 7,
+      failed: 1,
+      path: '/media/Movies/Demo.mkv',
+      error: null,
+    }
+    const { rerender } = renderSettings({ onStartReprocessAll })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    const reprocess = screen.getByRole('button', { name: 'Re-evaluate all media' })
+    fireEvent.click(reprocess)
+    expect(onStartReprocessAll).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm re-evaluate all media' }))
+    await waitFor(() => expect(onStartReprocessAll).toHaveBeenCalledTimes(1))
+    rerender(
+      <EncoderSettings
+        config={config}
+        presets={presets}
+        rules={{ rules: orderedRules, fallback: 'skip' }}
+        onRefresh={vi.fn()}
+        onError={vi.fn()}
+        onStartReprocessAll={onStartReprocessAll}
+        latestReprocessEvent={latestReprocessEvent}
+      />,
+    )
+    expect(screen.getByText(/12 scanned.*4 awaiting review.*7 skipped.*1 failed/i)).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: 'Re-evaluate all media' }).hasAttribute('disabled'),
+    ).toBe(true)
+  })
+
+  it('labels created bulk results according to review mode', () => {
+    renderSettings({
+      latestReprocessEvent: {
+        type: 'reprocess',
+        run_id: 'bulk-review',
+        status: 'completed',
+        scanned: 3,
+        created: 2,
+        skipped: 1,
+        failed: 0,
+        path: null,
+        error: null,
+      },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    expect(screen.getByText(/2 awaiting review/i)).toBeTruthy()
+  })
+
+  it('keeps a started bulk run single-flight until its matching terminal event arrives', async () => {
+    const pending = deferred<EncoderReprocessRun>()
+    const onStartReprocessAll = vi.fn().mockReturnValue(pending.promise)
+    const { rerender } = renderSettings({ onStartReprocessAll })
+    const renderWithEvent = (latestReprocessEvent: EncoderReprocessEvent | null) =>
+      rerender(
+        <EncoderSettings
+          config={config}
+          presets={presets}
+          rules={{ rules: orderedRules, fallback: 'skip' }}
+          onRefresh={vi.fn()}
+          onError={vi.fn()}
+          onStartReprocessAll={onStartReprocessAll}
+          latestReprocessEvent={latestReprocessEvent}
+        />,
+      )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Re-evaluate all media' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm re-evaluate all media' }))
+    await waitFor(() => expect(onStartReprocessAll).toHaveBeenCalledTimes(1))
+
+    await act(async () => pending.resolve({ run_id: 'bulk-1', status: 'started' }))
+    expect(
+      screen.getByRole('button', { name: 'Re-evaluate all media' }).hasAttribute('disabled'),
+    ).toBe(true)
+
+    renderWithEvent({
+      type: 'reprocess',
+      run_id: 'bulk-1',
+      status: 'completed',
+      scanned: 12,
+      created: 4,
+      skipped: 7,
+      failed: 1,
+      path: null,
+      error: null,
+    })
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Re-evaluate all media' }).hasAttribute('disabled'),
+      ).toBe(false),
+    )
+  })
+
+  it('releases a local run lock when recovered status says no run is active', async () => {
+    const onStartReprocessAll = vi.fn().mockResolvedValue({ run_id: 'bulk-1', status: 'started' })
+    const { rerender } = renderSettings({ onStartReprocessAll, reprocessActive: true })
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Re-evaluate all media' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm re-evaluate all media' }))
+    await waitFor(() => expect(onStartReprocessAll).toHaveBeenCalledTimes(1))
+
+    rerender(
+      <EncoderSettings
+        config={config}
+        presets={presets}
+        rules={{ rules: orderedRules, fallback: 'skip' }}
+        onRefresh={vi.fn()}
+        onError={vi.fn()}
+        onStartReprocessAll={onStartReprocessAll}
+        reprocessActive={false}
+      />,
+    )
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Re-evaluate all media' }).hasAttribute('disabled'),
+      ).toBe(false),
+    )
+  })
+
+  it('does not retain a run lock when its terminal event arrives before the start response', async () => {
+    const pending = deferred<EncoderReprocessRun>()
+    const onStartReprocessAll = vi.fn().mockReturnValue(pending.promise)
+    const { rerender } = renderSettings({ onStartReprocessAll })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Re-evaluate all media' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm re-evaluate all media' }))
+    await waitFor(() => expect(onStartReprocessAll).toHaveBeenCalledTimes(1))
+
+    rerender(
+      <EncoderSettings
+        config={config}
+        presets={presets}
+        rules={{ rules: orderedRules, fallback: 'skip' }}
+        onRefresh={vi.fn()}
+        onError={vi.fn()}
+        onStartReprocessAll={onStartReprocessAll}
+        latestReprocessEvent={{
+          type: 'reprocess',
+          run_id: 'bulk-2',
+          status: 'completed',
+          scanned: 0,
+          created: 0,
+          skipped: 0,
+          failed: 0,
+          path: null,
+          error: null,
+        }}
+      />,
+    )
+    await act(async () => pending.resolve({ run_id: 'bulk-2', status: 'started' }))
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Re-evaluate all media' }).hasAttribute('disabled'),
+      ).toBe(false),
+    )
+  })
+
+  it('uses compact encoder select labels for rules and fallback targets', () => {
+    renderSettings()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+
+    expect(screen.getAllByText('Field')[0]?.closest('label')?.className).toContain('text-[0.7rem]')
+    expect(screen.getAllByText('Operator')[0]?.closest('label')?.className).toContain(
+      'text-[0.7rem]',
+    )
+    expect(screen.getAllByText('Value')[0]?.closest('label')?.className).toContain('text-[0.7rem]')
+    expect(screen.getAllByText('Target')[0]?.closest('label')?.className).toContain('text-[0.7rem]')
+    expect(screen.getByText('Fallback target').closest('label')?.className).toContain(
+      'text-[0.7rem]',
+    )
+  })
+
+  it('provides makemkv and standard tools for source_tool conditions', () => {
+    renderSettings({
+      rules: {
+        rules: [
+          {
+            id: 'rule-1',
+            conditions: [{ field: 'source_tool', op: '==', value: 'makemkv' }],
+            target: 'CPU 4K',
+          },
+        ],
+        fallback: 'skip',
+      },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+
+    const select = screen.getByLabelText('rule-1 condition 1 value') as HTMLSelectElement
+    const options = Array.from(select.options).map((opt) => opt.value)
+    expect(options).toContain('makemkv')
+    expect(options).toContain('handbrake')
+    expect(options).toContain('lavf')
+  })
+
+  it('selects the first returned directory and file for a blank file test', async () => {
+    vi.mocked(api.fetchEncoderDirectories).mockResolvedValue({
+      directories: [{ path: '/media/Movies', base: '/media' }],
+    })
+    vi.mocked(api.fetchEncoderFiles).mockResolvedValue({
+      files: [{ path: '/media/Movies/demo.mkv', name: 'demo.mkv' }],
+    })
+    renderSettings()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
+
+    const selector = (await screen.findByLabelText('File to test selector')) as HTMLSelectElement
+    await waitFor(() => expect(selector.value).toBe('/media/Movies/demo.mkv'))
+    expect(api.fetchEncoderFiles).toHaveBeenCalledWith('/media/Movies', '')
   })
 
   it('adds and removes watch folders locally, then saves the explicit list', async () => {
@@ -222,7 +489,7 @@ describe('EncoderSettings sections', () => {
     await waitFor(() =>
       expect(api.reprocessEncoderFile).toHaveBeenCalledWith('/media/Movies/demo.mkv'),
     )
-    expect(await screen.findByText(/queued for reconsideration/i)).toBeTruthy()
+    expect(await screen.findByText(/re-evaluated immediately/i)).toBeTruthy()
   })
 
   it('clears completed file-test and reprocess output when the path changes', async () => {
@@ -235,7 +502,7 @@ describe('EncoderSettings sections', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Test file' }))
     expect(await screen.findByText('Matched: uhd → NVENC')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Reprocess file' }))
-    expect(await screen.findByText(/queued for reconsideration/i)).toBeTruthy()
+    expect(await screen.findByText(/re-evaluated immediately/i)).toBeTruthy()
 
     fireEvent.change(input, { target: { value: '/media/Movies/b.mkv' } })
     expect(screen.queryByText('Matched: uhd → NVENC')).toBeNull()
@@ -258,7 +525,7 @@ describe('EncoderSettings sections', () => {
   })
 
   it('ignores a reprocess response after its submitted path is replaced', async () => {
-    const pending = deferred<{ path: string; cleared: boolean }>()
+    const pending = deferred<ReprocessResult>()
     vi.mocked(api.reprocessEncoderFile).mockReturnValue(pending.promise)
     renderSettings()
     fireEvent.click(screen.getByRole('button', { name: 'Rules' }))
@@ -267,9 +534,16 @@ describe('EncoderSettings sections', () => {
     fireEvent.change(input, { target: { value: '/media/Movies/a.mkv' } })
     fireEvent.click(screen.getByRole('button', { name: 'Reprocess file' }))
     fireEvent.change(input, { target: { value: '/media/Movies/b.mkv' } })
-    await act(async () => pending.resolve({ path: '/media/Movies/a.mkv', cleared: true }))
+    await act(async () =>
+      pending.resolve({
+        job_id: 'new-job',
+        path: '/media/Movies/a.mkv',
+        stage: 'pending',
+        created: true,
+      }),
+    )
 
-    expect(screen.queryByText(/queued for reconsideration/i)).toBeNull()
+    expect(screen.queryByText(/re-evaluated immediately/i)).toBeNull()
   })
 
   it('forwards failed saves without reporting a refresh', async () => {

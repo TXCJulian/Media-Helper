@@ -8,8 +8,12 @@ from app.encoder import runtime as runtime_mod
 
 PRESET_DOC = {
     "PresetList": [
-        {"PresetName": "NVENC", "VideoEncoder": "nvenc_h265",
-         "VideoPreset": "medium", "FileFormat": "av_mkv"}
+        {
+            "PresetName": "NVENC",
+            "VideoEncoder": "nvenc_h265",
+            "VideoPreset": "medium",
+            "FileFormat": "av_mkv",
+        }
     ]
 }
 
@@ -20,9 +24,13 @@ class FakeClient:
         self._status = status
 
     def health(self):
-        return {"status": self._status, "handbrake_version": "1.9.2",
-                "encoders": self._encoders, "allowed_roots": ["/media3"],
-                "workers": 1}
+        return {
+            "status": self._status,
+            "handbrake_version": "1.9.2",
+            "encoders": self._encoders,
+            "allowed_roots": ["/media3"],
+            "workers": 1,
+        }
 
 
 class FakeRuntime:
@@ -34,6 +42,12 @@ class FakeRuntime:
         self.replacements.append(paths)
         self.watch_paths = paths
         return paths
+
+    def start_reprocess_all(self):
+        return {"run_id": "bulk-run", "status": "started"}
+
+    def stop_reprocess_all(self):
+        return {"status": "stopping"}
 
 
 class FailingRuntime(FakeRuntime):
@@ -136,7 +150,9 @@ def test_config_saves_an_explicit_empty_list(client, tmp_path, monkeypatch):
     assert runtime.replacements == [[]]
 
 
-def test_config_rejects_a_path_outside_base_without_replacing(client, tmp_path, monkeypatch):
+def test_config_rejects_a_path_outside_base_without_replacing(
+    client, tmp_path, monkeypatch
+):
     """Rejecting an invalid update must leave the active watcher untouched."""
     runtime = FakeRuntime(["/media/Movies"])
     routes_mod.register_runtime(runtime)
@@ -151,19 +167,69 @@ def test_config_rejects_a_path_outside_base_without_replacing(client, tmp_path, 
     assert runtime.replacements == []
 
 
-def test_config_accepts_a_directory_below_a_filesystem_root_base(
+def test_config_accepts_a_directory_below_a_configured_base(
     client, tmp_path, monkeypatch
 ):
     runtime = FakeRuntime([])
     routes_mod.register_runtime(runtime)
-    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [tmp_path.anchor])
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(tmp_path.parent)])
+    visible = tmp_path / "visible"
+    visible.mkdir()
 
-    response = client.put(
-        "/api/encoder/config", json={"watch_paths": [str(tmp_path)]}
-    )
+    response = client.put("/api/encoder/config", json={"watch_paths": [str(visible)]})
 
     assert response.status_code == 200
-    assert runtime.replacements == [[str(tmp_path.resolve())]]
+    assert runtime.replacements == [[str(visible.resolve())]]
+
+
+def test_picker_canonical_path_survives_validation_with_a_symlinked_base(
+    client, tmp_path, monkeypatch
+):
+    real_base = tmp_path / "real-media"
+    movies = real_base / "Movies"
+    movies.mkdir(parents=True)
+    linked_base = tmp_path / "media-link"
+    try:
+        linked_base.symlink_to(real_base, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks not supported in this environment")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(linked_base)])
+    runtime = FakeRuntime([])
+    routes_mod.register_runtime(runtime)
+
+    listed = client.get("/api/encoder/directories").json()["directories"]
+    canonical = next(
+        item["path"] for item in listed if item["path"] == str(movies.resolve())
+    )
+    response = client.put("/api/encoder/config", json={"watch_paths": [canonical]})
+
+    assert response.status_code == 200
+    assert runtime.replacements == [[str(movies.resolve())]]
+
+
+def test_persisted_canonical_watch_path_reloads_with_a_symlinked_base(
+    tmp_path, monkeypatch
+):
+    real_base = tmp_path / "real-media"
+    movies = real_base / "Movies"
+    movies.mkdir(parents=True)
+    linked_base = tmp_path / "media-link"
+    try:
+        linked_base.symlink_to(real_base, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks not supported in this environment")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(linked_base)])
+    store = RuntimeStore([str(movies.resolve())])
+    runtime = runtime_mod.EncoderRuntime(
+        store,
+        type("Queue", (), {"plan_new": lambda *_args: None})(),
+        default_paths=[],
+        settle_seconds=0,
+        valid_extensions={".mkv"},
+        validate_paths=routes_mod._validate_watch_paths,
+    )
+
+    assert runtime.watch_paths == [str(movies.resolve())]
 
 
 def test_config_replacement_failure_uses_the_encoder_error_envelope(
@@ -351,14 +417,137 @@ def test_importing_a_preset_document_stores_its_leaves(client):
     assert [p["name"] for p in client.get("/api/encoder/presets").json()] == ["NVENC"]
 
 
+def test_preview_marks_unsupported_without_storing(client, monkeypatch):
+    document = {
+        "PresetList": [
+            {
+                "PresetName": "NVENC",
+                "VideoEncoder": "nvenc_h265",
+                "VideoPreset": "medium",
+                "FileFormat": "av_mkv",
+                "Custom": {"kept": True},
+            },
+            {
+                "PresetName": "QSV",
+                "VideoEncoder": "qsv_h265",
+                "VideoPreset": "speed",
+                "FileFormat": "av_mp4",
+            },
+        ]
+    }
+    monkeypatch.setattr(routes_mod, "_client", FakeClient(encoders=("nvenc_h265",)))
+
+    response = client.post("/api/encoder/presets/preview", json={"document": document})
+
+    assert response.status_code == 200
+    assert response.json()["presets"] == [
+        {"name": "NVENC", "encoder": "nvenc_h265", "supported": True, "reason": None},
+        {
+            "name": "QSV",
+            "encoder": "qsv_h265",
+            "supported": False,
+            "reason": "The connected encoder does not provide 'qsv_h265'",
+        },
+    ]
+    assert routes_mod.get_store().list_presets() == []
+
+
+def test_selected_import_reports_unselected_and_preserves_leaf_fields(
+    client, monkeypatch
+):
+    document = {
+        "PresetList": [
+            {
+                "PresetName": "NVENC",
+                "VideoEncoder": "nvenc_h265",
+                "VideoPreset": "medium",
+                "FileFormat": "av_mkv",
+                "Custom": {"kept": True},
+            },
+            {
+                "PresetName": "QSV",
+                "VideoEncoder": "qsv_h265",
+                "VideoPreset": "speed",
+                "FileFormat": "av_mp4",
+            },
+        ]
+    }
+    monkeypatch.setattr(routes_mod, "_client", FakeClient(encoders=("nvenc_h265",)))
+
+    response = client.post(
+        "/api/encoder/presets",
+        json={"document": document, "include_names": ["NVENC"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "imported": ["NVENC"],
+        "skipped": [],
+        "unselected": ["QSV"],
+    }
+    assert routes_mod.get_store().list_presets()[0].body["Custom"] == {"kept": True}
+
+
+def test_selected_import_rejects_names_absent_from_the_document(client):
+    response = client.post(
+        "/api/encoder/presets",
+        json={"document": PRESET_DOC, "include_names": ["missing"]},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_preset"
+    assert "missing" in response.json()["reason"]
+
+
+def test_selected_import_rejects_an_explicit_empty_selection(client):
+    response = client.post(
+        "/api/encoder/presets",
+        json={"document": PRESET_DOC, "include_names": []},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "code": "invalid_preset_selection",
+        "reason": "Select at least one supported preset to import",
+    }
+
+
+def test_selected_import_rejects_selection_when_none_are_usable(client, monkeypatch):
+    document = {
+        "PresetList": [
+            {
+                "PresetName": "QSV",
+                "VideoEncoder": "qsv_h265",
+                "VideoPreset": "speed",
+                "FileFormat": "av_mp4",
+            },
+        ]
+    }
+    monkeypatch.setattr(routes_mod, "_client", FakeClient(encoders=("nvenc_h265",)))
+
+    response = client.post(
+        "/api/encoder/presets",
+        json={"document": document, "include_names": ["QSV"]},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "encoder_unavailable"
+    assert "None of the selected presets can run" in response.json()["reason"]
+
+
 def test_individual_preset_round_trips_the_complete_leaf(client):
     """An edit must retain HandBrake fields the app does not model itself."""
     body = {
-        "PresetName": "NVENC", "VideoEncoder": "nvenc_h265",
-        "VideoPreset": "slow", "FileFormat": "av_mkv",
-        "AudioCopyMask": ["copy:aac"], "Custom": {"kept": True},
+        "PresetName": "NVENC",
+        "VideoEncoder": "nvenc_h265",
+        "VideoPreset": "slow",
+        "FileFormat": "av_mkv",
+        "AudioCopyMask": ["copy:aac"],
+        "Custom": {"kept": True},
     }
-    assert client.put("/api/encoder/presets/NVENC", json={"body": body}).status_code == 200
+    assert (
+        client.put("/api/encoder/presets/NVENC", json={"body": body}).status_code == 200
+    )
     assert client.get("/api/encoder/presets/NVENC").json()["body"] == body
 
 
@@ -415,10 +604,18 @@ def test_unusable_presets_are_skipped_rather_than_failing_the_document(client):
     """
     document = {
         "PresetList": [
-            {"PresetName": "NVENC", "VideoEncoder": "nvenc_h265",
-             "VideoPreset": "medium", "FileFormat": "av_mkv"},
-            {"PresetName": "QSV", "VideoEncoder": "qsv_h265",
-             "VideoPreset": "speed", "FileFormat": "av_mp4"},
+            {
+                "PresetName": "NVENC",
+                "VideoEncoder": "nvenc_h265",
+                "VideoPreset": "medium",
+                "FileFormat": "av_mkv",
+            },
+            {
+                "PresetName": "QSV",
+                "VideoEncoder": "qsv_h265",
+                "VideoPreset": "speed",
+                "FileFormat": "av_mp4",
+            },
         ]
     }
     r = client.post("/api/encoder/presets", json={"document": document})
@@ -456,9 +653,13 @@ def test_deleting_a_preset(client):
 
 def test_rules_round_trip(client):
     payload = {
-        "rules": [{"id": "r1",
-                   "conditions": [{"field": "height", "op": ">=", "value": 2160}],
-                   "target": "skip"}],
+        "rules": [
+            {
+                "id": "r1",
+                "conditions": [{"field": "height", "op": ">=", "value": 2160}],
+                "target": "skip",
+            }
+        ],
         "fallback": "skip",
     }
     assert client.put("/api/encoder/rules", json=payload).status_code == 200
@@ -470,22 +671,32 @@ def test_rules_round_trip(client):
 def test_a_rule_naming_an_unknown_field_is_rejected(client):
     """Caught at save time: a typo'd field would otherwise be a rule that
     silently never fires."""
-    payload = {"rules": [{"id": "r1",
-                          "conditions": [{"field": "heigth", "op": ">=", "value": 1}],
-                          "target": "skip"}],
-               "fallback": "skip"}
+    payload = {
+        "rules": [
+            {
+                "id": "r1",
+                "conditions": [{"field": "heigth", "op": ">=", "value": 1}],
+                "target": "skip",
+            }
+        ],
+        "fallback": "skip",
+    }
     r = client.put("/api/encoder/rules", json=payload)
     assert r.status_code == 400
     assert "heigth" in r.json()["reason"]
 
 
 def test_a_rule_targeting_an_unknown_preset_is_rejected(client):
-    payload = {"rules": [{"id": "r1", "conditions": [], "target": "Ghost"}],
-               "fallback": "skip"}
+    payload = {
+        "rules": [{"id": "r1", "conditions": [], "target": "Ghost"}],
+        "fallback": "skip",
+    }
     assert client.put("/api/encoder/rules", json=payload).status_code == 400
 
 
-def test_test_endpoint_reports_the_match_without_encoding(client, monkeypatch, tmp_path):
+def test_test_endpoint_reports_the_match_without_encoding(
+    client, monkeypatch, tmp_path
+):
     """Rule-ordering mistakes are otherwise invisible until an hour of 4K
     encoding has been spent."""
     watch_root = tmp_path / "Movies"
@@ -496,17 +707,29 @@ def test_test_endpoint_reports_the_match_without_encoding(client, monkeypatch, t
     routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
 
     client.post("/api/encoder/presets", json={"document": PRESET_DOC})
-    client.put("/api/encoder/rules", json={
-        "rules": [
-            {"id": "r1", "conditions": [{"field": "height", "op": ">=", "value": 4320}],
-             "target": "NVENC"},
-            {"id": "r2", "conditions": [{"field": "height", "op": ">=", "value": 720}],
-             "target": "NVENC"},
-        ],
-        "fallback": "skip",
-    })
-    monkeypatch.setattr(routes_mod, "probe",
-                        lambda _p: {"height": 1080, "size": 1, "video_codec": "h264"})
+    client.put(
+        "/api/encoder/rules",
+        json={
+            "rules": [
+                {
+                    "id": "r1",
+                    "conditions": [{"field": "height", "op": ">=", "value": 4320}],
+                    "target": "NVENC",
+                },
+                {
+                    "id": "r2",
+                    "conditions": [{"field": "height", "op": ">=", "value": 720}],
+                    "target": "NVENC",
+                },
+            ],
+            "fallback": "skip",
+        },
+    )
+    monkeypatch.setattr(
+        routes_mod,
+        "probe",
+        lambda _p: {"height": 1080, "size": 1, "video_codec": "h264"},
+    )
     body = client.post("/api/encoder/test", json={"path": str(candidate)}).json()
     assert body["matched_rule"] == "r2"
     assert body["target"] == "NVENC"
@@ -548,7 +771,9 @@ def test_test_endpoint_rejects_a_url_style_path(client, monkeypatch):
     assert probed == []  # probe() must never have been reached
 
 
-def test_test_endpoint_rejects_a_path_outside_the_watch_roots(client, monkeypatch, tmp_path):
+def test_test_endpoint_rejects_a_path_outside_the_watch_roots(
+    client, monkeypatch, tmp_path
+):
     """An absolute path outside every configured root, even if it happens to
     exist on disk, must not be probed or reveal anything about itself."""
     outside = tmp_path / "outside" / "secret.txt"
@@ -562,7 +787,9 @@ def test_test_endpoint_rejects_a_path_outside_the_watch_roots(client, monkeypatc
     assert probed == []
 
 
-def test_test_endpoint_rejects_a_symlink_escaping_the_watch_root(client, monkeypatch, tmp_path):
+def test_test_endpoint_rejects_a_symlink_escaping_the_watch_root(
+    client, monkeypatch, tmp_path
+):
     """realpath must run before the containment check, or a symlink inside
     the watch root pointing outside it would bypass the allow-list."""
     watch_root = tmp_path / "Movies"
@@ -596,7 +823,9 @@ def test_test_endpoint_accepts_a_legitimate_in_root_file(client, monkeypatch, tm
     assert r.status_code == 200
 
 
-def test_test_endpoint_rejects_a_nonexistent_path_inside_the_watch_root(client, monkeypatch, tmp_path):
+def test_test_endpoint_rejects_a_nonexistent_path_inside_the_watch_root(
+    client, monkeypatch, tmp_path
+):
     """Containment alone is not enough: a path that resolves inside a watch
     root but does not exist must not be handed to probe()."""
     watch_root = tmp_path / "Movies"
@@ -614,6 +843,130 @@ def test_jobs_list_is_empty_initially(client):
     assert client.get("/api/encoder/jobs").json() == []
 
 
+def test_directories_hide_trickplay_and_top_level_music(client, monkeypatch, tmp_path):
+    base = tmp_path / "media"
+    (base / "Movies").mkdir(parents=True)
+    (base / ".trickplay").mkdir()
+    (base / "Movies" / "Film.trickplay").mkdir()
+    (base / "Movies" / "Film.trickplay" / "320p").mkdir()
+    (base / "Music").mkdir()
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
+    monkeypatch.setattr(routes_mod.config, "MUSIC_FOLDER_NAME", "Music")
+    paths = {
+        entry["path"]
+        for entry in client.get("/api/encoder/directories").json()["directories"]
+    }
+    assert str(base / ".trickplay") not in paths
+    assert str(base / "Movies" / "Film.trickplay") not in paths
+    assert str(base / "Movies" / "Film.trickplay" / "320p") not in paths
+    assert str(base / "Music") not in paths
+    assert str(base / "Movies") in paths
+
+
+def test_directories_hide_custom_music_folder(client, monkeypatch, tmp_path):
+    base = tmp_path / "media"
+    (base / "Movies").mkdir(parents=True)
+    (base / "MySongs").mkdir()
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
+    monkeypatch.setattr(routes_mod.config, "MUSIC_FOLDER_NAME", "MySongs")
+    paths = {
+        entry["path"]
+        for entry in client.get("/api/encoder/directories").json()["directories"]
+    }
+    assert str(base / "MySongs") not in paths
+    assert str(base / "Movies") in paths
+
+
+def test_config_rejects_watch_paths_inside_trickplay(client, monkeypatch, tmp_path):
+    base = tmp_path / "media"
+    (base / ".trickplay" / "sub").mkdir(parents=True)
+    (base / "Movies" / "Film.trickplay" / "320p").mkdir(parents=True)
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
+    resp1 = client.put(
+        "/api/encoder/config", json={"watch_paths": [str(base / ".trickplay" / "sub")]}
+    )
+    assert resp1.status_code == 400
+    resp2 = client.put(
+        "/api/encoder/config",
+        json={"watch_paths": [str(base / "Movies" / "Film.trickplay" / "320p")]},
+    )
+    assert resp2.status_code == 400
+
+
+def test_config_rejects_watch_paths_inside_music_folder(client, monkeypatch, tmp_path):
+    base = tmp_path / "media"
+    (base / "Music" / "Rock").mkdir(parents=True)
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
+    monkeypatch.setattr(routes_mod.config, "MUSIC_FOLDER_NAME", "Music")
+    resp = client.put(
+        "/api/encoder/config", json={"watch_paths": [str(base / "Music" / "Rock")]}
+    )
+    assert resp.status_code == 400
+
+
+def test_files_hide_excluded_roots_and_descendants(client, monkeypatch, tmp_path):
+    base = tmp_path / "media"
+    (base / "Movies" / ".hidden").mkdir(parents=True)
+    (base / "Movies" / ".hidden" / "secret.mkv").write_bytes(b"")
+    (base / ".trickplay" / "cache").mkdir(parents=True)
+    (base / ".trickplay" / "cache" / "preview.mkv").write_bytes(b"")
+    (base / "Music" / "album").mkdir(parents=True)
+    (base / "Music" / "album" / "song.mkv").write_bytes(b"")
+    (base / "Movies" / "film.mkv").write_bytes(b"")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
+    monkeypatch.setattr(routes_mod.config, "MUSIC_FOLDER_NAME", "Music")
+
+    visible = client.get("/api/encoder/files", params={"directory": str(base)}).json()
+    assert [entry["path"] for entry in visible["files"]] == [
+        str(base / "Movies" / "film.mkv")
+    ]
+    for excluded in (base / ".trickplay", base / "Music"):
+        response = client.get("/api/encoder/files", params={"directory": str(excluded)})
+        assert response.json()["files"] == []
+
+
+def test_files_reject_direct_descendants_of_excluded_trees(
+    client, monkeypatch, tmp_path
+):
+    base = tmp_path / "media"
+    for excluded in (
+        base / "Music" / "album",
+        base / ".hidden" / "nested",
+        base / ".trickplay" / "cache",
+    ):
+        excluded.mkdir(parents=True)
+        (excluded / "secret.mkv").write_bytes(b"")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
+    monkeypatch.setattr(routes_mod.config, "MUSIC_FOLDER_NAME", "Music")
+
+    for excluded in (
+        base / "Music" / "album",
+        base / ".hidden" / "nested",
+        base / ".trickplay" / "cache",
+    ):
+        response = client.get("/api/encoder/files", params={"directory": str(excluded)})
+        assert response.json()["files"] == []
+
+
+def test_files_reject_a_hidden_symlink_alias_to_a_visible_directory(
+    client, monkeypatch, tmp_path
+):
+    base = tmp_path / "media"
+    visible = base / "Movies"
+    visible.mkdir(parents=True)
+    (visible / "film.mkv").write_bytes(b"")
+    alias = base / ".hidden-link"
+    try:
+        alias.symlink_to(visible, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks not supported in this environment")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
+
+    response = client.get("/api/encoder/files", params={"directory": str(alias)})
+
+    assert response.json() == {"files": [], "truncated": False}
+
+
 def test_deleting_an_unknown_job_is_404(client):
     assert client.delete("/api/encoder/jobs/nope").status_code == 404
 
@@ -629,22 +982,32 @@ def test_a_non_bool_value_for_a_bool_field_is_rejected(client):
     """`bool("false")` is True in Python: a client sending the string "false"
     for a bool field would silently invert the rule's meaning unless this is
     caught at save time."""
-    payload = {"rules": [{"id": "r1",
-                          "conditions": [{"field": "dolby_vision", "op": "==",
-                                          "value": "false"}],
-                          "target": "skip"}],
-               "fallback": "skip"}
+    payload = {
+        "rules": [
+            {
+                "id": "r1",
+                "conditions": [{"field": "dolby_vision", "op": "==", "value": "false"}],
+                "target": "skip",
+            }
+        ],
+        "fallback": "skip",
+    }
     r = client.put("/api/encoder/rules", json=payload)
     assert r.status_code == 400
     assert "dolby_vision" in r.json()["reason"]
 
 
 def test_a_real_bool_value_for_a_bool_field_is_accepted(client):
-    payload = {"rules": [{"id": "r1",
-                          "conditions": [{"field": "dolby_vision", "op": "==",
-                                          "value": False}],
-                          "target": "skip"}],
-               "fallback": "skip"}
+    payload = {
+        "rules": [
+            {
+                "id": "r1",
+                "conditions": [{"field": "dolby_vision", "op": "==", "value": False}],
+                "target": "skip",
+            }
+        ],
+        "fallback": "skip",
+    }
     assert client.put("/api/encoder/rules", json=payload).status_code == 200
 
 
@@ -652,11 +1015,18 @@ def test_a_real_bool_value_for_a_bool_field_is_accepted(client):
 
 
 def test_contains_on_a_bool_field_is_rejected(client):
-    payload = {"rules": [{"id": "r1",
-                          "conditions": [{"field": "dolby_vision", "op": "contains",
-                                          "value": "tr"}],
-                          "target": "skip"}],
-               "fallback": "skip"}
+    payload = {
+        "rules": [
+            {
+                "id": "r1",
+                "conditions": [
+                    {"field": "dolby_vision", "op": "contains", "value": "tr"}
+                ],
+                "target": "skip",
+            }
+        ],
+        "fallback": "skip",
+    }
     r = client.put("/api/encoder/rules", json=payload)
     assert r.status_code == 400
     assert "dolby_vision" in r.json()["reason"]
@@ -674,8 +1044,9 @@ def test_approving_a_swap_interrupted_job_is_refused(client):
     store = routes_mod.get_store()
     job = store.create_job("/media3/Movies/x.mkv")
     store.set_remote_job(job.id, "remote-123")
-    store.set_stage(job.id, "blocked", error="restart mid-swap",
-                     error_code="swap_interrupted")
+    store.set_stage(
+        job.id, "blocked", error="restart mid-swap", error_code="swap_interrupted"
+    )
 
     r = client.post(f"/api/encoder/jobs/{job.id}/approve")
     assert r.status_code == 409
@@ -690,8 +1061,7 @@ def test_approving_an_encoder_unavailable_job_still_works(client):
     to approve normally."""
     store = routes_mod.get_store()
     job = store.create_job("/media3/Movies/y.mkv")
-    store.set_stage(job.id, "blocked", error="no gpu",
-                     error_code="encoder_unavailable")
+    store.set_stage(job.id, "blocked", error="no gpu", error_code="encoder_unavailable")
 
     r = client.post(f"/api/encoder/jobs/{job.id}/approve")
     assert r.status_code == 200
@@ -817,7 +1187,9 @@ def test_events_endpoint_fails_loud_after_a_contained_startup_failure(client):
     assert response.json()["code"] == "encoder_configuration_unavailable"
 
 
-def test_events_endpoint_resolves_the_store_before_the_streaming_response(client, monkeypatch):
+def test_events_endpoint_resolves_the_store_before_the_streaming_response(
+    client, monkeypatch
+):
     """get_store() must be called before StreamingResponse is constructed --
     otherwise a failure surfaces after 200 + SSE headers are already sent.
 
@@ -924,7 +1296,8 @@ def test_probe_failures_do_not_leak_ffprobe_output_to_the_caller(
 
     secret = "/etc/shadow: Permission denied"
     monkeypatch.setattr(
-        routes_mod, "probe",
+        routes_mod,
+        "probe",
         lambda _p: (_ for _ in ()).throw(ProbeError(secret)),
     )
 
@@ -935,13 +1308,16 @@ def test_probe_failures_do_not_leak_ffprobe_output_to_the_caller(
     assert "Permission denied" not in r.text
 
 
-def test_reprocess_clears_the_dedup_record(client, monkeypatch, tmp_path):
+def test_reprocess_immediately_returns_the_planned_job(client, monkeypatch, tmp_path):
+    from app.encoder import queue as queue_mod
+
     watch_root = tmp_path / "Movies"
     watch_root.mkdir()
     candidate = watch_root / "x.mkv"
     candidate.write_bytes(b"data")
     monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
     routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
+    monkeypatch.setattr(queue_mod, "probe", lambda _path: {})
 
     store = routes_mod.get_store()
     st = candidate.stat()
@@ -950,12 +1326,248 @@ def test_reprocess_clears_the_dedup_record(client, monkeypatch, tmp_path):
 
     r = client.post("/api/encoder/reprocess", json={"path": str(candidate)})
     assert r.status_code == 200
-    assert r.json()["cleared"] is True
-    assert str(candidate) not in store.seen_fingerprints()
+    assert r.json() == {
+        "job_id": routes_mod.get_store().newest_job_for_source(str(candidate)).id,
+        "path": str(candidate),
+        "stage": "skipped",
+        "created": True,
+    }
 
-    # Idempotent: clearing again is not an error, it just clears nothing.
-    assert client.post("/api/encoder/reprocess",
-                       json={"path": str(candidate)}).json()["cleared"] is False
+
+def test_reprocess_rejects_a_lexically_hidden_alias(client, monkeypatch, tmp_path):
+    base = tmp_path / "media"
+    visible = base / "Movies"
+    visible.mkdir(parents=True)
+    (visible / "x.mkv").write_bytes(b"data")
+    alias = base / ".hidden-link"
+    try:
+        alias.symlink_to(visible, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks not supported in this environment")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(base)])
+    routes_mod.register_runtime(FakeRuntime([str(visible)]))
+
+    response = client.post(
+        "/api/encoder/reprocess", json={"path": str(alias / "x.mkv")}
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_path"
+
+
+def test_job_reprocess_returns_an_existing_active_job(client, monkeypatch, tmp_path):
+    """A retry must not create a second active row for the same source."""
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    candidate = watch_root / "x.mkv"
+    candidate.write_bytes(b"data")
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
+
+    store = routes_mod.get_store()
+    failed_job = store.create_job(str(candidate))
+    store.set_stage(failed_job.id, "failed", error="encoder rejected it")
+    active_job = store.create_job(str(candidate))
+
+    response = client.post(f"/api/encoder/jobs/{failed_job.id}/reprocess")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "job_id": active_job.id,
+        "path": str(candidate),
+        "stage": "settling",
+        "created": False,
+    }
+    assert len(store.list_jobs()) == 2
+
+
+def test_failed_job_reprocess_creates_new_history_row(client, monkeypatch, tmp_path):
+    """Re-evaluation must preserve the failed row as terminal history."""
+    from app.encoder import queue as queue_mod
+
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    candidate = watch_root / "x.mkv"
+    candidate.write_bytes(b"data")
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
+    monkeypatch.setattr(queue_mod, "probe", lambda _path: {})
+
+    store = routes_mod.get_store()
+    failed_job = store.create_job(str(candidate))
+    store.set_stage(failed_job.id, "failed", error="encoder rejected it")
+
+    response = client.post(f"/api/encoder/jobs/{failed_job.id}/reprocess")
+
+    assert response.status_code == 200
+    assert response.json()["created"] is True
+    assert response.json()["job_id"] != failed_job.id
+    assert response.json()["path"] == str(candidate)
+    assert response.json()["stage"] == "skipped"
+    assert len(store.list_jobs()) == 2
+    assert store.get_job(failed_job.id).stage == "failed"
+
+
+def test_blocked_job_reprocess_creates_new_history_row(client, monkeypatch, tmp_path):
+    from app.encoder import queue as queue_mod
+
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    candidate = watch_root / "x.mkv"
+    candidate.write_bytes(b"data")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(tmp_path)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
+    monkeypatch.setattr(queue_mod, "probe", lambda _path: {})
+    store = routes_mod.get_store()
+    blocked = store.create_job(str(candidate))
+    store.set_stage(
+        blocked.id, "blocked", error="encoder unavailable", error_code="offline"
+    )
+
+    response = client.post(f"/api/encoder/jobs/{blocked.id}/reprocess")
+
+    assert response.status_code == 200
+    assert response.json()["created"] is True
+    assert response.json()["job_id"] != blocked.id
+    assert store.get_job(blocked.id).stage == "cancelled"
+    assert len(store.list_jobs()) == 2
+
+
+def test_swap_interrupted_blocked_job_cannot_be_reprocessed(
+    client, monkeypatch, tmp_path
+):
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    candidate = watch_root / "x.mkv"
+    candidate.write_bytes(b"data")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(tmp_path)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
+    store = routes_mod.get_store()
+    blocked = store.create_job(str(candidate))
+    store.set_stage(
+        blocked.id, "blocked", error="unknown publish", error_code="swap_interrupted"
+    )
+
+    response = client.post(f"/api/encoder/jobs/{blocked.id}/reprocess")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "swap_interrupted"
+
+
+def test_blocked_job_with_remote_work_cannot_be_reprocessed(
+    client, monkeypatch, tmp_path
+):
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    candidate = watch_root / "x.mkv"
+    candidate.write_bytes(b"data")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(tmp_path)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
+    store = routes_mod.get_store()
+    blocked = store.create_job(str(candidate))
+    store.set_remote_job(blocked.id, "remote-live")
+    store.set_stage(
+        blocked.id,
+        "blocked",
+        error="encoder unreachable",
+        error_code="encoder_unreachable",
+    )
+
+    response = client.post(f"/api/encoder/jobs/{blocked.id}/reprocess")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "remote_job_unresolved"
+    assert store.get_job(blocked.id).stage == "blocked"
+    assert len(store.list_jobs()) == 1
+
+
+def test_approve_does_not_resurrect_a_job_transitioned_for_recovery(
+    client, monkeypatch
+):
+    store = routes_mod.get_store()
+    job = store.create_job("/media3/Movies/x.mkv")
+    store.set_stage(job.id, "blocked", error="offline", error_code="offline")
+    encoder_queue = routes_mod.get_queue()
+    original = encoder_queue.enqueue_if_stage
+
+    def recover_before_claim(job_id, allowed_stages):
+        assert store.cancel_blocked_for_reprocess(job_id)
+        return original(job_id, allowed_stages)
+
+    monkeypatch.setattr(encoder_queue, "enqueue_if_stage", recover_before_claim)
+
+    response = client.post(f"/api/encoder/jobs/{job.id}/approve")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "not_awaiting_approval"
+    assert store.get_job(job.id).stage == "cancelled"
+
+
+def test_approve_rejects_and_reprocesses_when_file_modified_on_disk(
+    client, monkeypatch, tmp_path
+):
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    target = watch_root / "x.mkv"
+    target.write_bytes(b"initial data")
+    st1 = target.stat()
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(watch_root)])
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+
+    store = routes_mod.get_store()
+    job = store.create_job(str(target), st1.st_size, st1.st_mtime_ns)
+    store.set_stage(job.id, "pending")
+
+    # File on disk is modified externally
+    target.write_bytes(b"re-encoded smaller file")
+
+    response = client.post(f"/api/encoder/jobs/{job.id}/approve")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "file_modified"
+    assert store.get_job(job.id).stage == "cancelled"
+    assert store.get_job(job.id).error_code == "file_modified"
+
+
+def test_job_reprocess_rejects_unknown_and_swapping_jobs(client, monkeypatch, tmp_path):
+    """A missing row or a live swap cannot be safely re-evaluated."""
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    candidate = watch_root / "x.mkv"
+    candidate.write_bytes(b"data")
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+    routes_mod.register_runtime(FakeRuntime([str(watch_root)]))
+
+    missing = client.post("/api/encoder/jobs/nope/reprocess")
+    assert missing.status_code == 404
+    assert missing.json()["code"] == "job_not_found"
+
+    store = routes_mod.get_store()
+    swapping = store.create_job(str(candidate))
+    store.set_stage(swapping.id, "swapping")
+
+    response = client.post(f"/api/encoder/jobs/{swapping.id}/reprocess")
+    assert response.status_code == 409
+    assert response.json()["code"] == "job_swapping"
+
+
+def test_job_reprocess_refuses_a_source_outside_every_root(
+    client, monkeypatch, tmp_path
+):
+    outside = tmp_path / "elsewhere.mkv"
+    outside.write_bytes(b"data")
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [])
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [])
+    routes_mod.register_runtime(FakeRuntime([]))
+
+    store = routes_mod.get_store()
+    failed_job = store.create_job(str(outside))
+    store.set_stage(failed_job.id, "failed", error="encoder rejected it")
+
+    response = client.post(f"/api/encoder/jobs/{failed_job.id}/reprocess")
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_path"
 
 
 def test_reprocess_refuses_a_path_outside_every_root(client, monkeypatch, tmp_path):
@@ -967,3 +1579,76 @@ def test_reprocess_refuses_a_path_outside_every_root(client, monkeypatch, tmp_pa
     r = client.post("/api/encoder/reprocess", json={"path": str(outside)})
     assert r.status_code == 400
     assert r.json()["code"] == "invalid_path"
+
+
+def test_reprocess_all_starts_the_runtime_scan(client):
+    response = client.post("/api/encoder/reprocess-all")
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "bulk-run", "status": "started"}
+
+
+def test_stop_reprocess_all_signals_the_runtime(client):
+    response = client.delete("/api/encoder/reprocess-all")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "stopping"}
+
+
+def test_reprocess_status_returns_the_runtime_snapshot(client):
+    runtime = FakeRuntime(["/media3/Movies"])
+    runtime.reprocess_status = lambda: {
+        "active": False,
+        "event": {
+            "type": "reprocess",
+            "run_id": "bulk-run",
+            "status": "completed",
+            "scanned": 2,
+            "created": 1,
+            "skipped": 1,
+            "failed": 0,
+            "path": None,
+            "error": None,
+        },
+    }
+    routes_mod.register_runtime(runtime)
+
+    response = client.get("/api/encoder/reprocess-all/status")
+
+    assert response.status_code == 200
+    assert response.json()["event"]["status"] == "completed"
+
+
+def test_reprocess_all_without_a_registered_runtime_uses_the_flat_error_envelope():
+    """Runtime lookup is part of route startup and must not escape as a 500 traceback."""
+    routes_mod.reset_state_for_tests()
+    app = FastAPI()
+    app.include_router(routes_mod.router)
+    routes_mod.register_error_handlers(app)
+
+    with TestClient(app) as client:
+        response = client.post("/api/encoder/reprocess-all")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "code": "reprocess_start_failed",
+        "reason": "Encoder runtime is unavailable; check the server logs for the cause",
+    }
+
+
+def test_reprocess_all_preserves_the_startup_configuration_error_envelope():
+    """The generic start failure must not swallow the established 503 contract."""
+    routes_mod.reset_state_for_tests()
+    routes_mod.mark_startup_failed("watch path is unavailable")
+    app = FastAPI()
+    app.include_router(routes_mod.router)
+    routes_mod.register_error_handlers(app)
+
+    with TestClient(app) as client:
+        response = client.post("/api/encoder/reprocess-all")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "code": "encoder_configuration_unavailable",
+        "reason": "Encoder configuration is unavailable: watch path is unavailable",
+    }

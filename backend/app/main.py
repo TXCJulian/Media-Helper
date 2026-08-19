@@ -390,9 +390,15 @@ async def lifespan(app: FastAPI):
             if encoder_cleanup_task is not None:
                 encoder_cleanup_task.cancel()
             if encoder_runtime is not None:
-                encoder_runtime.stop()
+                try:
+                    encoder_runtime.stop()
+                except Exception:
+                    logger.exception("Encoder runtime cleanup failed during shutdown")
             if encoder_queue is not None:
-                encoder_queue.stop()
+                try:
+                    encoder_queue.stop()
+                except Exception:
+                    logger.exception("Encoder queue cleanup failed during shutdown")
         _stop_observers()
 
 

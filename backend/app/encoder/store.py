@@ -240,6 +240,38 @@ class EncoderStore:
     def set_progress(self, job_id: str, pct: float) -> None:
         self._update(job_id, progress=float(pct))
 
+    def cancel_blocked_for_reprocess(self, job_id: str) -> bool:
+        """Release a recoverable blocked row while retaining it as history."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE jobs SET stage = 'cancelled', updated_at = datetime('now') "
+                "WHERE id = ? AND stage = 'blocked' AND "
+                "COALESCE(error_code, '') != 'swap_interrupted'",
+                (job_id,),
+            )
+            self._conn.commit()
+        return cur.rowcount > 0
+
+    def transition_stage(
+        self, job_id: str, allowed_stages: Iterable[str], stage: str
+    ) -> bool:
+        """Atomically move a job only if it is still in an allowed stage."""
+        if stage not in STAGES:
+            raise ValueError(f"Unknown stage: {stage}")
+        allowed = tuple(allowed_stages)
+        if not allowed or any(candidate not in STAGES for candidate in allowed):
+            raise ValueError("Unknown or empty allowed stage set")
+        placeholders = ", ".join("?" for _ in allowed)
+        with self._lock:
+            cur = self._conn.execute(
+                f"UPDATE jobs SET stage = ?, error = NULL, error_code = NULL, "
+                f"updated_at = datetime('now') WHERE id = ? "
+                f"AND stage IN ({placeholders})",
+                (stage, job_id, *allowed),
+            )
+            self._conn.commit()
+        return cur.rowcount > 0
+
     def set_remote_job(self, job_id: str, remote_job_id: str) -> None:
         self._update(job_id, remote_job_id=remote_job_id)
 
@@ -299,6 +331,39 @@ class EncoderStore:
             ).fetchall()
         return {r["source_path"] for r in rows}
 
+    def active_jobs_by_source(self) -> dict[str, Job]:
+        """Return `{source_path: Job}` for every active (non-terminal) job."""
+        placeholders = ",".join("?" * len(TERMINAL_STAGES))
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM jobs WHERE stage NOT IN ({placeholders}) "
+                "ORDER BY created_at DESC, rowid DESC",
+                TERMINAL_STAGES,
+            ).fetchall()
+        return {r["source_path"]: _to_job(r) for r in rows}
+
+    def active_job_for_source(self, source_path: str) -> Job | None:
+        """Return the newest non-terminal job for *source_path*, if any."""
+        placeholders = ",".join("?" * len(TERMINAL_STAGES))
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT * FROM jobs WHERE source_path = ? "
+                f"AND stage NOT IN ({placeholders}) "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (source_path, *TERMINAL_STAGES),
+            ).fetchone()
+        return _to_job(row) if row else None
+
+    def newest_job_for_source(self, source_path: str) -> Job | None:
+        """Return the newest job for *source_path*, including terminal jobs."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM jobs WHERE source_path = ? "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (source_path,),
+            ).fetchone()
+        return _to_job(row) if row else None
+
     def seen_fingerprints(self) -> dict[str, tuple[int, int]]:
         """`{path: (size, mtime_ns)}` for every file already decided about.
 
@@ -317,6 +382,14 @@ class EncoderStore:
                 "SELECT path, size, mtime_ns FROM seen_files"
             ).fetchall()
         return {r["path"]: (r["size"], r["mtime_ns"]) for r in rows}
+
+    def get_seen(self, path: str) -> tuple[int, int] | None:
+        """Return `(size, mtime_ns)` if *path* has a recorded fingerprint."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT size, mtime_ns FROM seen_files WHERE path = ?", (path,)
+            ).fetchone()
+        return (row["size"], row["mtime_ns"]) if row else None
 
     def mark_seen(self, path: str, size: int, mtime_ns: int) -> None:
         """Record that *path* has been decided about at this exact fingerprint.

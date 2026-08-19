@@ -1,8 +1,19 @@
 import { type UIEvent, useRef, useState } from 'react'
-import { deleteEncoderPreset, importEncoderPresets, saveEncoderPreset } from '@/lib/api'
+import {
+  deleteEncoderPreset,
+  importEncoderPresets,
+  previewEncoderPresets,
+  saveEncoderPreset,
+} from '@/lib/api'
+import EncoderSelect from '@/components/encoder/EncoderSelect'
 import IconButton from '@/components/ui/IconButton'
 import { PencilIcon, SaveIcon, TrashIcon } from '@/components/ui/icons'
-import type { EncoderHealth, EncoderPreset } from '@/types'
+import type {
+  EncoderHealth,
+  EncoderPreset,
+  EncoderPresetImportResult,
+  EncoderPresetPreview,
+} from '@/types'
 
 type GuidedPresetFields = {
   name: string
@@ -18,6 +29,10 @@ type Draft = {
   body: Record<string, unknown>
   rawText: string
   rawError: string | null
+}
+
+type ImportSummary = EncoderPresetImportResult & {
+  unsupported: EncoderPresetPreview[]
 }
 
 export type PresetEditorProps = {
@@ -135,6 +150,43 @@ const COMMON_SPEEDS = [
 
 const COMMON_QUALITY_VALUES = ['16', '18', '20', '22', '24', '26', '28', '30', '32']
 
+function PresetEditorTabs({
+  view,
+  onSelectView,
+}: {
+  view: 'guided' | 'raw'
+  onSelectView: (view: 'guided' | 'raw') => void
+}) {
+  return (
+    <div className="flex gap-2" aria-label="Preset editor mode">
+      <button
+        type="button"
+        aria-pressed={view === 'guided'}
+        onClick={() => onSelectView('guided')}
+        className={`rounded-lg border px-3 py-1.5 text-[0.75rem] font-medium transition ${
+          view === 'guided'
+            ? 'border-teal-400/30 bg-teal-400/15 text-teal-300'
+            : 'border-white/8 bg-white/4 text-[var(--text-secondary)] hover:text-white'
+        }`}
+      >
+        Guided fields
+      </button>
+      <button
+        type="button"
+        aria-pressed={view === 'raw'}
+        onClick={() => onSelectView('raw')}
+        className={`rounded-lg border px-3 py-1.5 text-[0.75rem] font-medium transition ${
+          view === 'raw'
+            ? 'border-teal-400/30 bg-teal-400/15 text-teal-300'
+            : 'border-white/8 bg-white/4 text-[var(--text-secondary)] hover:text-white'
+        }`}
+      >
+        Raw JSON
+      </button>
+    </div>
+  )
+}
+
 export default function PresetEditor({
   presets,
   health,
@@ -145,10 +197,11 @@ export default function PresetEditor({
   const [draft, setDraft] = useState<Draft | null>(null)
   const [view, setView] = useState<'guided' | 'raw'>('guided')
   const [saving, setSaving] = useState(false)
-  const [importSummary, setImportSummary] = useState<{
-    imported: string[]
-    skipped: { name: string; encoder: string; reason: string }[]
-  } | null>(null)
+  const [importDocument, setImportDocument] = useState<Record<string, unknown> | null>(null)
+  const [importCandidates, setImportCandidates] = useState<EncoderPresetPreview[] | null>(null)
+  const [selectedImportNames, setSelectedImportNames] = useState<string[]>([])
+  const [importing, setImporting] = useState(false)
+  const [importSummary, setImportSummary] = useState<ImportSummary | null>(null)
   const importInput = useRef<HTMLInputElement>(null)
   const rawHighlightRef = useRef<HTMLPreElement>(null)
   const rawLineNumbersRef = useRef<HTMLPreElement>(null)
@@ -187,7 +240,7 @@ export default function PresetEditor({
       setDraft({
         ...draft,
         body,
-        rawText: draft.originalName ? formatBody(body) : rawText,
+        rawText,
         rawError: null,
       })
     } catch (error) {
@@ -246,15 +299,39 @@ export default function PresetEditor({
     }
   }
 
-  const importDocument = async (file: File) => {
+  const previewImportDocument = async (file: File) => {
     try {
       const parsed: unknown = JSON.parse(await file.text())
       if (!isJsonObject(parsed)) throw new Error('Imported preset document must be a JSON object.')
-      const summary = await importEncoderPresets(parsed)
-      setImportSummary(summary)
+      const preview = await previewEncoderPresets(parsed)
+      setImportDocument(parsed)
+      setImportCandidates(preview.presets)
+      setSelectedImportNames(
+        preview.presets.filter((preset) => preset.supported).map((preset) => preset.name),
+      )
+      setImportSummary(null)
+    } catch (error) {
+      onError(errorMessage(error))
+    }
+  }
+
+  const importSelectedPresets = async () => {
+    if (!importDocument || selectedImportNames.length === 0) return
+    setImporting(true)
+    try {
+      const summary = await importEncoderPresets(importDocument, selectedImportNames)
+      setImportSummary({
+        ...summary,
+        unsupported: importCandidates?.filter((candidate) => !candidate.supported) ?? [],
+      })
+      setImportDocument(null)
+      setImportCandidates(null)
+      setSelectedImportNames([])
       onSaved()
     } catch (error) {
       onError(errorMessage(error))
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -293,7 +370,7 @@ export default function PresetEditor({
           className="hidden"
           onChange={(event) => {
             const file = event.target.files?.[0]
-            if (file) void importDocument(file)
+            if (file) void previewImportDocument(file)
             event.target.value = ''
           }}
         />
@@ -319,6 +396,7 @@ export default function PresetEditor({
             body.FileFormat = asString(body.FileFormat) || 'av_mkv'
             openDraft(body, null)
           }}
+          className="rounded-lg border border-teal-400/25 bg-teal-400/10 px-3 py-2 text-[0.75rem] font-medium text-teal-300 disabled:opacity-50"
         >
           New guided preset
         </button>
@@ -337,19 +415,122 @@ export default function PresetEditor({
               'raw',
             )
           }}
-          className="rounded-lg border border-white/10 px-3 py-2 text-[0.75rem] text-[var(--text-secondary)]"
+          className="rounded-lg border border-white/10 bg-white/4 px-3 py-2 text-[0.75rem] text-[var(--text-secondary)] hover:text-white"
         >
           New raw preset
         </button>
       </div>
 
+      {importCandidates && (
+        <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[rgba(0,0,0,0.2)] p-4">
+          <p className="text-[0.78rem] font-medium text-[var(--text-secondary)]">
+            Choose the presets to import.
+          </p>
+          <ul
+            className="max-h-[360px] space-y-2 overflow-y-auto pr-1"
+            aria-label="Preset import candidates"
+          >
+            {importCandidates.map((candidate) => {
+              const isSelected = selectedImportNames.includes(candidate.name)
+              return (
+                <li
+                  key={`${candidate.name}-${candidate.encoder}`}
+                  className={`rounded-lg border p-2.5 transition-colors ${
+                    isSelected
+                      ? 'border-teal-500/30 bg-teal-500/[0.06]'
+                      : 'border-white/6 bg-[rgba(0,0,0,0.15)]'
+                  }`}
+                >
+                  <label
+                    className={`flex cursor-pointer items-start gap-3 text-[0.78rem] ${
+                      candidate.supported
+                        ? 'text-[var(--text-primary)]'
+                        : 'text-[var(--text-secondary)] opacity-60'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      aria-label={`Keep preset ${candidate.name}`}
+                      checked={isSelected}
+                      disabled={!candidate.supported || importing}
+                      onChange={(event) => {
+                        setSelectedImportNames((current) =>
+                          event.target.checked
+                            ? [...current, candidate.name]
+                            : current.filter((name) => name !== candidate.name),
+                        )
+                      }}
+                      className="mt-0.5 h-4 w-4 shrink-0 rounded border-white/20 bg-white/5 text-teal-400 focus:ring-teal-400"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-baseline gap-1.5">
+                        <span className="font-medium text-[var(--text-primary)]">
+                          {candidate.name}
+                        </span>
+                        <span className="text-[0.72rem] text-[var(--text-secondary)]">
+                          ({candidate.encoder})
+                        </span>
+                      </div>
+                      {!candidate.supported && candidate.reason && (
+                        <span className="mt-1 block text-[0.72rem] text-amber-200">
+                          {candidate.reason}
+                        </span>
+                      )}
+                    </div>
+                  </label>
+                </li>
+              )
+            })}
+          </ul>
+          <div className="flex gap-2 pt-1">
+            <button
+              type="button"
+              disabled={importing || selectedImportNames.length === 0}
+              onClick={() => void importSelectedPresets()}
+              className="rounded-lg border border-teal-400/25 bg-teal-400/10 px-3 py-2 text-[0.75rem] font-medium text-teal-300 disabled:opacity-50"
+            >
+              {importing ? 'Importing…' : 'Import selected presets'}
+            </button>
+            <button
+              type="button"
+              disabled={importing}
+              onClick={() => {
+                setImportDocument(null)
+                setImportCandidates(null)
+                setSelectedImportNames([])
+              }}
+              className="rounded-lg border border-white/8 px-3 py-2 text-[0.75rem] text-[var(--text-secondary)] disabled:opacity-50 hover:text-white"
+            >
+              Cancel import
+            </button>
+          </div>
+          {selectedImportNames.length === 0 && (
+            <p className="text-[0.72rem] text-amber-200">
+              Select at least one supported preset to import.
+            </p>
+          )}
+        </div>
+      )}
+
       {importSummary && (
         <div
           role="status"
-          className={`rounded-lg border px-3 py-2 text-[0.75rem] ${importSummary.skipped.length ? 'border-amber-400/30 bg-amber-400/10 text-amber-200' : 'border-teal-400/25 bg-teal-400/10 text-teal-200'}`}
+          className={`rounded-lg border px-3 py-2 text-[0.75rem] ${importSummary.skipped.length || importSummary.unsupported.length ? 'border-amber-400/30 bg-amber-400/10 text-amber-200' : 'border-teal-400/25 bg-teal-400/10 text-teal-200'}`}
         >
           Imported {importSummary.imported.length} preset
           {importSummary.imported.length === 1 ? '' : 's'}.
+          {importSummary.unselected.length > 0 && (
+            <p className="mt-1">Not imported: {importSummary.unselected.join(', ')}.</p>
+          )}
+          {importSummary.unsupported.length > 0 && (
+            <ul className="mt-1 list-disc pl-4">
+              {importSummary.unsupported.map((item) => (
+                <li key={`${item.name}-${item.encoder}`}>
+                  {item.name}: {item.reason}
+                </li>
+              ))}
+            </ul>
+          )}
           {importSummary.skipped.length > 0 && (
             <ul className="mt-1 list-disc pl-4">
               {importSummary.skipped.map((item) => (
@@ -369,7 +550,7 @@ export default function PresetEditor({
       <ul className="space-y-2" aria-label="Stored presets">
         {presets.map((preset) => (
           <li key={preset.name} className="flex items-center gap-2">
-            <span>{preset.name}</span>
+            <span className="text-[0.75rem] text-[var(--text-secondary)]">{preset.name}</span>
             <IconButton
               label={`Edit ${preset.name}`}
               disabled={!preset.body || saving}
@@ -392,18 +573,7 @@ export default function PresetEditor({
 
       {draft && form && (
         <div className="space-y-3">
-          <div className="flex gap-2" aria-label="Preset editor mode">
-            <button
-              type="button"
-              aria-pressed={view === 'guided'}
-              onClick={() => setView('guided')}
-            >
-              Guided fields
-            </button>
-            <button type="button" aria-pressed={view === 'raw'} onClick={() => setView('raw')}>
-              Raw JSON
-            </button>
-          </div>
+          <PresetEditorTabs view={view} onSelectView={setView} />
 
           {view === 'guided' ? (
             <div className="grid gap-2">
@@ -415,9 +585,10 @@ export default function PresetEditor({
                   onChange={(event) => updateGuided('name', event.target.value)}
                 />
               </label>
-              <label>
-                Video encoder
-                <select
+              <div>
+                <span className="block text-[0.78rem] text-[var(--text-secondary)] mb-1">Video encoder</span>
+                <EncoderSelect
+                  aria-label="Video encoder"
                   value={form.encoder}
                   onChange={(event) => {
                     const encoder = event.target.value
@@ -425,89 +596,62 @@ export default function PresetEditor({
                     const firstSpeed = health?.encoder_presets?.[encoder]?.[0]
                     if (firstSpeed) updateGuided('videoPreset', firstSpeed)
                   }}
-                  className="input-field input-teal"
-                >
-                  {encoderOptions.map((encoder) => (
-                    <option key={encoder} value={encoder}>
-                      {encoder}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Speed preset
-                <select
+                  options={encoderOptions}
+                />
+              </div>
+              <div>
+                <span className="block text-[0.78rem] text-[var(--text-secondary)] mb-1">Speed preset</span>
+                <EncoderSelect
+                  aria-label="Speed preset"
                   value={form.videoPreset}
                   onChange={(event) => updateGuided('videoPreset', event.target.value)}
-                  className="input-field input-teal"
-                >
-                  {speedOptions.map((speed) => (
-                    <option key={speed} value={speed}>
-                      {speed}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                File format
-                <select
+                  options={speedOptions}
+                />
+              </div>
+              <div>
+                <span className="block text-[0.78rem] text-[var(--text-secondary)] mb-1">File format</span>
+                <EncoderSelect
+                  aria-label="File format"
                   value={form.fileFormat}
                   onChange={(event) => updateGuided('fileFormat', event.target.value)}
-                  className="input-field input-teal"
-                >
-                  {['av_mkv', 'av_mp4', 'av_webm'].map((format) => (
-                    <option key={format} value={format}>
-                      {format}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Quality type
-                <select
+                  options={['av_mkv', 'av_mp4', 'av_webm']}
+                />
+              </div>
+              <div>
+                <span className="block text-[0.78rem] text-[var(--text-secondary)] mb-1">Quality type</span>
+                <EncoderSelect
+                  aria-label="Quality type"
                   value={form.qualityType}
                   onChange={(event) => updateGuided('qualityType', event.target.value)}
-                  className="input-field input-teal"
-                >
-                  {['0', '1', '2'].map((value) => (
-                    <option key={value} value={value}>
-                      {value}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Quality
-                <select
+                  options={['0', '1', '2']}
+                />
+              </div>
+              <div>
+                <span className="block text-[0.78rem] text-[var(--text-secondary)] mb-1">Quality</span>
+                <EncoderSelect
+                  aria-label="Quality"
                   value={form.quality}
                   onChange={(event) => updateGuided('quality', event.target.value)}
-                  className="input-field input-teal"
-                >
-                  <option value="">Not set</option>
-                  {qualityOptions.map((quality) => (
-                    <option key={quality} value={quality}>
-                      {quality}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  options={[{ value: '', label: 'Not set' }, ...qualityOptions]}
+                />
+              </div>
             </div>
           ) : (
-            <label className="grid gap-1 text-[0.78rem] text-[var(--text-secondary)]">
+            <label className="grid min-h-0 gap-1 text-[0.78rem] text-[var(--text-secondary)]">
               Preset JSON
-              <div className="relative flex overflow-hidden rounded-lg border border-[var(--border)] bg-[#101018] font-mono text-[0.75rem] leading-5">
+              <div className="relative flex h-[28rem] max-h-[70vh] min-h-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[#101018] font-mono text-[0.75rem] leading-5">
                 <pre
                   ref={rawLineNumbersRef}
                   aria-hidden="true"
-                  className="pointer-events-none min-w-10 select-none border-r border-white/8 px-2 py-2 text-right text-white/25"
+                  className="pointer-events-none h-full min-h-0 min-w-10 select-none border-r border-white/8 px-2 py-2 text-right text-white/25"
                 >
                   {draft.rawText.split('\n').map((_, index) => `${index + 1}\n`)}
                 </pre>
-                <div className="relative min-h-[280px] flex-1">
+                <div className="relative min-h-0 flex-1">
                   <pre
                     ref={rawHighlightRef}
                     aria-hidden="true"
-                    className="pointer-events-none absolute inset-0 m-0 overflow-hidden whitespace-pre-wrap break-words px-3 py-2"
+                    className="pointer-events-none absolute top-0 left-0 m-0 min-h-0 min-w-full w-max whitespace-pre px-3 py-2 font-mono text-[0.75rem] leading-5"
                     dangerouslySetInnerHTML={{ __html: highlightJson(draft.rawText) }}
                   />
                   <textarea
@@ -515,8 +659,9 @@ export default function PresetEditor({
                     value={draft.rawText}
                     onChange={(event) => updateRaw(event.target.value)}
                     onScroll={syncRawScroll}
-                    rows={14}
-                    className="relative z-10 min-h-[280px] w-full resize-y bg-transparent px-3 py-2 text-transparent caret-white outline-none selection:bg-teal-400/25"
+                    wrap="off"
+                    spellCheck={false}
+                    className="relative z-10 h-full min-h-0 w-full resize-none overflow-auto bg-transparent px-3 py-2 font-mono text-[0.75rem] leading-5 text-transparent caret-white outline-none selection:bg-teal-400/25"
                   />
                 </div>
               </div>

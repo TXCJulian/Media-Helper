@@ -76,6 +76,13 @@ def test_active_source_paths_excludes_terminal_jobs(store):
     assert store.active_source_paths() == {"/media3/b.mkv"}
 
 
+def test_active_job_for_source_returns_newest_non_terminal_job(store):
+    job = store.create_job("/media3/x.mkv")
+    assert store.active_job_for_source("/media3/x.mkv").id == job.id
+    store.set_stage(job.id, "done")
+    assert store.active_job_for_source("/media3/x.mkv") is None
+
+
 def test_plan_fields_round_trip(store):
     job = store.create_job("/media3/x.mkv")
     store.set_plan(job.id, "CPU 4K", "r1", {"height": 2160}, 21_902_137_344)

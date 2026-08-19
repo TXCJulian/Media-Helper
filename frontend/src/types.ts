@@ -285,6 +285,29 @@ export interface EncoderPreset {
   body?: Record<string, unknown>
 }
 
+export interface EncoderPresetPreview {
+  name: string
+  encoder: string
+  supported: boolean
+  reason: string | null
+}
+
+export interface EncoderPresetPreviewResult {
+  presets: EncoderPresetPreview[]
+}
+
+export interface EncoderPresetImportSkip {
+  name: string
+  encoder: string
+  reason: string
+}
+
+export interface EncoderPresetImportResult {
+  imported: string[]
+  skipped: EncoderPresetImportSkip[]
+  unselected: string[]
+}
+
 export type EncoderJobStage =
   | 'settling'
   | 'pending'
@@ -306,6 +329,7 @@ export interface EncoderJob {
   rule_id: string | null
   error: string | null
   error_code: string | null
+  remote_job_id?: string | null
   output_path: string | null
   facts: Record<string, unknown>
   original_size: number | null
@@ -313,6 +337,41 @@ export interface EncoderJob {
   saved_bytes: number | null
   created_at: string
   updated_at: string
+}
+
+export interface ReprocessResult {
+  job_id: string
+  path: string
+  stage: EncoderJobStage
+  created: boolean
+}
+
+export type EncoderReprocessStatus = 'started' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+export interface EncoderReprocessEvent {
+  type: 'reprocess'
+  run_id: string
+  status: EncoderReprocessStatus
+  scanned: number
+  created: number
+  skipped: number
+  failed: number
+  path: string | null
+  error: string | null
+}
+
+export interface EncoderReprocessRun {
+  run_id: string
+  status: EncoderReprocessStatus | 'already_running'
+}
+
+export interface EncoderReprocessStopResult {
+  status: 'stopping'
+}
+
+export interface EncoderReprocessState {
+  active: boolean
+  event: EncoderReprocessEvent | null
 }
 
 export interface EncoderRuleCondition {

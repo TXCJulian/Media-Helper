@@ -12,6 +12,9 @@ import {
   fetchEncoderPreset,
   fetchEncoderPresets,
   fetchEncoderRules,
+  reprocessEncoderJob,
+  startEncoderReprocessAll,
+  stopEncoderReprocessAll,
 } from '@/lib/api'
 import type { EncoderConfig, EncoderHealth, EncoderJob, EncoderPreset, EncoderRule } from '@/types'
 
@@ -45,7 +48,13 @@ function isAtLeastAsRecent(candidate: EncoderJob, current: EncoderJob): boolean 
 }
 
 export default function EncoderPanel({ onBack }: EncoderPanelProps) {
-  const { jobs: streamedJobs, connected, snapshotReceived } = useEncoderStream()
+  const {
+    jobs: streamedJobs,
+    connected,
+    snapshotReceived,
+    latestReprocessEvent,
+    reprocessActive,
+  } = useEncoderStream()
   const [health, setHealth] = useState<EncoderHealth | null>(null)
   const [checkingHealth, setCheckingHealth] = useState(true)
   const [config, setConfig] = useState<EncoderConfig | null>(null)
@@ -65,6 +74,8 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
   const healthRequest = useRef(0)
   const resourceRequest = useRef(0)
   const approvingJobs = useRef(new Set<string>())
+  const reprocessingJobs = useRef(new Set<string>())
+  const [reprocessingJobIds, setReprocessingJobIds] = useState<Set<string>>(() => new Set())
 
   const checkHealth = useCallback(async () => {
     const request = ++healthRequest.current
@@ -189,6 +200,29 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
     }
   }
 
+  const reprocess = async (jobId: string) => {
+    if (reprocessingJobs.current.has(jobId)) return
+    reprocessingJobs.current.add(jobId)
+    setReprocessingJobIds((current) => new Set(current).add(jobId))
+    const operation = `reprocess:${jobId}`
+    try {
+      const result = await reprocessEncoderJob(jobId)
+      if (result.created) {
+        setAcknowledgedStages((current) => new Map(current).set(jobId, 'cancelled'))
+      }
+      updateJobError(operation)
+    } catch (actionError) {
+      updateJobError(operation, errorMessage(actionError, 'Failed to re-evaluate encoder job.'))
+    } finally {
+      reprocessingJobs.current.delete(jobId)
+      setReprocessingJobIds((current) => {
+        const next = new Set(current)
+        next.delete(jobId)
+        return next
+      })
+    }
+  }
+
   const healthy = health?.status === 'ok'
   const healthLabel = checkingHealth
     ? 'Checking...'
@@ -260,6 +294,10 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
               void refreshResources(false)
             }}
             onError={setSettingsError}
+            onStartReprocessAll={startEncoderReprocessAll}
+            onStopReprocessAll={stopEncoderReprocessAll}
+            latestReprocessEvent={latestReprocessEvent}
+            reprocessActive={reprocessActive}
           />
         ) : (
           <button
@@ -288,6 +326,8 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
                   job={job}
                   onApprove={(id) => void approve(id)}
                   onDelete={(id) => void remove(id)}
+                  onReprocess={(id) => void reprocess(id)}
+                  reprocessing={reprocessingJobIds.has(job.job_id)}
                 />
               ))
             ) : (
@@ -303,7 +343,7 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
             type="button"
             aria-expanded={historyOpen}
             onClick={() => setHistoryOpen((open) => !open)}
-            className={`flex w-full items-center gap-2 border border-[var(--glass-border)] bg-[var(--glass-bg)] px-4 py-2.5 text-left text-[0.8rem] font-medium text-white/70 backdrop-blur-sm transition hover:border-[var(--accent-5)]/30 hover:text-white/90 ${historyOpen ? 'rounded-t-xl' : 'rounded-xl'}`}
+            className={`flex w-full cursor-pointer items-center gap-2 border border-[var(--glass-border)] bg-[var(--glass-bg)] px-4 py-2.5 text-left text-[0.8rem] font-medium text-white/70 backdrop-blur-sm transition hover:border-[var(--accent-5)]/30 hover:text-white/90 ${historyOpen ? 'rounded-t-xl' : 'rounded-xl'}`}
           >
             <span className={`inline-block transition-transform ${historyOpen ? 'rotate-90' : ''}`}>
               &#9654;
@@ -320,6 +360,8 @@ export default function EncoderPanel({ onBack }: EncoderPanelProps) {
                     job={job}
                     onApprove={(id) => void approve(id)}
                     onDelete={(id) => void remove(id)}
+                    onReprocess={(id) => void reprocess(id)}
+                    reprocessing={reprocessingJobIds.has(job.job_id)}
                   />
                 ))
               ) : (

@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
-import { openEncoderStream } from '@/lib/api'
-import type { EncoderJob } from '@/types'
+import { useEffect, useRef, useState } from 'react'
+import { fetchEncoderReprocessStatus, openEncoderStream } from '@/lib/api'
+import type { EncoderJob, EncoderReprocessEvent } from '@/types'
 
 const encoderJobStages = new Set<EncoderJob['stage']>([
   'settling',
@@ -55,6 +55,31 @@ function isSnapshot(value: unknown): value is { type: 'snapshot'; jobs: EncoderJ
   return object.type === 'snapshot' && Array.isArray(object.jobs) && object.jobs.every(isEncoderJob)
 }
 
+const encoderReprocessStatuses = new Set<EncoderReprocessEvent['status']>([
+  'started',
+  'running',
+  'completed',
+  'failed',
+  'cancelled',
+])
+
+function isEncoderReprocessEvent(value: unknown): value is EncoderReprocessEvent {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const event = value as Record<string, unknown>
+  return (
+    event.type === 'reprocess' &&
+    typeof event.run_id === 'string' &&
+    event.run_id.length > 0 &&
+    typeof event.status === 'string' &&
+    encoderReprocessStatuses.has(event.status as EncoderReprocessEvent['status']) &&
+    ['scanned', 'created', 'skipped', 'failed'].every(
+      (key) => typeof event[key] === 'number' && Number.isInteger(event[key]) && event[key] >= 0,
+    ) &&
+    isNullableString(event.path) &&
+    isNullableString(event.error)
+  )
+}
+
 /** Fold a server job event into the local stream state. */
 export function applyEncoderStreamEvent(jobs: EncoderJob[], raw: string): EncoderJob[] {
   let parsed: unknown
@@ -87,16 +112,30 @@ export function useEncoderStream(): {
   jobs: EncoderJob[]
   connected: boolean
   snapshotReceived: boolean
+  latestReprocessEvent: EncoderReprocessEvent | null
+  reprocessActive: boolean | null
 } {
   const [jobs, setJobs] = useState<EncoderJob[]>([])
   const [connected, setConnected] = useState(false)
   const [snapshotReceived, setSnapshotReceived] = useState(false)
+  const [latestReprocessEvent, setLatestReprocessEvent] = useState<EncoderReprocessEvent | null>(
+    null,
+  )
+  const [reprocessActive, setReprocessActive] = useState<boolean | null>(null)
+  const latestReprocessEventRef = useRef<EncoderReprocessEvent | null>(null)
+  const reprocessSseGenerationRef = useRef(0)
 
   useEffect(() => {
     return openEncoderStream((data) => {
       try {
         const parsed: unknown = JSON.parse(data)
         if (isSnapshot(parsed)) setSnapshotReceived(true)
+        if (isEncoderReprocessEvent(parsed)) {
+          reprocessSseGenerationRef.current += 1
+          latestReprocessEventRef.current = parsed
+          setLatestReprocessEvent(parsed)
+          setReprocessActive(parsed.status === 'started' || parsed.status === 'running')
+        }
       } catch {
         // applyEncoderStreamEvent owns malformed-frame handling.
       }
@@ -104,5 +143,47 @@ export function useEncoderStream(): {
     }, setConnected)
   }, [])
 
-  return { jobs, connected, snapshotReceived }
+  useEffect(() => {
+    if (!connected) return
+    let current = true
+    const controller = new AbortController()
+    const sseGenerationAtRequest = reprocessSseGenerationRef.current
+
+    // Recover authoritative bulk status on initial SSE connection.
+    // In React 18 Strict Mode, effects double-invoke on mount. The combination of
+    // AbortController, the local `current` boolean flag, and comparing `reprocessSseGenerationRef.current`
+    // against `sseGenerationAtRequest` guarantees that neither double-invocation nor in-flight HTTP
+    // responses overwrite fresher SSE events arriving during flight.
+    void fetchEncoderReprocessStatus(controller.signal)
+      .then((status) => {
+        if (!current || reprocessSseGenerationRef.current !== sseGenerationAtRequest) return
+        const latest = latestReprocessEventRef.current
+        const recovered = status.event
+        if (
+          latest &&
+          recovered &&
+          latest.run_id === recovered.run_id &&
+          (latest.status === 'completed' ||
+            latest.status === 'failed' ||
+            latest.status === 'cancelled') &&
+          (recovered.status === 'started' || recovered.status === 'running')
+        ) {
+          return
+        }
+        latestReprocessEventRef.current = recovered
+        setReprocessActive(status.active)
+        setLatestReprocessEvent(recovered)
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return
+        // SSE remains authoritative while the lightweight recovery request is unavailable.
+      })
+
+    return () => {
+      current = false
+      controller.abort()
+    }
+  }, [connected])
+
+  return { jobs, connected, snapshotReceived, latestReprocessEvent, reprocessActive }
 }

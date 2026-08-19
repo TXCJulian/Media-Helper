@@ -20,6 +20,12 @@ from app.encoder.events import EventBroadcaster, job_to_payload
 from app.encoder.presets import NamedPreset, PresetError, parse_document
 from app.encoder.probe import ProbeError, probe
 from app.encoder.queue import EncodeQueue
+from app.encoder.reprocess import (
+    has_excluded_ancestor,
+    is_excluded_path,
+    prune_excluded_dirs,
+    resolve_authorized_path,
+)
 from app.encoder.rules import (
     _BOOL_FIELDS,
     SKIP,
@@ -172,6 +178,19 @@ def reset_state_for_tests() -> None:
 
 class PresetImport(BaseModel):
     document: dict
+    include_names: list[str] | None = None
+
+
+class PresetPreview(BaseModel):
+    document: dict
+
+
+class ReprocessIn(BaseModel):
+    path: str
+
+
+class BulkRunIn(BaseModel):
+    paths: list[str]
 
 
 class PresetLeaf(BaseModel):
@@ -369,7 +388,12 @@ def encoder_directories(
             if visited > _MAX_WALK_ENTRIES:
                 truncated = True
                 break
-            dirs[:] = [d for d in dirs if d != ".trickplay" and not d.startswith(".")]
+            if is_excluded_path(root, resolved_base) or has_excluded_ancestor(
+                root, resolved_base
+            ):
+                dirs[:] = []
+                continue
+            prune_excluded_dirs(root, dirs, [resolved_base])
             resolved = os.path.realpath(root)
             if needle and needle not in resolved.lower():
                 continue
@@ -392,28 +416,37 @@ def encoder_files(
     search: str | None = Query(None, max_length=200),
 ) -> dict[str, Any]:
     """List video files below a configured directory for the test picker."""
-    resolved = os.path.realpath(directory)
-    bases = [os.path.realpath(base) for base in config.BASE_PATHS]
-    if not os.path.isdir(resolved) or not any(
-        _is_within_base(resolved, base) for base in bases
-    ):
-        return {"files": []}
+    bases = list(config.BASE_PATHS)
+    resolved = resolve_authorized_path(directory, bases, bases)
+    if resolved is None or not os.path.isdir(resolved):
+        return {"files": [], "truncated": False}
     needle = (search or "").strip().lower()
     valid_extensions = {extension.lower() for extension in config.VALID_VIDEO_EXT}
     files: list[dict[str, str]] = []
     visited = 0
     truncated = False
+    if any(has_excluded_ancestor(resolved, base) for base in bases) or any(
+        is_excluded_path(resolved, base) for base in bases
+    ):
+        return {"files": [], "truncated": False}
     for root, dirs, names in os.walk(resolved, onerror=_ignore_walk_error):
         visited += 1
         if visited > _MAX_WALK_ENTRIES:
             truncated = True
             break
-        dirs[:] = [d for d in dirs if d != ".trickplay" and not d.startswith(".")]
+        if any(has_excluded_ancestor(root, base) for base in bases) or any(
+            is_excluded_path(root, base) for base in bases
+        ):
+            dirs[:] = []
+            continue
+        prune_excluded_dirs(root, dirs, bases)
         for name in names:
+            if name.startswith("."):
+                continue
             if os.path.splitext(name)[1].lower() not in valid_extensions:
                 continue
-            path = os.path.realpath(os.path.join(root, name))
-            if not any(_is_within_base(path, base) for base in bases):
+            path = resolve_authorized_path(os.path.join(root, name), bases, bases)
+            if path is None:
                 continue
             if needle and needle not in path.lower():
                 continue
@@ -431,31 +464,23 @@ def encoder_files(
 
 def _validate_watch_paths(paths: list[str]) -> list[str]:
     """Return existing, de-duplicated watch directories inside a base path."""
-    bases = [os.path.realpath(base) for base in config.BASE_PATHS]
+    bases = list(config.BASE_PATHS)
     validated: list[str] = []
     seen: set[str] = set()
     for path in paths:
-        resolved = os.path.realpath(path)
-        if not os.path.isdir(resolved) or not any(
-            _is_within_base(resolved, base) for base in bases
-        ):
+        resolved = resolve_authorized_path(path, bases, bases)
+        if resolved is None or not os.path.isdir(resolved):
             raise ValueError(
                 "Watch path is not an existing directory under BASE_PATHS: " f"{path}"
             )
+        if any(has_excluded_ancestor(resolved, base) for base in bases) or any(
+            is_excluded_path(resolved, base) for base in bases
+        ):
+            raise ValueError(f"Watch path is inside an excluded directory: {path}")
         if resolved not in seen:
             seen.add(resolved)
             validated.append(resolved)
     return validated
-
-
-def _is_within_base(path: str, base: str) -> bool:
-    """Whether *path* is contained by *base*, including filesystem roots."""
-    try:
-        return os.path.normcase(os.path.commonpath([path, base])) == os.path.normcase(
-            base
-        )
-    except ValueError:
-        return False
 
 
 @router.put("/config", response_model=None)
@@ -504,6 +529,29 @@ def _validate_preset_leaf(name: str, body: dict) -> NamedPreset:
     return presets[0]
 
 
+def _preset_candidates(document: dict) -> tuple[list[NamedPreset], set[str]]:
+    """Parse leaves once and pair them with the encoder's capabilities."""
+    presets = parse_document(document)
+    if not presets:
+        raise PresetError("The document contains no presets")
+    available = set(get_client().health().get("encoders") or [])
+    if not available:
+        raise EncoderUnavailable(
+            "Cannot validate presets: the encoder did not report its encoders"
+        )
+    return presets, available
+
+
+def _unsupported_preset_reason(preset: NamedPreset) -> str:
+    return f"The connected encoder does not provide {preset.encoder!r}"
+
+
+def _preset_error_response(exc: PresetError | EncoderUnavailable) -> JSONResponse:
+    if isinstance(exc, EncoderUnavailable):
+        return _error(503, "encoder_unreachable", str(exc))
+    return _error(400, "invalid_preset", str(exc))
+
+
 @router.get("/presets/{name}", response_model=None)
 def get_preset(name: str) -> dict | JSONResponse:
     preset = next((p for p in get_store().list_presets() if p.name == name), None)
@@ -526,56 +574,89 @@ def replace_preset(name: str, payload: PresetLeaf) -> dict | JSONResponse:
     return {"body": preset.body}
 
 
+@router.post("/presets/preview", response_model=None)
+def preview_presets(payload: PresetPreview) -> dict | JSONResponse:
+    """Report which document leaves the connected encoder can import."""
+    try:
+        presets, available = _preset_candidates(payload.document)
+    except (PresetError, EncoderUnavailable) as exc:
+        return _preset_error_response(exc)
+    return {
+        "presets": [
+            {
+                "name": preset.name,
+                "encoder": preset.encoder,
+                "supported": preset.encoder in available,
+                "reason": (
+                    None
+                    if preset.encoder in available
+                    else _unsupported_preset_reason(preset)
+                ),
+            }
+            for preset in presets
+        ]
+    }
+
+
 @router.post("/presets", response_model=None)
 def import_presets(payload: PresetImport) -> dict | JSONResponse:
     try:
-        presets = parse_document(payload.document)
-    except PresetError as exc:
-        return _error(400, "invalid_preset", str(exc))
-    if not presets:
-        return _error(400, "invalid_preset", "The document contains no presets")
+        presets, available = _preset_candidates(payload.document)
+    except (PresetError, EncoderUnavailable) as exc:
+        return _preset_error_response(exc)
 
-    # Filter at upload rather than at dispatch: an unusable preset should never
-    # enter the system, so the news arrives while the user is looking at the
-    # upload rather than an hour into an encode that cannot run.
-    #
-    # Skipped rather than rejected wholesale, because a stock HandBrake export
-    # describes every vendor's hardware presets -- QSV, VCN, Media Foundation,
-    # VideoToolbox -- and no single machine has them all. Refusing the document
-    # over presets the user was never going to use made the export from their
-    # own HandBrake un-importable.
-    available = set(get_client().health().get("encoders") or [])
-    if not available:
-        # Distinguish "cannot check" from "checked, and unsupported": without
-        # this the message would claim the encoder lacks every encoder in the
-        # document, when in fact it is simply unreachable.
+    document_names = {preset.name for preset in presets}
+    selected_names = (
+        document_names if payload.include_names is None else set(payload.include_names)
+    )
+    if payload.include_names is not None and not payload.include_names:
         return _error(
-            503,
-            "encoder_unreachable",
-            "Cannot validate presets: the encoder did not report its encoders",
+            400,
+            "invalid_preset_selection",
+            "Select at least one supported preset to import",
+        )
+    unknown_names = selected_names - document_names
+    if unknown_names:
+        return _error(
+            400,
+            "invalid_preset",
+            f"The document contains no presets named: {', '.join(sorted(unknown_names))}",
         )
 
-    usable = [p for p in presets if p.encoder in available]
+    selected = [preset for preset in presets if preset.name in selected_names]
+    usable = [preset for preset in selected if preset.encoder in available]
     skipped = [
         {
             "name": p.name,
             "encoder": p.encoder,
-            "reason": f"The connected encoder does not provide {p.encoder!r}",
+            "reason": _unsupported_preset_reason(p),
         }
-        for p in presets
+        for p in selected
         if p.encoder not in available
     ]
     if not usable:
+        if payload.include_names is None:
+            return _error(
+                400,
+                "encoder_unavailable",
+                "None of the presets in this document can run on the connected "
+                f"encoder; it does not provide: "
+                f"{', '.join(sorted({p.encoder for p in presets}))}",
+            )
         return _error(
             400,
             "encoder_unavailable",
-            "None of the presets in this document can run on the connected "
+            "None of the selected presets can run on the connected "
             f"encoder; it does not provide: "
-            f"{', '.join(sorted({p.encoder for p in presets}))}",
+            f"{', '.join(sorted({p.encoder for p in selected}))}",
         )
 
     get_store().replace_presets(usable)
-    return {"imported": [p.name for p in usable], "skipped": skipped}
+    return {
+        "imported": [p.name for p in usable],
+        "skipped": skipped,
+        "unselected": [p.name for p in presets if p.name not in selected_names],
+    }
 
 
 @router.delete("/presets/{name}", status_code=204, response_model=None)
@@ -688,15 +769,14 @@ def _resolve_probe_path(path: str) -> str | None:
     point at, while the runtime paths keep the allow-list correct after a
     configuration update.
     """
-    resolved = os.path.realpath(path)
-    roots = [os.path.realpath(p) for p in config.BASE_PATHS]
+    roots = list(config.BASE_PATHS)
     try:
-        roots.extend(os.path.realpath(p) for p in get_runtime().watch_paths)
+        roots.extend(get_runtime().watch_paths)
     except RuntimeError:
         # A failed runtime is already surfaced by /config; retaining the base
         # roots keeps the read-only test endpoint deterministic during startup.
         pass
-    return resolved if any(_is_within_base(resolved, root) for root in roots) else None
+    return resolve_authorized_path(path, roots, config.BASE_PATHS)
 
 
 @router.post("/test", response_model=None)
@@ -745,15 +825,8 @@ def test_against_file(payload: TestIn) -> dict | JSONResponse:
 
 
 @router.post("/reprocess", response_model=None)
-def reprocess(payload: TestIn) -> dict | JSONResponse:
-    """Clear the dedup record for a file so the watcher considers it again.
-
-    The escape hatch for "I changed my rules, encode this one again". The
-    watcher deliberately decides about each file once, so without an explicit
-    way back in, the only recourse was to touch the file on disk or edit the
-    database. Dropping the record is all this does -- the next rescan probes
-    the file and applies whatever the rules now say, including `skip`.
-    """
+def reprocess(payload: ReprocessIn) -> dict | JSONResponse:
+    """Immediately re-evaluate a source path with the current rules."""
     resolved = _resolve_probe_path(payload.path)
     if resolved is None:
         return _error(
@@ -761,12 +834,79 @@ def reprocess(payload: TestIn) -> dict | JSONResponse:
         )
     if not os.path.isfile(resolved):
         return _error(400, "invalid_path", "No such file")
-    return {"path": resolved, "cleared": get_store().forget_seen(resolved)}
+    return get_queue().reprocess_path(resolved)
+
+
+@router.post("/reprocess-all", response_model=None)
+def reprocess_all() -> dict | JSONResponse:
+    """Start one background pass that re-evaluates every configured source."""
+    try:
+        return get_runtime().start_reprocess_all()
+    except EncoderConfigurationUnavailable:
+        raise
+    except RuntimeError as exc:
+        return _error(500, "reprocess_start_failed", str(exc))
+
+
+@router.delete("/reprocess-all", response_model=None)
+def stop_reprocess_all() -> dict | JSONResponse:
+    """Stop an in-flight background bulk re-evaluation pass."""
+    try:
+        return get_runtime().stop_reprocess_all()
+    except EncoderConfigurationUnavailable:
+        raise
+    except RuntimeError as exc:
+        return _error(500, "reprocess_stop_failed", str(exc))
+
+
+@router.get("/reprocess-all/status")
+def reprocess_all_status() -> dict:
+    """Recover bulk progress after an SSE disconnect or missed terminal event."""
+    return get_runtime().reprocess_status()
 
 
 @router.get("/jobs")
 def list_jobs() -> list[dict]:
     return [job_to_payload(j) for j in get_store().list_jobs()]
+
+
+@router.post("/jobs/{job_id}/reprocess", response_model=None)
+def reprocess_job(job_id: str) -> dict | JSONResponse:
+    """Re-evaluate a job's source while retaining its prior row as history."""
+    store = get_store()
+    job = store.get_job(job_id)
+    if job is None:
+        return _error(404, "job_not_found", f"No job {job_id!r}")
+    if job.stage == "swapping":
+        return _error(
+            409,
+            "job_swapping",
+            "This job is publishing its result and cannot be reprocessed yet",
+        )
+    if job.error_code == "swap_interrupted":
+        return _error(
+            409,
+            "swap_interrupted",
+            "The previous publish was interrupted; confirm the file on disk manually",
+        )
+    if job.stage == "blocked" and job.remote_job_id:
+        return _error(
+            409,
+            "remote_job_unresolved",
+            "This job still references work on the remote encoder; cancel or "
+            "resolve that work before re-evaluating it",
+        )
+
+    resolved = _resolve_probe_path(job.source_path)
+    if resolved is None:
+        return _error(
+            400, "invalid_path", "Path is not within a configured readable root"
+        )
+    if not os.path.isfile(resolved):
+        return _error(400, "invalid_path", "No such file")
+    if job.stage == "blocked" and store.cancel_blocked_for_reprocess(job.id):
+        get_events().publish(job_to_payload(store.get_job(job.id)))
+    return get_queue().reprocess_path(resolved)
 
 
 @router.post("/jobs/{job_id}/approve", response_model=None)
@@ -797,7 +937,34 @@ def approve_job(job_id: str):
             "state is unknown. Confirm the file manually, then delete this "
             "job to let the watcher re-plan it.",
         )
-    get_queue().enqueue(job_id)
+
+    try:
+        stat = os.stat(job.source_path)
+        seen_fp = store.get_seen(job.source_path)
+        if seen_fp is not None and (stat.st_size, stat.st_mtime_ns) != seen_fp:
+            store.set_stage(
+                job.id,
+                "cancelled",
+                error="The source file was modified on disk after this job was created",
+                error_code="file_modified",
+            )
+            get_events().publish(job_to_payload(store.get_job(job.id)))
+            get_queue().reprocess_path(job.source_path)
+            return _error(
+                409,
+                "file_modified",
+                "The source file was modified on disk since this job was created. "
+                "The stale job has been cancelled and the file re-evaluated.",
+            )
+    except OSError:
+        pass
+
+    if not get_queue().enqueue_if_stage(job_id, {"pending", "blocked"}):
+        current = store.get_job(job_id)
+        stage = current.stage if current is not None else "missing"
+        return _error(
+            409, "not_awaiting_approval", f"Job is {stage}, not awaiting approval"
+        )
     return {"stage": "queued"}
 
 

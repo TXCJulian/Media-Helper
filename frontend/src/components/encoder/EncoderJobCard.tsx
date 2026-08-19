@@ -2,6 +2,7 @@ import { useId, useState } from 'react'
 import IconButton from '@/components/ui/IconButton'
 import StatusPill from '@/components/ui/StatusPill'
 import { InfoIcon, PlayIcon, TrashIcon } from '@/components/ui/icons'
+import { formatBytes, formatFactValue } from '@/components/encoder/mediaFacts'
 import type { EncoderJob, EncoderJobStage } from '@/types'
 
 const PIPELINE: { stage: EncoderJobStage; label: string }[] = [
@@ -27,22 +28,13 @@ interface Props {
   job: EncoderJob
   onApprove: (jobId: string) => void
   onDelete: (jobId: string) => void
+  onReprocess?: (jobId: string) => void
+  reprocessing?: boolean
 }
 
 function basename(path: string): string {
   const parts = path.split(/[/\\]/).filter(Boolean)
   return parts[parts.length - 1] ?? path
-}
-
-function formatSize(bytes: number): string {
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-  let value = bytes
-  let unit = 0
-  while (Math.abs(value) >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit += 1
-  }
-  return `${unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`
 }
 
 function savings(job: EncoderJob): string | null {
@@ -51,36 +43,7 @@ function savings(job: EncoderJob): string | null {
     (Math.abs(job.original_size - job.encoded_size) / job.original_size) * 100,
   )
   const direction = job.encoded_size <= job.original_size ? 'smaller' : 'larger'
-  return `${formatSize(job.original_size)} → ${formatSize(job.encoded_size)} · ${change}% ${direction}`
-}
-
-function displayFact(key: string, value: unknown, facts: Record<string, unknown>): string | null {
-  if (value === null || value === undefined || value === '') return null
-  switch (key) {
-    case 'height':
-      return `${String(value)}p`
-    case 'width':
-      return facts.height == null ? `${String(value)}px wide` : null
-    case 'hdr':
-      return value ? 'HDR' : 'SDR'
-    case 'dolby_vision':
-      return value ? 'Dolby Vision' : null
-    case 'bit_depth':
-      return `${String(value)}-bit`
-    case 'frame_rate':
-      return `${String(value)} fps`
-    case 'video_codec':
-      return String(value).toUpperCase()
-    case 'bit_rate':
-      return `${(Number(value) / 1_000_000).toFixed(1)} Mbps`
-    case 'size':
-      return typeof value === 'number' ? formatSize(value) : String(value)
-    default: {
-      const label = key.replace(/_/g, ' ')
-      if (typeof value === 'boolean') return value ? label : null
-      return `${label}: ${String(value)}`
-    }
-  }
+  return `${formatBytes(job.original_size)} → ${formatBytes(job.encoded_size)} · ${change}% ${direction}`
 }
 
 function stagePosition(stage: EncoderJobStage): number {
@@ -92,7 +55,13 @@ function stagePosition(stage: EncoderJobStage): number {
   return -1
 }
 
-export default function EncoderJobCard({ job, onApprove, onDelete }: Props) {
+export default function EncoderJobCard({
+  job,
+  onApprove,
+  onDelete,
+  onReprocess,
+  reprocessing = false,
+}: Props) {
   const [showFacts, setShowFacts] = useState(false)
   const factsId = useId()
   const terminal = TERMINAL_PILL[job.stage]
@@ -101,9 +70,15 @@ export default function EncoderJobCard({ job, onApprove, onDelete }: Props) {
   const canApprove =
     (job.stage === 'pending' || job.stage === 'blocked') && job.error_code !== 'swap_interrupted'
   const canDelete = job.stage !== 'swapping'
+  const canReprocess =
+    (job.stage === 'failed' ||
+      (job.stage === 'blocked' &&
+        job.error_code !== 'swap_interrupted' &&
+        !job.remote_job_id)) &&
+    onReprocess
   const hasFacts = Object.keys(job.facts).length > 0
   const factLabels = Object.entries(job.facts)
-    .map(([key, value]) => displayFact(key, value, job.facts))
+    .map(([key, value]) => formatFactValue(key, value, job.facts))
     .filter((value): value is string => Boolean(value))
   const reduction = savings(job)
 
@@ -132,24 +107,39 @@ export default function EncoderJobCard({ job, onApprove, onDelete }: Props) {
               <InfoIcon />
             </button>
           )}
-          {canApprove ? (
-            <button
-              type="button"
-              aria-label="Approve encoding"
-              title="Approve encoding"
-              onClick={() => onApprove(job.job_id)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-teal-400/20 bg-teal-400/10 px-2.5 py-1.5 text-[0.72rem] font-medium text-teal-300"
-            >
-              <PlayIcon size={13} />
-              Approve
-            </button>
-          ) : canDelete ? (
-            <IconButton label="Delete job" onClick={() => onDelete(job.job_id)} tone="danger">
-              <TrashIcon />
-            </IconButton>
-          ) : (
-            <span className="text-[0.68rem] text-[var(--text-tertiary)]">Publishing…</span>
-          )}
+          <>
+            {canApprove && (
+              <button
+                type="button"
+                aria-label="Approve encoding"
+                title="Approve encoding"
+                onClick={() => onApprove(job.job_id)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-teal-400/20 bg-teal-400/10 px-2.5 py-1.5 text-[0.72rem] font-medium text-teal-300"
+              >
+                <PlayIcon size={13} />
+                Approve
+              </button>
+            )}
+            {canReprocess && (
+              <button
+                type="button"
+                aria-label="Re-evaluate file"
+                disabled={reprocessing}
+                onClick={() => onReprocess(job.job_id)}
+                className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-2.5 py-1.5 text-[0.72rem] font-medium text-amber-300 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {reprocessing ? 'Re-evaluating…' : 'Re-evaluate'}
+              </button>
+            )}
+            {!canApprove &&
+              (canDelete ? (
+                <IconButton label="Delete job" onClick={() => onDelete(job.job_id)} tone="danger">
+                  <TrashIcon />
+                </IconButton>
+              ) : (
+                <span className="text-[0.68rem] text-[var(--text-tertiary)]">Publishing…</span>
+              ))}
+          </>
         </div>
       </div>
 
@@ -164,6 +154,7 @@ export default function EncoderJobCard({ job, onApprove, onDelete }: Props) {
           }
           const active = job.stage === stage || (stage === 'encoding' && job.stage === 'queued')
           const reached = currentPosition >= index || currentPosition === -1
+          const displayLabel = stage === 'encoding' && job.stage === 'queued' ? 'Waiting' : label
           return (
             <span
               key={stage}
@@ -175,7 +166,7 @@ export default function EncoderJobCard({ job, onApprove, onDelete }: Props) {
                     : 'text-[var(--text-tertiary)]/40'
               }`}
             >
-              {label}
+              {displayLabel}
             </span>
           )
         })}
@@ -233,11 +224,17 @@ export default function EncoderJobCard({ job, onApprove, onDelete }: Props) {
           {factLabels.map((fact) => (
             <span
               key={fact}
-              className="rounded-md border border-white/8 bg-white/4 px-2 py-1 text-[0.7rem] text-[var(--text-secondary)]"
+              className="whitespace-pre-line rounded-md border border-white/8 bg-white/4 px-2 py-1 text-[0.7rem] text-[var(--text-secondary)]"
             >
               {fact}
             </span>
           ))}
+          <pre
+            aria-label="Raw media facts"
+            className="w-full overflow-x-auto rounded-md bg-black/20 p-2 font-mono text-[0.64rem] text-[var(--text-tertiary)]"
+          >
+            {JSON.stringify(job.facts, null, 2)}
+          </pre>
         </div>
       )}
 

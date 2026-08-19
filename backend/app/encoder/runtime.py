@@ -4,6 +4,7 @@ import json
 import threading
 from collections.abc import Callable
 
+from app.encoder.reprocess import ReprocessManager
 from app.encoder.store import EncoderStore
 from app.encoder.watcher import EncoderWatcher
 
@@ -28,6 +29,7 @@ class EncoderRuntime:
         self._valid_extensions = valid_extensions
         self._validate_paths = validate_paths or (lambda paths: list(paths))
         self._watcher: EncoderWatcher | None = None
+        self._reprocess: ReprocessManager | None = None
         self._failure: str | None = None
         self._resolved_paths: list[str] | None = None
         self._lock = threading.RLock()
@@ -78,6 +80,7 @@ class EncoderRuntime:
             paths=paths,
             settle_seconds=self._settle_seconds,
             valid_extensions=self._valid_extensions,
+            events=getattr(self._queue, "events", None),
         )
 
     def _unavailable(self, watcher: EncoderWatcher | None, reason: str) -> RuntimeError:
@@ -117,10 +120,41 @@ class EncoderRuntime:
 
     def stop(self) -> None:
         with self._lock:
-            if self._watcher is not None:
-                self._watcher.stop()
-                self._watcher = None
-            self._resolved_paths = None
+            try:
+                if self._reprocess is not None:
+                    self._reprocess.stop()
+            finally:
+                if self._watcher is not None:
+                    self._watcher.stop()
+                    self._watcher = None
+                self._resolved_paths = None
+
+    def reprocess_status(self) -> dict:
+        with self._lock:
+            if self._reprocess is None:
+                return {"active": False, "event": None}
+            return self._reprocess.status()
+
+    def start_reprocess_all(self) -> dict[str, str]:
+        """Re-evaluate the current library once without restarting its watcher."""
+        with self._lock:
+            paths = self.watch_paths
+            if self._watcher is None:
+                raise RuntimeError("Encoder watch runtime is unavailable")
+            if self._reprocess is None:
+                self._reprocess = ReprocessManager(
+                    self._queue,
+                    self._queue.events,
+                    valid_extensions=self._valid_extensions,
+                )
+            return self._reprocess.start(paths)
+
+    def stop_reprocess_all(self) -> dict[str, str]:
+        """Signal any running bulk re-evaluation to cancel."""
+        with self._lock:
+            if self._reprocess is not None:
+                self._reprocess.stop(timeout=0)
+            return {"status": "stopping"}
 
     def replace_watch_paths(self, paths: list[str]) -> list[str]:
         """Replace paths without ever overlapping two active watchers.

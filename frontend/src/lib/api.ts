@@ -17,6 +17,24 @@ async function extractErrorMessage(res: Response): Promise<string> {
   return `HTTP ${res.status}: ${res.statusText}`
 }
 
+function composeSignals(
+  signalA?: AbortSignal | null,
+  signalB?: AbortSignal | null,
+): AbortSignal | undefined {
+  if (!signalA) return signalB ?? undefined
+  if (!signalB) return signalA ?? undefined
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any([signalA, signalB])
+  }
+  const controller = new AbortController()
+  const onAbort = () => controller.abort()
+  if (signalA.aborted) return signalA
+  if (signalB.aborted) return signalB
+  signalA.addEventListener('abort', onAbort, { once: true })
+  signalB.addEventListener('abort', onAbort, { once: true })
+  return controller.signal
+}
+
 export async function fetchJson<T>(
   path: string,
   params?: Record<string, string>,
@@ -29,10 +47,12 @@ export async function fetchJson<T>(
       if (v) url.searchParams.set(k, v)
     }
   }
+  const timeoutSignal = AbortSignal.timeout(timeoutMs)
+  const signal = composeSignals(init?.signal, timeoutSignal)
   const res = await fetch(url.toString(), {
-    signal: AbortSignal.timeout(timeoutMs),
     credentials: 'include',
     ...init,
+    signal,
   })
   assertAuthenticated(res)
   if (!res.ok) {
@@ -435,13 +455,27 @@ export function saveEncoderPreset(
   )
 }
 
-export function importEncoderPresets(
+export function previewEncoderPresets(
   document: Record<string, unknown>,
-): Promise<{ imported: string[]; skipped: { name: string; encoder: string; reason: string }[] }> {
-  return fetchJson('/api/encoder/presets', undefined, DEFAULT_TIMEOUT_MS, {
+): Promise<import('@/types').EncoderPresetPreviewResult> {
+  return fetchJson('/api/encoder/presets/preview', undefined, DEFAULT_TIMEOUT_MS, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ document }),
+  })
+}
+
+export function importEncoderPresets(
+  document: Record<string, unknown>,
+  includeNames?: string[],
+): Promise<import('@/types').EncoderPresetImportResult> {
+  return fetchJson('/api/encoder/presets', undefined, DEFAULT_TIMEOUT_MS, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      document,
+      ...(includeNames != null && { include_names: includeNames }),
+    }),
   })
 }
 
@@ -482,12 +516,37 @@ export function testEncoderFile(path: string): Promise<import('@/types').Encoder
   })
 }
 
-export function reprocessEncoderFile(path: string): Promise<{ path: string; cleared: boolean }> {
+export function reprocessEncoderFile(path: string): Promise<import('@/types').ReprocessResult> {
   return fetchJson('/api/encoder/reprocess', undefined, DEFAULT_TIMEOUT_MS, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),
   })
+}
+
+export function reprocessEncoderJob(jobId: string): Promise<import('@/types').ReprocessResult> {
+  return fetchJson(
+    `/api/encoder/jobs/${encodeURIComponent(jobId)}/reprocess`,
+    undefined,
+    DEFAULT_TIMEOUT_MS,
+    { method: 'POST' },
+  )
+}
+
+export function startEncoderReprocessAll(): Promise<import('@/types').EncoderReprocessRun> {
+  return fetchJson('/api/encoder/reprocess-all', undefined, DEFAULT_TIMEOUT_MS, { method: 'POST' })
+}
+
+export function stopEncoderReprocessAll(): Promise<import('@/types').EncoderReprocessStopResult> {
+  return fetchJson('/api/encoder/reprocess-all', undefined, DEFAULT_TIMEOUT_MS, {
+    method: 'DELETE',
+  })
+}
+
+export function fetchEncoderReprocessStatus(
+  signal?: AbortSignal,
+): Promise<import('@/types').EncoderReprocessState> {
+  return fetchJson('/api/encoder/reprocess-all/status', undefined, DEFAULT_TIMEOUT_MS, { signal })
 }
 
 export function fetchEncoderJobs(): Promise<import('@/types').EncoderJob[]> {
