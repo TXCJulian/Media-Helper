@@ -11,11 +11,11 @@ function formatValue(value: unknown): string {
 }
 
 export function formatBytes(value: unknown): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return formatValue(value)
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return formatValue(value)
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
   let bytes = value
   let unit = 0
-  while (Math.abs(bytes) >= 1024 && unit < units.length - 1) {
+  while (bytes >= 1024 && unit < units.length - 1) {
     bytes /= 1024
     unit += 1
   }
@@ -42,6 +42,7 @@ function audioChannelLabel(value: unknown): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return ''
   if (value === 1) return 'mono'
   if (value === 2) return 'stereo'
+  if (value === 4) return '4.0'
   if (value === 6) return '5.1'
   if (value === 8) return '7.1'
   return `${value}ch`
@@ -75,8 +76,10 @@ export function formatFactValue(
   switch (key) {
     case 'height':
       return `${formatValue(value)}p`
-    case 'width':
-      return facts.height == null ? `${formatValue(value)}px wide` : null
+    case 'width': {
+      const hasValidHeight = typeof facts.height === 'number' && facts.height > 0
+      return hasValidHeight ? null : `${formatValue(value)}px wide`
+    }
     case 'hdr':
       return typeof value === 'boolean' ? (value ? 'HDR' : 'SDR') : formatValue(value)
     case 'dolby_vision':

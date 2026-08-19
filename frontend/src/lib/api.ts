@@ -437,7 +437,7 @@ export function saveEncoderPreset(
 
 export function previewEncoderPresets(
   document: Record<string, unknown>,
-): Promise<{ presets: import('@/types').EncoderPresetPreview[] }> {
+): Promise<import('@/types').EncoderPresetPreviewResult> {
   return fetchJson('/api/encoder/presets/preview', undefined, DEFAULT_TIMEOUT_MS, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -517,7 +517,7 @@ export function startEncoderReprocessAll(): Promise<import('@/types').EncoderRep
   return fetchJson('/api/encoder/reprocess-all', undefined, DEFAULT_TIMEOUT_MS, { method: 'POST' })
 }
 
-export function stopEncoderReprocessAll(): Promise<{ status: string }> {
+export function stopEncoderReprocessAll(): Promise<import('@/types').EncoderReprocessStopResult> {
   return fetchJson('/api/encoder/reprocess-all', undefined, DEFAULT_TIMEOUT_MS, {
     method: 'DELETE',
   })

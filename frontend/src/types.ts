@@ -292,6 +292,10 @@ export interface EncoderPresetPreview {
   reason: string | null
 }
 
+export interface EncoderPresetPreviewResult {
+  presets: EncoderPresetPreview[]
+}
+
 export interface EncoderPresetImportSkip {
   name: string
   encoder: string
@@ -358,6 +362,10 @@ export interface EncoderReprocessEvent {
 export interface EncoderReprocessRun {
   run_id: string
   status: EncoderReprocessStatus | 'already_running'
+}
+
+export interface EncoderReprocessStopResult {
+  status: 'stopping'
 }
 
 export interface EncoderReprocessState {

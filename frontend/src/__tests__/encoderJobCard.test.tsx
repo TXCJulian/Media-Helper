@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import EncoderJobCard from '@/components/encoder/EncoderJobCard'
 import {
   formatAudioTracks,
+  formatBytes,
   formatDuration,
   formatFactValue,
   formatFrameRate,
@@ -217,9 +218,13 @@ describe('EncoderJobCard', () => {
       formatAudioTracks([
         { codec: 'aac', channels: 2, language: 'eng' },
         { codec: 'ac3', channels: 6, language: 'deu' },
+        { codec: 'flac', channels: 4, language: 'und' },
       ]),
-    ).toBe('aac · stereo · eng\nac3 · 5.1 · deu')
+    ).toBe('aac · stereo · eng\nac3 · 5.1 · deu\nflac · 4.0 · und')
     expect(formatFactValue('metadata', { title: 'Demo' }, {})).toBe('metadata: {"title":"Demo"}')
+    expect(formatFactValue('width', 1920, { height: 1080 })).toBeNull()
+    expect(formatFactValue('width', 1920, { height: 0 })).toBe('1920px wide')
+    expect(formatBytes(-500)).toBe('-500')
   })
 
   it('formats malformed object-valued numeric facts as compact JSON', () => {
