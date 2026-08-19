@@ -19,8 +19,9 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from app import config
+from app.encoder.events import EventBroadcaster, job_to_payload
 from app.encoder.reprocess import prune_excluded_dirs, resolve_authorized_path
-from app.encoder.store import EncoderStore
+from app.encoder.store import EncoderStore, Job
 
 logger = logging.getLogger(__name__)
 
@@ -96,11 +97,13 @@ class EncoderWatcher:
         paths: list[str],
         settle_seconds: int,
         valid_extensions: set[str],
+        events: EventBroadcaster | None = None,
     ) -> None:
         self._store = store
         self._on_settled = on_settled
         self._paths = paths
         self._extensions = {e.lower() for e in valid_extensions}
+        self._events = events
         self._tracker = SettleTracker(settle_seconds)
         self._observer: Observer | None = None
         self._stopping = threading.Event()
@@ -149,12 +152,12 @@ class EncoderWatcher:
     def scan_existing(self) -> None:
         """Walk every watch path once, feeding candidates to the tracker.
 
-        Fetches the active-source-paths set and the seen-fingerprints map once
+        Fetches the active-jobs map and the seen-fingerprints map once
         for the whole scan rather than once per file: on a 10k-file library
         that was 10k SQL queries every scan for no benefit, since nothing in
         the loop below changes either partway through a single walk.
         """
-        active = self._store.active_source_paths()
+        active_jobs = self._store.active_jobs_by_source()
         seen = self._store.seen_fingerprints()
         present: set[str] = set()
         walked: list[str] = []
@@ -194,7 +197,7 @@ class EncoderWatcher:
                 for name in files:
                     path = os.path.join(dirpath, name)
                     present.add(path)
-                    self._consider(path, active, seen)
+                    self._consider(path, active_jobs, seen)
 
             if not failed:
                 walked.append(root)
@@ -234,13 +237,13 @@ class EncoderWatcher:
     def _consider(
         self,
         path: str,
-        active: set[str] | None = None,
+        active_jobs: dict[str, Job] | None = None,
         seen: dict[str, tuple[int, int]] | None = None,
     ) -> None:
         """Consider *path* for dispatch.
 
-        *active* and *seen* let `scan_existing()` pass in one shared
-        `active_source_paths()` / `seen_fingerprints()` result for the whole
+        *active_jobs* and *seen* let `scan_existing()` pass in one shared
+        `active_jobs_by_source()` / `seen_fingerprints()` result for the whole
         walk. Event-driven calls (from the watchdog handler) have no such batch
         to share and fall back to fresh, single-file queries -- events are
         comparatively rare next to a full rescan, so those per-call queries
@@ -266,10 +269,46 @@ class EncoderWatcher:
             # lifetime.
             self._tracker.forget(path)
             return
-        if active is None:
-            active = self._store.active_source_paths()
-        if path in active:
-            return
+
+        if active_jobs is None:
+            active_jobs = self._store.active_jobs_by_source()
+
+        active_job = active_jobs.get(path)
+        if active_job is not None:
+            if active_job.stage in {"encoding", "swapping"}:
+                return
+            if active_job.stage in {"settling", "pending", "blocked"}:
+                if seen is None:
+                    seen = self._store.seen_fingerprints()
+                seen_fp = seen.get(path)
+                if seen_fp is None or seen_fp == (size, mtime_ns):
+                    # File has not changed on disk (or is not yet fingerprinted); job remains valid.
+                    return
+
+                logger.info(
+                    "Source file %s modified on disk (new size=%d, mtime=%d); cancelling stale %s job %s",
+                    path,
+                    size,
+                    mtime_ns,
+                    active_job.stage,
+                    active_job.id,
+                )
+                self._store.set_stage(
+                    active_job.id,
+                    "cancelled",
+                    error="Source file was modified on disk; invalidating stale job",
+                    error_code="file_modified",
+                )
+                if self._events is not None:
+                    updated = self._store.get_job(active_job.id)
+                    if updated is not None:
+                        self._events.publish(job_to_payload(updated))
+                self._store.forget_seen(path)
+                self._tracker.forget(path)
+                active_jobs.pop(path, None)
+                if seen is not None:
+                    seen.pop(path, None)
+
         if seen is None:
             seen = self._store.seen_fingerprints()
         if seen.get(path) == (size, mtime_ns):

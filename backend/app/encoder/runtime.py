@@ -80,6 +80,7 @@ class EncoderRuntime:
             paths=paths,
             settle_seconds=self._settle_seconds,
             valid_extensions=self._valid_extensions,
+            events=getattr(self._queue, "events", None),
         )
 
     def _unavailable(self, watcher: EncoderWatcher | None, reason: str) -> RuntimeError:

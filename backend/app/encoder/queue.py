@@ -479,6 +479,80 @@ class EncodeQueue:
                 return
         else:
             try:
+                stat = os.stat(job.source_path)
+            except OSError as exc:
+                self._fail(
+                    job_id,
+                    f"Source file no longer exists on disk: {exc}",
+                    "source_missing",
+                )
+                return
+
+            seen_fp = self._store.get_seen(job.source_path)
+            if seen_fp is not None and (stat.st_size, stat.st_mtime_ns) != seen_fp:
+                logger.warning(
+                    "Source file %s modified on disk while queued; re-evaluating before encode",
+                    job.source_path,
+                )
+                try:
+                    facts = self._probe_with_retry(job.source_path)
+                    rules = self._store.list_rules()
+                    fallback = self._store.get_setting("fallback_target", SKIP)
+                    match = evaluate(facts, rules, fallback)
+                except Exception as exc:
+                    self._fail(
+                        job_id,
+                        f"Re-evaluating modified source file failed: {exc}",
+                        "probe_failed",
+                    )
+                    return
+
+                if match.target == SKIP:
+                    logger.info(
+                        "Modified source file %s now matches SKIP; skipping job %s",
+                        job.source_path,
+                        job_id,
+                    )
+                    self._store.set_plan(
+                        job_id,
+                        preset_name=None,
+                        rule_id=match.rule_id,
+                        facts=facts,
+                        original_size=facts.get("size") or 0,
+                    )
+                    self._store.mark_seen(
+                        job.source_path, stat.st_size, stat.st_mtime_ns
+                    )
+                    self._store.set_stage(job_id, "skipped")
+                    self._publish(job_id)
+                    return
+
+                target_preset = next(
+                    (p for p in self._store.list_presets() if p.name == match.target),
+                    None,
+                )
+                if target_preset is None:
+                    self._fail(
+                        job_id,
+                        f"Rule selected preset {match.target!r}, which no longer exists",
+                        "preset_missing",
+                    )
+                    return
+
+                preset = target_preset
+                self._store.set_plan(
+                    job_id,
+                    preset_name=match.target,
+                    rule_id=match.rule_id,
+                    facts=facts,
+                    original_size=facts.get("size") or 0,
+                )
+                self._store.mark_seen(
+                    job.source_path, stat.st_size, stat.st_mtime_ns
+                )
+                self._publish(job_id)
+
+            try:
                 remote_id = self._client.submit(
                     job.source_path, preset.body, preset.name
                 )

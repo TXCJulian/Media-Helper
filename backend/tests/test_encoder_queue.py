@@ -663,3 +663,24 @@ def test_plan_new_records_the_fingerprint_with_the_job(env):
     assert len(store.list_jobs()) == 1
     assert store.seen_fingerprints()[str(source)] == (
         4096, 1_700_000_000_000_000_000)
+
+
+def test_run_skips_when_queued_file_modified_to_match_skip(env, monkeypatch):
+    """If a file changes while queued and now matches SKIP, _run skips it."""
+    store, client, movies, source, queue_mod = env
+    q = _queue(store, client)
+
+    st = source.stat()
+    job = store.create_job(str(source), st.st_size, st.st_mtime_ns)
+    store.set_plan(job.id, preset_name="NVENC", rule_id="r1", facts={"height": 1080}, original_size=st.st_size)
+    store.set_stage(job.id, "queued")
+
+    # File on disk is modified externally
+    source.write_bytes(b"already encoded data")
+    monkeypatch.setattr(q, "_probe_once", lambda _p: {"video_codec": "hevc", "size": 100})
+
+    q._run(job.id)
+
+    updated = store.get_job(job.id)
+    assert updated.stage == "skipped"
+    assert len(client.submitted) == 0

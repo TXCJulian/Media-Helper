@@ -1480,6 +1480,32 @@ def test_approve_does_not_resurrect_a_job_transitioned_for_recovery(
     assert store.get_job(job.id).stage == "cancelled"
 
 
+def test_approve_rejects_and_reprocesses_when_file_modified_on_disk(
+    client, monkeypatch, tmp_path
+):
+    watch_root = tmp_path / "Movies"
+    watch_root.mkdir()
+    target = watch_root / "x.mkv"
+    target.write_bytes(b"initial data")
+    st1 = target.stat()
+    monkeypatch.setattr(routes_mod.config, "BASE_PATHS", [str(watch_root)])
+    monkeypatch.setattr(routes_mod.config, "ENCODER_WATCH_PATHS", [str(watch_root)])
+
+    store = routes_mod.get_store()
+    job = store.create_job(str(target), st1.st_size, st1.st_mtime_ns)
+    store.set_stage(job.id, "pending")
+
+    # File on disk is modified externally
+    target.write_bytes(b"re-encoded smaller file")
+
+    response = client.post(f"/api/encoder/jobs/{job.id}/approve")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "file_modified"
+    assert store.get_job(job.id).stage == "cancelled"
+    assert store.get_job(job.id).error_code == "file_modified"
+
+
 def test_job_reprocess_rejects_unknown_and_swapping_jobs(client, monkeypatch, tmp_path):
     """A missing row or a live swap cannot be safely re-evaluated."""
     watch_root = tmp_path / "Movies"

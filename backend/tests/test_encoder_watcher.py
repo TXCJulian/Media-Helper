@@ -280,20 +280,20 @@ def test_start_and_stop_leave_no_thread_running(store, tmp_path):
 def test_scan_existing_queries_active_source_paths_once_per_scan(
     store, tmp_path, monkeypatch
 ):
-    """Before the fix, `_consider` queried `active_source_paths()` once per
+    """Before the fix, `_consider` queried active jobs once per
     file -- on a 10k-file library that is 10k SQL queries every scan. A
     single walk of several files must produce exactly one query, not one per
     file."""
     for i in range(5):
         (tmp_path / f"movie{i}.mkv").write_bytes(b"data")
     calls = []
-    original = store.active_source_paths
+    original = store.active_jobs_by_source
 
     def _spy():
         calls.append(1)
         return original()
 
-    monkeypatch.setattr(store, "active_source_paths", _spy)
+    monkeypatch.setattr(store, "active_jobs_by_source", _spy)
     watcher = make_watcher(store, tmp_path, lambda *_a: None)
 
     watcher.scan_existing()
@@ -789,3 +789,35 @@ def test_pruning_removes_a_record_whose_fingerprint_is_unchanged(store, tmp_path
     gone.unlink()
     watcher.scan_existing()
     assert set(store.seen_fingerprints()) == {str(keep)}
+
+
+def test_watcher_cancels_stale_active_job_when_file_modified_on_disk(store, tmp_path):
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"original data" * 100)
+    st1 = target.stat()
+
+    planner = Planner(store)
+    watcher = make_watcher(store, tmp_path, planner)
+
+    # Initial scan creates a job and records it in seen_files
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert planner.paths == [str(target)]
+    job = store.newest_job_for_source(str(target))
+    assert job is not None
+    store.set_stage(job.id, "pending")
+
+    # Another instance modifies/re-encodes the file on disk
+    target.write_bytes(b"encoded data" * 20)
+    st2 = target.stat()
+    assert (st2.st_size, st2.st_mtime_ns) != (st1.st_size, st1.st_mtime_ns)
+
+    # Watcher detects on-disk change, cancels the stale pending job
+    watcher.scan_existing()
+    stale_job = store.get_job(job.id)
+    assert stale_job.stage == "cancelled"
+    assert stale_job.error_code == "file_modified"
+
+    # Watcher tracks and settles the new modified file on subsequent scans
+    watcher.scan_existing()
+    assert planner.paths == [str(target), str(target)]

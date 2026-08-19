@@ -331,6 +331,17 @@ class EncoderStore:
             ).fetchall()
         return {r["source_path"] for r in rows}
 
+    def active_jobs_by_source(self) -> dict[str, Job]:
+        """Return `{source_path: Job}` for every active (non-terminal) job."""
+        placeholders = ",".join("?" * len(TERMINAL_STAGES))
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM jobs WHERE stage NOT IN ({placeholders}) "
+                "ORDER BY created_at DESC, rowid DESC",
+                TERMINAL_STAGES,
+            ).fetchall()
+        return {r["source_path"]: _to_job(r) for r in rows}
+
     def active_job_for_source(self, source_path: str) -> Job | None:
         """Return the newest non-terminal job for *source_path*, if any."""
         placeholders = ",".join("?" * len(TERMINAL_STAGES))
@@ -371,6 +382,14 @@ class EncoderStore:
                 "SELECT path, size, mtime_ns FROM seen_files"
             ).fetchall()
         return {r["path"]: (r["size"], r["mtime_ns"]) for r in rows}
+
+    def get_seen(self, path: str) -> tuple[int, int] | None:
+        """Return `(size, mtime_ns)` if *path* has a recorded fingerprint."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT size, mtime_ns FROM seen_files WHERE path = ?", (path,)
+            ).fetchone()
+        return (row["size"], row["mtime_ns"]) if row else None
 
     def mark_seen(self, path: str, size: int, mtime_ns: int) -> None:
         """Record that *path* has been decided about at this exact fingerprint.

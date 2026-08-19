@@ -947,6 +947,28 @@ def approve_job(job_id: str):
             "state is unknown. Confirm the file manually, then delete this "
             "job to let the watcher re-plan it.",
         )
+
+    try:
+        stat = os.stat(job.source_path)
+        seen_fp = store.get_seen(job.source_path)
+        if seen_fp is not None and (stat.st_size, stat.st_mtime_ns) != seen_fp:
+            store.set_stage(
+                job.id,
+                "cancelled",
+                error="The source file was modified on disk after this job was created",
+                error_code="file_modified",
+            )
+            get_events().publish(job_to_payload(store.get_job(job.id)))
+            get_queue().reprocess_path(job.source_path)
+            return _error(
+                409,
+                "file_modified",
+                "The source file was modified on disk since this job was created. "
+                "The stale job has been cancelled and the file re-evaluated.",
+            )
+    except OSError:
+        pass
+
     if not get_queue().enqueue_if_stage(job_id, {"pending", "blocked"}):
         current = store.get_job(job_id)
         stage = current.stage if current is not None else "missing"
