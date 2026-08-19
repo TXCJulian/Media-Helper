@@ -72,7 +72,9 @@ export default function EncoderJobCard({
   const canDelete = job.stage !== 'swapping'
   const canReprocess =
     (job.stage === 'failed' ||
-      (job.stage === 'blocked' && job.error_code !== 'swap_interrupted')) &&
+      (job.stage === 'blocked' &&
+        job.error_code !== 'swap_interrupted' &&
+        !job.remote_job_id)) &&
     onReprocess
   const hasFacts = Object.keys(job.facts).length > 0
   const factLabels = Object.entries(job.facts)

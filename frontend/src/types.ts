@@ -329,6 +329,7 @@ export interface EncoderJob {
   rule_id: string | null
   error: string | null
   error_code: string | null
+  remote_job_id?: string | null
   output_path: string | null
   facts: Record<string, unknown>
   original_size: number | null

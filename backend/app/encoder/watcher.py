@@ -20,7 +20,11 @@ from watchdog.observers import Observer
 
 from app import config
 from app.encoder.events import EventBroadcaster, job_to_payload
-from app.encoder.reprocess import prune_excluded_dirs, resolve_authorized_path
+from app.encoder.reprocess import (
+    AuthorizedPathContext,
+    prune_excluded_dirs,
+    resolve_authorized_path,
+)
 from app.encoder.store import EncoderStore, Job
 
 logger = logging.getLogger(__name__)
@@ -159,6 +163,9 @@ class EncoderWatcher:
         """
         active_jobs = self._store.active_jobs_by_source()
         seen = self._store.seen_fingerprints()
+        auth_ctx = AuthorizedPathContext.from_roots_and_bases(
+            self._paths, config.BASE_PATHS
+        )
         present: set[str] = set()
         walked: list[str] = []
 
@@ -188,7 +195,7 @@ class EncoderWatcher:
 
             for dirpath, dirs, files in os.walk(root, onerror=_on_walk_error):
                 if (
-                    resolve_authorized_path(dirpath, self._paths, config.BASE_PATHS)
+                    resolve_authorized_path(dirpath, auth_ctx)
                     is None
                 ):
                     dirs[:] = []
@@ -197,7 +204,7 @@ class EncoderWatcher:
                 for name in files:
                     path = os.path.join(dirpath, name)
                     present.add(path)
-                    self._consider(path, active_jobs, seen)
+                    self._consider(path, active_jobs, seen, auth_ctx=auth_ctx)
 
             if not failed:
                 walked.append(root)
@@ -239,6 +246,7 @@ class EncoderWatcher:
         path: str,
         active_jobs: dict[str, Job] | None = None,
         seen: dict[str, tuple[int, int]] | None = None,
+        auth_ctx: AuthorizedPathContext | None = None,
     ) -> None:
         """Consider *path* for dispatch.
 
@@ -251,7 +259,9 @@ class EncoderWatcher:
         """
         if os.path.splitext(path)[1].lower() not in self._extensions:
             return
-        authorized = resolve_authorized_path(path, self._paths, config.BASE_PATHS)
+        authorized = resolve_authorized_path(
+            path, auth_ctx if auth_ctx is not None else self._paths, config.BASE_PATHS
+        )
         if authorized is None:
             return
         path = authorized

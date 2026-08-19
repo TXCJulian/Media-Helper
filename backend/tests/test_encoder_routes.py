@@ -512,6 +512,29 @@ def test_selected_import_rejects_an_explicit_empty_selection(client):
     }
 
 
+def test_selected_import_rejects_selection_when_none_are_usable(client, monkeypatch):
+    document = {
+        "PresetList": [
+            {
+                "PresetName": "QSV",
+                "VideoEncoder": "qsv_h265",
+                "VideoPreset": "speed",
+                "FileFormat": "av_mp4",
+            },
+        ]
+    }
+    monkeypatch.setattr(routes_mod, "_client", FakeClient(encoders=("nvenc_h265",)))
+
+    response = client.post(
+        "/api/encoder/presets",
+        json={"document": document, "include_names": ["QSV"]},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "encoder_unavailable"
+    assert "None of the selected presets can run" in response.json()["reason"]
+
+
 def test_individual_preset_round_trips_the_complete_leaf(client):
     """An edit must retain HandBrake fields the app does not model itself."""
     body = {

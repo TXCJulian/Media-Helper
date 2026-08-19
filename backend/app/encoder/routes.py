@@ -491,16 +491,6 @@ def _validate_watch_paths(paths: list[str]) -> list[str]:
     return validated
 
 
-def _is_within_base(path: str, base: str) -> bool:
-    """Whether *path* is contained by *base*, including filesystem roots."""
-    try:
-        return os.path.normcase(os.path.commonpath([path, base])) == os.path.normcase(
-            base
-        )
-    except ValueError:
-        return False
-
-
 @router.put("/config", response_model=None)
 def replace_config(payload: WatchPathsIn) -> dict | JSONResponse:
     try:
@@ -652,13 +642,21 @@ def import_presets(payload: PresetImport) -> dict | JSONResponse:
         for p in selected
         if p.encoder not in available
     ]
-    if payload.include_names is None and not usable:
+    if not usable:
+        if payload.include_names is None:
+            return _error(
+                400,
+                "encoder_unavailable",
+                "None of the presets in this document can run on the connected "
+                f"encoder; it does not provide: "
+                f"{', '.join(sorted({p.encoder for p in presets}))}",
+            )
         return _error(
             400,
             "encoder_unavailable",
-            "None of the presets in this document can run on the connected "
+            "None of the selected presets can run on the connected "
             f"encoder; it does not provide: "
-            f"{', '.join(sorted({p.encoder for p in presets}))}",
+            f"{', '.join(sorted({p.encoder for p in selected}))}",
         )
 
     get_store().replace_presets(usable)

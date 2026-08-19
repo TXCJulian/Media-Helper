@@ -70,6 +70,7 @@ def job_to_payload(job: Job) -> dict[str, Any]:
         "rule_id": job.rule_id,
         "error": job.error,
         "error_code": job.error_code,
+        "remote_job_id": job.remote_job_id,
         "output_path": job.output_path,
         "facts": job.facts,
         "original_size": job.original_size,

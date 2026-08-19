@@ -684,3 +684,32 @@ def test_run_skips_when_queued_file_modified_to_match_skip(env, monkeypatch):
     updated = store.get_job(job.id)
     assert updated.stage == "skipped"
     assert len(client.submitted) == 0
+
+
+def test_run_fails_with_invalid_rule_when_modified_file_hits_malformed_rule(env, monkeypatch):
+    """If evaluate raises RuleError when re-evaluating a modified file, tag invalid_rule."""
+    store, client, movies, source, queue_mod = env
+    q = _queue(store, client)
+
+    st = source.stat()
+    job = store.create_job(str(source), st.st_size, st.st_mtime_ns)
+    store.set_plan(job.id, preset_name="NVENC", rule_id="r1", facts={"height": 1080}, original_size=st.st_size)
+    store.set_stage(job.id, "queued")
+
+    # File on disk is modified externally
+    source.write_bytes(b"modified data")
+    monkeypatch.setattr(q, "_probe_once", lambda _p: {"height": 1080, "size": 100})
+
+    from app.encoder.rules import RuleError
+
+    def boom(*args, **kwargs):
+        raise RuleError("Operator 'contains' applies to text fields only, not 'height'")
+
+    monkeypatch.setattr(queue_mod, "evaluate", boom)
+
+    q._run(job.id)
+
+    updated = store.get_job(job.id)
+    assert updated.stage == "failed"
+    assert updated.error_code == "invalid_rule"
+    assert len(client.submitted) == 0

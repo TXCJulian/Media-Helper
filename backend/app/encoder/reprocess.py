@@ -84,42 +84,73 @@ def is_within(path: str, base: str) -> bool:
         return False
 
 
+from dataclasses import dataclass
+
+
 def _absolute(path: str) -> str:
     return os.path.normpath(os.path.abspath(path))
 
 
+@dataclass(frozen=True)
+class AuthorizedPathContext:
+    lexical_roots: tuple[str, ...]
+    resolved_roots: tuple[str, ...]
+    request_roots: tuple[str, ...]
+    lexical_bases: tuple[str, ...]
+    resolved_bases: tuple[str, ...]
+    request_bases: tuple[str, ...]
+
+    @classmethod
+    def from_roots_and_bases(
+        cls, roots: Iterable[str], library_bases: Iterable[str]
+    ) -> "AuthorizedPathContext":
+        lexical_roots = tuple(_absolute(root) for root in roots)
+        resolved_roots = tuple(os.path.realpath(root) for root in roots)
+        request_roots = tuple(dict.fromkeys((*lexical_roots, *resolved_roots)))
+        lexical_bases = tuple(_absolute(base) for base in library_bases)
+        resolved_bases = tuple(os.path.realpath(base) for base in library_bases)
+        request_bases = tuple(dict.fromkeys((*lexical_bases, *resolved_bases)))
+        return cls(
+            lexical_roots=lexical_roots,
+            resolved_roots=resolved_roots,
+            request_roots=request_roots,
+            lexical_bases=lexical_bases,
+            resolved_bases=resolved_bases,
+            request_bases=request_bases,
+        )
+
+
 def resolve_authorized_path(
     path: str,
-    roots: Iterable[str],
-    library_bases: Iterable[str],
+    roots: Iterable[str] | AuthorizedPathContext,
+    library_bases: Iterable[str] | None = None,
 ) -> str | None:
     """Return the real path only when both path spellings are authorized."""
     if not isinstance(path, str) or not os.path.isabs(path):
         return None
+    if isinstance(roots, AuthorizedPathContext):
+        ctx = roots
+    else:
+        ctx = AuthorizedPathContext.from_roots_and_bases(roots, library_bases or ())
+
+    if not ctx.lexical_roots:
+        return None
     lexical = _absolute(path)
     resolved = os.path.realpath(lexical)
-    lexical_roots = tuple(_absolute(root) for root in roots)
-    resolved_roots = tuple(os.path.realpath(root) for root in roots)
-    if not lexical_roots:
-        return None
     # Directory picker results are canonical paths.  If a configured base or
     # watch root is itself a symlink, that canonical spelling is not lexically
     # below the configured spelling even though it identifies the same safe
     # subtree.  Authorize either spelling, then independently require the
     # resolved target to remain inside a resolved root.  The latter check is
     # what continues to reject symlink escapes.
-    request_roots = tuple(dict.fromkeys((*lexical_roots, *resolved_roots)))
-    if not any(is_within(lexical, root) for root in request_roots):
+    if not any(is_within(lexical, root) for root in ctx.request_roots):
         return None
-    if not any(is_within(resolved, root) for root in resolved_roots):
+    if not any(is_within(resolved, root) for root in ctx.resolved_roots):
         return None
 
-    lexical_bases = tuple(_absolute(base) for base in library_bases)
-    resolved_bases = tuple(os.path.realpath(base) for base in library_bases)
-    request_bases = tuple(dict.fromkeys((*lexical_bases, *resolved_bases)))
     for candidate, allowed_roots, bases in (
-        (lexical, request_roots, request_bases),
-        (resolved, resolved_roots, resolved_bases),
+        (lexical, ctx.request_roots, ctx.request_bases),
+        (resolved, ctx.resolved_roots, ctx.resolved_bases),
     ):
         if any(
             has_excluded_ancestor(candidate, root, exclude_music=False)
@@ -240,6 +271,7 @@ class ReprocessManager:
             skipped=skipped,
             failed=failed,
         )
+        auth_ctx = AuthorizedPathContext.from_roots_and_bases(paths, library_bases)
         try:
             for base in paths:
                 if self._stopping.is_set():
@@ -257,7 +289,7 @@ class ReprocessManager:
                     logger.warning("Reprocess watch path is not readable: %s", base)
                     continue
                 if resolve_authorized_path(
-                    base, paths, library_bases
+                    base, auth_ctx
                 ) is None or not any(
                     is_within(os.path.realpath(base), library_base)
                     for library_base in library_bases
@@ -279,7 +311,7 @@ class ReprocessManager:
                             error="Bulk reprocess stopped",
                         )
                         return
-                    if resolve_authorized_path(root, paths, library_bases) is None:
+                    if resolve_authorized_path(root, auth_ctx) is None:
                         dirs[:] = []
                         continue
                     prune_excluded_dirs(root, dirs, library_bases)
@@ -296,19 +328,11 @@ class ReprocessManager:
                             )
                             return
                         path = resolve_authorized_path(
-                            os.path.join(root, name), paths, library_bases
+                            os.path.join(root, name), auth_ctx
                         )
                         if (
                             path is None
                             or path in visited
-                            or not any(
-                                is_within(path, library_base)
-                                for library_base in library_bases
-                            )
-                            or any(
-                                has_excluded_ancestor(path, library_base)
-                                for library_base in library_bases
-                            )
                             or os.path.splitext(name)[1].lower() not in self._extensions
                         ):
                             continue

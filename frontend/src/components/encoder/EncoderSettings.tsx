@@ -167,6 +167,13 @@ export default function EncoderSettings({
   const [confirmReprocessAll, setConfirmReprocessAll] = useState(false)
   const [startingReprocessAll, setStartingReprocessAll] = useState(false)
   const [activeReprocessRunId, setActiveReprocessRunId] = useState<string | null>(null)
+  const activeReprocessRunIdRef = useRef<string | null>(null)
+
+  const updateActiveReprocessRunId = (id: string | null) => {
+    activeReprocessRunIdRef.current = id
+    setActiveReprocessRunId(id)
+  }
+
   const testPathRef = useRef('')
   const testRequestRef = useRef(0)
   const reprocessRequestRef = useRef(0)
@@ -179,7 +186,6 @@ export default function EncoderSettings({
   const [filesLoading, setFilesLoading] = useState(false)
   const pendingWatchPaths = useRef<string[] | null>(null)
   const pendingRules = useRef<RuleSet | null>(null)
-  const activeReprocessRunIdRef = useRef<string | null>(null)
   const latestReprocessEventRef = useRef(latestReprocessEvent)
   latestReprocessEventRef.current = latestReprocessEvent
 
@@ -415,8 +421,7 @@ export default function EncoderSettings({
 
   useEffect(() => {
     if (reprocessActive === false) {
-      activeReprocessRunIdRef.current = null
-      setActiveReprocessRunId(null)
+      updateActiveReprocessRunId(null)
       return
     }
     if (
@@ -426,8 +431,7 @@ export default function EncoderSettings({
     ) {
       return
     }
-    activeReprocessRunIdRef.current = null
-    setActiveReprocessRunId(null)
+    updateActiveReprocessRunId(null)
   }, [activeReprocessRunId, latestReprocessEvent, reprocessActive])
 
   const startReprocessAll = async () => {
@@ -442,11 +446,9 @@ export default function EncoderSettings({
           latest.status === 'failed' ||
           latest.status === 'cancelled')
       ) {
-        activeReprocessRunIdRef.current = null
-        setActiveReprocessRunId(null)
+        updateActiveReprocessRunId(null)
       } else {
-        activeReprocessRunIdRef.current = run.run_id
-        setActiveReprocessRunId(run.run_id)
+        updateActiveReprocessRunId(run.run_id)
       }
       setConfirmReprocessAll(false)
     } catch (error) {

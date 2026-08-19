@@ -496,15 +496,23 @@ class EncodeQueue:
                 )
                 try:
                     facts = self._probe_with_retry(job.source_path)
-                    rules = self._store.list_rules()
-                    fallback = self._store.get_setting("fallback_target", SKIP)
-                    match = evaluate(facts, rules, fallback)
+                except ProbeError as exc:
+                    self._fail(job_id, str(exc), "probe_failed")
+                    return
                 except Exception as exc:
                     self._fail(
                         job_id,
                         f"Re-evaluating modified source file failed: {exc}",
                         "probe_failed",
                     )
+                    return
+
+                rules = self._store.list_rules()
+                fallback = self._store.get_setting("fallback_target", SKIP)
+                try:
+                    match = evaluate(facts, rules, fallback)
+                except RuleError as exc:
+                    self._fail(job_id, str(exc), "invalid_rule")
                     return
 
                 if match.target == SKIP:

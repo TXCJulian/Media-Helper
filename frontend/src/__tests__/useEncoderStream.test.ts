@@ -39,6 +39,7 @@ function job(overrides: Partial<EncoderJob> = {}): EncoderJob {
     rule_id: 'rule-1',
     error: null,
     error_code: null,
+    remote_job_id: null,
     output_path: null,
     facts: {},
     original_size: null,

@@ -22,6 +22,7 @@ function job(overrides: Partial<EncoderJob> = {}): EncoderJob {
     rule_id: 'uhd',
     error: null,
     error_code: null,
+    remote_job_id: null,
     output_path: null,
     facts: {},
     original_size: null,
@@ -201,6 +202,19 @@ describe('EncoderJobCard', () => {
     render(
       <EncoderJobCard
         job={job({ stage: 'swapping' })}
+        onApprove={vi.fn()}
+        onDelete={vi.fn()}
+        onReprocess={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Re-evaluate file' })).toBeNull()
+  })
+
+  it('does not offer re-evaluation for blocked jobs with active remote work', () => {
+    render(
+      <EncoderJobCard
+        job={job({ stage: 'blocked', remote_job_id: 'remote-123' })}
         onApprove={vi.fn()}
         onDelete={vi.fn()}
         onReprocess={vi.fn()}
