@@ -463,7 +463,9 @@ class EncodeQueue:
                 logger.exception("Encode job %s crashed the dispatcher", job_id)
                 self._fail(job_id, "Internal error; see server logs", "internal")
 
-    def _lookup_preset(self, job_id: str, preset_name: str | None) -> StoredPreset | None:
+    def _lookup_preset(
+        self, job_id: str, preset_name: str | None
+    ) -> StoredPreset | None:
         if preset_name is None:
             self._fail(job_id, "No preset selected for job", "preset_missing")
             return None
@@ -491,15 +493,8 @@ class EncodeQueue:
         )
         try:
             facts = self._probe_with_retry(job.source_path)
-        except ProbeError as exc:
+        except (ProbeError, OSError) as exc:
             self._fail(job_id, str(exc), "probe_failed")
-            return None
-        except Exception as exc:
-            self._fail(
-                job_id,
-                f"Re-evaluating modified source file failed: {exc}",
-                "probe_failed",
-            )
             return None
 
         rules = self._store.list_rules()

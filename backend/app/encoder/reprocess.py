@@ -1,11 +1,11 @@
 """Background re-evaluation of every configured encoder source."""
 
-from dataclasses import dataclass
 import logging
 import os
 import threading
 import uuid
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from app import config
 from app.encoder.events import reprocess_to_payload
@@ -33,9 +33,13 @@ def _is_excluded_name(
         or ".trickplay" in name.lower()
     ):
         return True
-    if exclude_music and name == config.MUSIC_FOLDER_NAME:
-        if parent_dir is not None and base is not None:
-            return _norm_dir(parent_dir) == _norm_dir(base)
+    if (
+        exclude_music
+        and name == config.MUSIC_FOLDER_NAME
+        and parent_dir is not None
+        and base is not None
+    ):
+        return _norm_dir(parent_dir) == _norm_dir(base)
     return False
 
 
@@ -298,9 +302,7 @@ class ReprocessManager:
                 if not os.path.isdir(base):
                     logger.warning("Reprocess watch path is not readable: %s", base)
                     continue
-                if resolve_authorized_path(
-                    base, auth_ctx
-                ) is None or not any(
+                if resolve_authorized_path(base, auth_ctx) is None or not any(
                     is_within(os.path.realpath(base), library_base)
                     for library_base in library_bases
                 ):

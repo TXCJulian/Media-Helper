@@ -194,10 +194,7 @@ class EncoderWatcher:
                 )
 
             for dirpath, dirs, files in os.walk(root, onerror=_on_walk_error):
-                if (
-                    resolve_authorized_path(dirpath, auth_ctx)
-                    is None
-                ):
+                if resolve_authorized_path(dirpath, auth_ctx) is None:
                     dirs[:] = []
                     continue
                 prune_excluded_dirs(dirpath, dirs, config.BASE_PATHS)
