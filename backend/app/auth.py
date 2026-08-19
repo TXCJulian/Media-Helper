@@ -3,9 +3,9 @@ import logging
 
 import bcrypt
 from fastapi import Request, Response
-from itsdangerous import TimestampSigner, BadSignature, SignatureExpired
+from itsdangerous import BadSignature, SignatureExpired, TimestampSigner
 
-from app.config import AUTH_ENABLED, AUTH_USERNAME, SECRET_KEY, _PASSWORD_HASH
+from app.config import _PASSWORD_HASH, AUTH_ENABLED, AUTH_USERNAME, SECRET_KEY
 
 logger = logging.getLogger(__name__)
 

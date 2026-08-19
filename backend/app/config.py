@@ -1,6 +1,7 @@
 import logging
 import os
 import secrets
+
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "dependencies", ".env"))
@@ -86,7 +87,9 @@ ENCODER_WATCH_PATHS: list[str] = [
 # falls back to review rather than raising: a typo in a compose file must not
 # silently upgrade the deployment to rewriting files unattended.
 _encoder_mode_raw = os.getenv("ENCODER_MODE", "review").strip().lower()
-ENCODER_MODE = _encoder_mode_raw if _encoder_mode_raw in {"auto", "review"} else "review"
+ENCODER_MODE = (
+    _encoder_mode_raw if _encoder_mode_raw in {"auto", "review"} else "review"
+)
 if _encoder_mode_raw and ENCODER_MODE != _encoder_mode_raw:
     logger.warning(
         "Invalid ENCODER_MODE '%s', falling back to 'review'", _encoder_mode_raw

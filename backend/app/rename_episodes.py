@@ -1,13 +1,15 @@
+import logging
 import os
 import re
-import logging
 import unicodedata
-import requests
 import urllib.parse
 from difflib import SequenceMatcher
-from typing import Optional
-from app.config import TMDB_API_KEY as API_KEY, VALID_VIDEO_EXT
-from app.fs_utils import flush_directory, collision_safe_path
+
+import requests
+
+from app.config import TMDB_API_KEY as API_KEY
+from app.config import VALID_VIDEO_EXT
+from app.fs_utils import collision_safe_path, flush_directory
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +129,7 @@ def rename_episodes(
     dry_run: bool = False,
     threshold: float = 0.6,
     assign_seq: bool = False,
-) -> tuple[list[str], Optional[str]]:
+) -> tuple[list[str], str | None]:
 
     logs: list[str] = []
 
@@ -138,12 +140,12 @@ def rename_episodes(
 
     try:
         show_id = tmdb_search_show(series, lang)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - TMDB client errors are user-facing
         return logs, str(e)
 
     try:
         season_eps = tmdb_get_season(show_id, season, lang)
-    except Exception:
+    except Exception:  # noqa: BLE001 - TMDB client errors have no stable base type
         return logs, f"Season {season} of series '{series}' not found"
 
     remaining = []
@@ -269,7 +271,9 @@ def rename_episodes(
                 if os.path.exists(old_nfo):
                     try:
                         os.remove(old_nfo)
-                    except Exception as e:
+                    except (
+                        Exception  # noqa: BLE001 - cleanup must not abort the rename
+                    ) as e:
                         logs.append(f"\t[!] .nfo deletion failed: {e}")
             else:
                 logs.append(

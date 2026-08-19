@@ -95,6 +95,41 @@ def test_auto_mode_queues_immediately(env):
     assert store.get_job(job.id).stage == "queued"
 
 
+def test_reprocess_path_forgets_seen_and_replans_existing_file(env):
+    store, client, movies, source, _ = env
+    q = _queue(store, client, mode="review")
+    store.mark_seen(str(source), source.stat().st_size, source.stat().st_mtime_ns)
+    result = q.reprocess_path(str(source))
+    assert result["created"] is True
+    assert result["stage"] == "pending"
+
+
+def test_reprocess_path_returns_existing_active_job(env):
+    store, client, movies, source, _ = env
+    q = _queue(store, client, mode="review")
+    q.plan_new(str(source), source.stat().st_size, source.stat().st_mtime_ns)
+    result = q.reprocess_path(str(source))
+    assert result["created"] is False
+    assert result["job_id"] == store.active_job_for_source(str(source)).id
+
+
+def test_reprocess_path_returns_new_terminal_job_after_same_second_history(env):
+    store, client, movies, source, _ = env
+    old = store.create_job(str(source))
+    store.set_stage(old.id, "done")
+    store.replace_rules([Rule("skip", [], "skip")])
+    q = _queue(store, client, mode="review")
+    result = q.reprocess_path(str(source))
+    newest = store.newest_job_for_source(str(source))
+    assert result == {
+        "job_id": newest.id,
+        "path": str(source),
+        "stage": "skipped",
+        "created": True,
+    }
+    assert newest.id != old.id
+
+
 def test_a_skip_target_ends_the_job_without_dispatching(env):
     store, client, movies, source, _ = env
     store.replace_rules([Rule("r1", [Condition("height", ">=", 720)], "skip")])
@@ -328,6 +363,36 @@ def test_a_cancel_racing_a_completing_encode_does_not_touch_the_source(env):
     fetched = store.get_job(job.id)
     assert fetched.output_path is None
     assert source.read_bytes() == b"O" * 4096
+
+
+def test_a_cancel_racing_dispatch_does_not_rearm_job(env):
+    """If cancel() runs while a job is being reevaluated before dispatch,
+    _run() must not submit it to the remote encoder or overwrite 'cancelled'
+    with 'encoding'."""
+    store, client, movies, source, _ = env
+    q = _queue(store, client, mode="auto")
+    job = store.create_job(str(source))
+    q.plan(job.id)
+
+    original_reevaluate = q._reevaluate_before_dispatch
+
+    def racing_reevaluate(*args, **kwargs):
+        res = original_reevaluate(*args, **kwargs)
+        q.cancel(job.id)
+        return res
+
+    q._reevaluate_before_dispatch = racing_reevaluate
+
+    q.start()
+    try:
+        _wait(lambda: store.get_job(job.id).stage == "cancelled")
+    finally:
+        q.stop()
+
+    fetched = store.get_job(job.id)
+    assert fetched.stage == "cancelled"
+    assert client.submitted == []
+
 
 
 def test_stop_then_start_dispatches_normally(env):
@@ -628,3 +693,53 @@ def test_plan_new_records_the_fingerprint_with_the_job(env):
     assert len(store.list_jobs()) == 1
     assert store.seen_fingerprints()[str(source)] == (
         4096, 1_700_000_000_000_000_000)
+
+
+def test_run_skips_when_queued_file_modified_to_match_skip(env, monkeypatch):
+    """If a file changes while queued and now matches SKIP, _run skips it."""
+    store, client, movies, source, queue_mod = env
+    q = _queue(store, client)
+
+    st = source.stat()
+    job = store.create_job(str(source), st.st_size, st.st_mtime_ns)
+    store.set_plan(job.id, preset_name="NVENC", rule_id="r1", facts={"height": 1080}, original_size=st.st_size)
+    store.set_stage(job.id, "queued")
+
+    # File on disk is modified externally
+    source.write_bytes(b"already encoded data")
+    monkeypatch.setattr(q, "_probe_once", lambda _p: {"video_codec": "hevc", "size": 100})
+
+    q._run(job.id)
+
+    updated = store.get_job(job.id)
+    assert updated.stage == "skipped"
+    assert len(client.submitted) == 0
+
+
+def test_run_fails_with_invalid_rule_when_modified_file_hits_malformed_rule(env, monkeypatch):
+    """If evaluate raises RuleError when re-evaluating a modified file, tag invalid_rule."""
+    store, client, movies, source, queue_mod = env
+    q = _queue(store, client)
+
+    st = source.stat()
+    job = store.create_job(str(source), st.st_size, st.st_mtime_ns)
+    store.set_plan(job.id, preset_name="NVENC", rule_id="r1", facts={"height": 1080}, original_size=st.st_size)
+    store.set_stage(job.id, "queued")
+
+    # File on disk is modified externally
+    source.write_bytes(b"modified data")
+    monkeypatch.setattr(q, "_probe_once", lambda _p: {"height": 1080, "size": 100})
+
+    from app.encoder.rules import RuleError
+
+    def boom(*args, **kwargs):
+        raise RuleError("Operator 'contains' applies to text fields only, not 'height'")
+
+    monkeypatch.setattr(queue_mod, "evaluate", boom)
+
+    q._run(job.id)
+
+    updated = store.get_job(job.id)
+    assert updated.stage == "failed"
+    assert updated.error_code == "invalid_rule"
+    assert len(client.submitted) == 0

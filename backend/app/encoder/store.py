@@ -22,8 +22,18 @@ from app.encoder.rules import Condition, Rule
 from app.encoder.swap import purge_original
 
 STAGES = frozenset(
-    {"settling", "pending", "queued", "encoding", "swapping", "done", "failed",
-     "blocked", "skipped", "cancelled"}
+    {
+        "settling",
+        "pending",
+        "queued",
+        "encoding",
+        "swapping",
+        "done",
+        "failed",
+        "blocked",
+        "skipped",
+        "cancelled",
+    }
 )
 
 TERMINAL_STAGES = ("done", "failed", "skipped", "cancelled")
@@ -216,8 +226,13 @@ class EncoderStore:
             ).fetchall()
         return [_to_job(r) for r in rows]
 
-    def set_stage(self, job_id: str, stage: str, error: str | None = None,
-                  error_code: str | None = None) -> None:
+    def set_stage(
+        self,
+        job_id: str,
+        stage: str,
+        error: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
         if stage not in STAGES:
             raise ValueError(f"Unknown stage: {stage}")
         self._update(job_id, stage=stage, error=error, error_code=error_code)
@@ -225,20 +240,64 @@ class EncoderStore:
     def set_progress(self, job_id: str, pct: float) -> None:
         self._update(job_id, progress=float(pct))
 
+    def cancel_blocked_for_reprocess(self, job_id: str) -> bool:
+        """Release a recoverable blocked row while retaining it as history."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE jobs SET stage = 'cancelled', updated_at = datetime('now') "
+                "WHERE id = ? AND stage = 'blocked' AND "
+                "COALESCE(error_code, '') != 'swap_interrupted'",
+                (job_id,),
+            )
+            self._conn.commit()
+        return cur.rowcount > 0
+
+    def transition_stage(
+        self, job_id: str, allowed_stages: Iterable[str], stage: str
+    ) -> bool:
+        """Atomically move a job only if it is still in an allowed stage."""
+        if stage not in STAGES:
+            raise ValueError(f"Unknown stage: {stage}")
+        allowed = tuple(allowed_stages)
+        if not allowed or any(candidate not in STAGES for candidate in allowed):
+            raise ValueError("Unknown or empty allowed stage set")
+        placeholders = ", ".join("?" for _ in allowed)
+        with self._lock:
+            cur = self._conn.execute(
+                f"UPDATE jobs SET stage = ?, error = NULL, error_code = NULL, "
+                f"updated_at = datetime('now') WHERE id = ? "
+                f"AND stage IN ({placeholders})",
+                (stage, job_id, *allowed),
+            )
+            self._conn.commit()
+        return cur.rowcount > 0
+
     def set_remote_job(self, job_id: str, remote_job_id: str) -> None:
         self._update(job_id, remote_job_id=remote_job_id)
 
     def set_result(self, job_id: str, output_path: str, encoded_size: int) -> None:
         self._update(job_id, output_path=output_path, encoded_size=encoded_size)
 
-    def set_plan(self, job_id: str, preset_name: str | None, rule_id: str | None,
-                 facts: dict, original_size: int) -> None:
-        self._update(job_id, preset_name=preset_name, rule_id=rule_id,
-                     facts=json.dumps(facts), original_size=original_size)
+    def set_plan(
+        self,
+        job_id: str,
+        preset_name: str | None,
+        rule_id: str | None,
+        facts: dict,
+        original_size: int,
+    ) -> None:
+        self._update(
+            job_id,
+            preset_name=preset_name,
+            rule_id=rule_id,
+            facts=json.dumps(facts),
+            original_size=original_size,
+        )
 
     def set_retention(self, job_id: str, kept_path: str, expires_at: float) -> None:
-        self._update(job_id, original_kept_path=kept_path,
-                     original_expires_at=expires_at)
+        self._update(
+            job_id, original_kept_path=kept_path, original_expires_at=expires_at
+        )
 
     def clear_retention(self, job_id: str) -> None:
         self._update(job_id, original_kept_path=None, original_expires_at=None)
@@ -272,6 +331,39 @@ class EncoderStore:
             ).fetchall()
         return {r["source_path"] for r in rows}
 
+    def active_jobs_by_source(self) -> dict[str, Job]:
+        """Return `{source_path: Job}` for every active (non-terminal) job."""
+        placeholders = ",".join("?" * len(TERMINAL_STAGES))
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM jobs WHERE stage NOT IN ({placeholders}) "
+                "ORDER BY created_at DESC, rowid DESC",
+                TERMINAL_STAGES,
+            ).fetchall()
+        return {r["source_path"]: _to_job(r) for r in rows}
+
+    def active_job_for_source(self, source_path: str) -> Job | None:
+        """Return the newest non-terminal job for *source_path*, if any."""
+        placeholders = ",".join("?" * len(TERMINAL_STAGES))
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT * FROM jobs WHERE source_path = ? "
+                f"AND stage NOT IN ({placeholders}) "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (source_path, *TERMINAL_STAGES),
+            ).fetchone()
+        return _to_job(row) if row else None
+
+    def newest_job_for_source(self, source_path: str) -> Job | None:
+        """Return the newest job for *source_path*, including terminal jobs."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM jobs WHERE source_path = ? "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (source_path,),
+            ).fetchone()
+        return _to_job(row) if row else None
+
     def seen_fingerprints(self) -> dict[str, tuple[int, int]]:
         """`{path: (size, mtime_ns)}` for every file already decided about.
 
@@ -290,6 +382,14 @@ class EncoderStore:
                 "SELECT path, size, mtime_ns FROM seen_files"
             ).fetchall()
         return {r["path"]: (r["size"], r["mtime_ns"]) for r in rows}
+
+    def get_seen(self, path: str) -> tuple[int, int] | None:
+        """Return `(size, mtime_ns)` if *path* has a recorded fingerprint."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT size, mtime_ns FROM seen_files WHERE path = ?", (path,)
+            ).fetchone()
+        return (row["size"], row["mtime_ns"]) if row else None
 
     def mark_seen(self, path: str, size: int, mtime_ns: int) -> None:
         """Record that *path* has been decided about at this exact fingerprint.
@@ -348,9 +448,7 @@ class EncoderStore:
         back into the queue short of touching it on disk.
         """
         with self._lock:
-            cur = self._conn.execute(
-                "DELETE FROM seen_files WHERE path = ?", (path,)
-            )
+            cur = self._conn.execute("DELETE FROM seen_files WHERE path = ?", (path,))
             self._conn.commit()
         return cur.rowcount > 0
 
@@ -370,8 +468,8 @@ class EncoderStore:
             self._conn.commit()
         return [_to_job(r) for r in rows]
 
-    def purge_expired(self, ttl_seconds: int) -> int:
-        """Delete job rows past their TTL, purging any originals they retained.
+    def purge_expired_ids(self, ttl_seconds: int) -> list[str]:
+        """Delete expired terminal jobs and return the removed IDs.
 
         Same reasoning as `delete_job`: `original_kept_path` is the only
         pointer to a preserved original, so a row purged here without also
@@ -382,11 +480,11 @@ class EncoderStore:
         placeholders = ",".join("?" * len(TERMINAL_STAGES))
         with self._lock:
             rows = self._conn.execute(
-                f"SELECT original_kept_path FROM jobs WHERE stage IN ({placeholders}) "
+                f"SELECT id, original_kept_path FROM jobs WHERE stage IN ({placeholders}) "
                 f"AND updated_at <= datetime('now', ?)",
                 (*TERMINAL_STAGES, f"-{int(ttl_seconds)} seconds"),
             ).fetchall()
-            cur = self._conn.execute(
+            self._conn.execute(
                 f"DELETE FROM jobs WHERE stage IN ({placeholders}) "
                 f"AND updated_at <= datetime('now', ?)",
                 (*TERMINAL_STAGES, f"-{int(ttl_seconds)} seconds"),
@@ -395,7 +493,11 @@ class EncoderStore:
         for row in rows:
             if row["original_kept_path"]:
                 purge_original(row["original_kept_path"])
-        return cur.rowcount
+        return [row["id"] for row in rows]
+
+    def purge_expired(self, ttl_seconds: int) -> int:
+        """Delete expired terminal jobs and return the number removed."""
+        return len(self.purge_expired_ids(ttl_seconds))
 
     def due_retentions(self, now: float) -> list[Job]:
         with self._lock:
@@ -429,17 +531,29 @@ class EncoderStore:
                 "VALUES (?, ?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET "
                 "encoder = excluded.encoder, video_preset = excluded.video_preset, "
                 "file_format = excluded.file_format, body = excluded.body",
-                [(p.name, p.encoder, p.video_preset, p.file_format,
-                  json.dumps(p.body)) for p in presets],
+                [
+                    (
+                        p.name,
+                        p.encoder,
+                        p.video_preset,
+                        p.file_format,
+                        json.dumps(p.body),
+                    )
+                    for p in presets
+                ],
             )
 
     def list_presets(self) -> list[StoredPreset]:
         with self._lock:
             rows = self._conn.execute("SELECT * FROM presets ORDER BY name").fetchall()
         return [
-            StoredPreset(name=r["name"], encoder=r["encoder"],
-                         video_preset=r["video_preset"], file_format=r["file_format"],
-                         body=json.loads(r["body"]))
+            StoredPreset(
+                name=r["name"],
+                encoder=r["encoder"],
+                video_preset=r["video_preset"],
+                file_format=r["file_format"],
+                body=json.loads(r["body"]),
+            )
             for r in rows
         ]
 
@@ -469,10 +583,17 @@ class EncoderStore:
                 "INSERT INTO rules (id, position, conditions, target) "
                 "VALUES (?, ?, ?, ?)",
                 [
-                    (r.id, i,
-                     json.dumps([{"field": c.field, "op": c.op, "value": c.value}
-                                 for c in r.conditions]),
-                     r.target)
+                    (
+                        r.id,
+                        i,
+                        json.dumps(
+                            [
+                                {"field": c.field, "op": c.op, "value": c.value}
+                                for c in r.conditions
+                            ]
+                        ),
+                        r.target,
+                    )
                     for i, r in enumerate(rules)
                 ],
             )
@@ -485,8 +606,10 @@ class EncoderStore:
         return [
             Rule(
                 id=r["id"],
-                conditions=[Condition(field=c["field"], op=c["op"], value=c["value"])
-                            for c in json.loads(r["conditions"])],
+                conditions=[
+                    Condition(field=c["field"], op=c["op"], value=c["value"])
+                    for c in json.loads(r["conditions"])
+                ],
                 target=r["target"],
             )
             for r in rows
@@ -513,14 +636,21 @@ class EncoderStore:
 
 def _to_job(row: sqlite3.Row) -> Job:
     return Job(
-        id=row["id"], source_path=row["source_path"], stage=row["stage"],
-        progress=row["progress"], preset_name=row["preset_name"],
-        rule_id=row["rule_id"], remote_job_id=row["remote_job_id"],
-        output_path=row["output_path"], error=row["error"],
+        id=row["id"],
+        source_path=row["source_path"],
+        stage=row["stage"],
+        progress=row["progress"],
+        preset_name=row["preset_name"],
+        rule_id=row["rule_id"],
+        remote_job_id=row["remote_job_id"],
+        output_path=row["output_path"],
+        error=row["error"],
         error_code=row["error_code"],
         facts=json.loads(row["facts"]) if row["facts"] else {},
-        original_size=row["original_size"], encoded_size=row["encoded_size"],
+        original_size=row["original_size"],
+        encoded_size=row["encoded_size"],
         original_kept_path=row["original_kept_path"],
         original_expires_at=row["original_expires_at"],
-        created_at=row["created_at"], updated_at=row["updated_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )

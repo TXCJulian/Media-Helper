@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 
-export type PanelName = 'episodes' | 'music' | 'lyrics' | 'cutter' | 'download'
+export type PanelName = 'episodes' | 'music' | 'lyrics' | 'cutter' | 'download' | 'encoder'
 
 interface LandingProps {
   onNavigate: (panel: PanelName) => void
@@ -45,7 +45,7 @@ const cards: {
     id: 'lyrics',
     icon: '¶',
     title: 'Lyric Transcriber',
-    desc: 'Transcribe lyrics from audio files with whisper.',
+    desc: 'Transcribe lyrics from audio files with Whisper.',
     colorClass: 'card-lyrics',
     iconClass: 'bg-[var(--accent-3-glow)] text-[var(--accent-3)]',
   },
@@ -56,6 +56,14 @@ const cards: {
     desc: 'Trim audio and video files with FFmpeg.',
     colorClass: 'card-cutter',
     iconClass: 'bg-[var(--accent-4-glow)] text-[var(--accent-4)]',
+  },
+  {
+    id: 'encoder',
+    icon: '⇄',
+    title: 'Auto Encoder',
+    desc: 'Encode video files with HandBrake.',
+    colorClass: 'card-encoder',
+    iconClass: 'bg-[var(--accent-5-glow)] text-[var(--accent-5)]',
   },
 ]
 
@@ -131,9 +139,11 @@ export default function Landing({
                         ? 'radial-gradient(ellipse at 30% 80%, var(--accent-6-glow) 0%, transparent 65%)'
                         : card.id === 'music'
                           ? 'radial-gradient(ellipse at 30% 80%, var(--accent-2-glow) 0%, transparent 65%)'
-                          : card.id === 'cutter'
-                            ? 'radial-gradient(ellipse at 30% 80%, var(--accent-4-glow) 0%, transparent 65%)'
-                            : 'radial-gradient(ellipse at 30% 80%, var(--accent-3-glow) 0%, transparent 65%)',
+                          : card.id === 'encoder'
+                            ? 'radial-gradient(ellipse at 30% 80%, var(--accent-5-glow) 0%, transparent 65%)'
+                            : card.id === 'cutter'
+                              ? 'radial-gradient(ellipse at 30% 80%, var(--accent-4-glow) 0%, transparent 65%)'
+                              : 'radial-gradient(ellipse at 30% 80%, var(--accent-3-glow) 0%, transparent 65%)',
                 }}
               />
 

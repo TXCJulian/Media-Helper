@@ -1,7 +1,7 @@
 import logging
 import queue as queue_mod
 import threading
-from typing import Callable
+from collections.abc import Callable
 
 from app.downloader.store import Job, JobStore
 
@@ -195,7 +195,7 @@ class DownloadQueue:
                 else:
                     stage, message = "cancelled", "Cancelled by user"
             else:
-                logger.error("Worker failed on job %s: %s", job_id, exc, exc_info=True)
+                logger.exception("Worker failed on job %s", job_id)
                 stage, message = "error", str(exc)
             try:
                 self._store.set_job_stage(job_id, stage, message)

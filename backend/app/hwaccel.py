@@ -55,7 +55,7 @@ for _backends in _GPU_ENCODER_MAP.values():
 
 # Which GPU encoders belong to each backend
 _BACKEND_ENCODERS: dict[str, set[str]] = {}
-for _cpu_enc, _backends in _GPU_ENCODER_MAP.items():
+for _backends in _GPU_ENCODER_MAP.values():
     for _be, _gpu_enc in _backends.items():
         _BACKEND_ENCODERS.setdefault(_be, set()).add(_gpu_enc)
 
@@ -123,6 +123,7 @@ def _query_encoders() -> set[str]:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
         output = result.stdout + result.stderr
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -173,6 +174,7 @@ def _probe_encoder(encoder: str, backend: str | None = None) -> bool:
             ],
             capture_output=True,
             timeout=15,
+            check=False,
         )
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -181,7 +183,6 @@ def _probe_encoder(encoder: str, backend: str | None = None) -> bool:
 
 def _ensure_detected() -> None:
     """Block until GPU detection has completed (lazy trigger)."""
-    global _detected
     if _detected:
         return
     with _detect_lock:

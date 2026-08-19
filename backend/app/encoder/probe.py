@@ -61,8 +61,10 @@ def probe(path: str) -> dict:
 
     cmd = [
         "ffprobe",
-        "-loglevel", "warning",
-        "-print_format", "json",
+        "-loglevel",
+        "warning",
+        "-print_format",
+        "json",
         "-show_format",
         "-show_streams",
         path,
@@ -75,6 +77,7 @@ def probe(path: str) -> dict:
             encoding="utf-8",
             errors="replace",
             timeout=_TIMEOUT_SECONDS,
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise ProbeError(f"ffprobe timed out for {path}") from exc

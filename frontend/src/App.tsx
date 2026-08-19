@@ -7,6 +7,7 @@ import MusicPanel from '@/components/MusicPanel'
 import LyricsPanel from '@/components/LyricsPanel'
 import CutterPanel from '@/components/CutterPanel'
 import DownloaderPanel from '@/components/DownloaderPanel'
+import EncoderPanel from '@/components/EncoderPanel'
 import { fetchAuthStatus, fetchConfig, postLogout } from '@/lib/api'
 import type { CutterPersistedState, CutterSourceState } from '@/types'
 
@@ -265,6 +266,10 @@ export default function App() {
         showBaseLabel={basePaths.length > 1}
       />
     )
+  }
+
+  if (activeView === 'encoder') {
+    return <EncoderPanel onBack={goHome} />
   }
 
   return null

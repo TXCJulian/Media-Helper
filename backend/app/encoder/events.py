@@ -11,6 +11,44 @@ from typing import Any
 
 from app.encoder.store import Job
 
+_TERMINAL_REPROCESS_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_REPROCESS_STATUSES = frozenset({"started", "running"}) | _TERMINAL_REPROCESS_STATUSES
+
+
+def reprocess_to_payload(
+    run_id: str,
+    status: str,
+    *,
+    scanned: int,
+    created: int,
+    skipped: int,
+    failed: int,
+    path: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Build the complete, serialisable SSE contract for a reprocess run."""
+    if not isinstance(run_id, str) or not run_id or status not in _REPROCESS_STATUSES:
+        raise ValueError("Invalid reprocess event")
+    counts = (scanned, created, skipped, failed)
+    # Use `type(count) is not int` to explicitly reject `bool` (since bool is a subclass of int)
+    if any(type(count) is not int or count < 0 for count in counts):
+        raise ValueError("Reprocess counts must be non-negative integers")
+    if path is not None and not isinstance(path, str):
+        raise ValueError("Reprocess path must be a string or null")
+    if error is not None and not isinstance(error, str):
+        raise ValueError("Reprocess error must be a string or null")
+    return {
+        "type": "reprocess",
+        "run_id": run_id,
+        "status": status,
+        "scanned": scanned,
+        "created": created,
+        "skipped": skipped,
+        "failed": failed,
+        "path": path,
+        "error": error,
+    }
+
 
 def job_to_payload(job: Job) -> dict[str, Any]:
     """Serialise a job for the wire.
@@ -31,6 +69,7 @@ def job_to_payload(job: Job) -> dict[str, Any]:
         "rule_id": job.rule_id,
         "error": job.error,
         "error_code": job.error_code,
+        "remote_job_id": job.remote_job_id,
         "output_path": job.output_path,
         "facts": job.facts,
         "original_size": job.original_size,

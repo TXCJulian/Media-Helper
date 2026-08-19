@@ -389,6 +389,47 @@ class TestEncoderLifespan:
                 assert any(p.startswith("/api/encoder") for p in paths)
                 assert c.get("/api/encoder/config").status_code == 200
 
+    def test_encoder_does_not_persist_an_invalid_default_watch_path(self, tmp_path):
+        """Environment defaults get the same BASE_PATHS boundary as PUT config."""
+        import importlib
+
+        media = tmp_path / "media"
+        media.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        encoder_db = tmp_path / "enc-data" / "encoder.db"
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(media),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes,encoder",
+            "ENCODER_DATA_DIR": str(tmp_path / "enc-data"),
+            "ENCODER_DB": str(encoder_db),
+            "ENCODER_WATCH_PATHS": str(outside),
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.encoder.routes as encoder_routes_mod
+            importlib.reload(encoder_routes_mod)
+            import app.main as main_mod
+            importlib.reload(main_mod)
+
+            with TestClient(main_mod.app) as c:
+                assert c.get("/health").status_code == 200
+
+            from app.encoder.store import EncoderStore
+
+            store = EncoderStore(str(encoder_db))
+            try:
+                assert store.get_setting("watch_paths", "missing") == "missing"
+            finally:
+                store.close()
+
     def test_encoder_failing_to_start_does_not_kill_the_app(self, tmp_path):
         """A failure that happens *after* the queue has already started its
         dispatch worker thread must not leak that thread, must not take the
@@ -419,7 +460,7 @@ class TestEncoderLifespan:
         watch_dir.mkdir(parents=True)
 
         with patch.dict(os.environ, {
-            "BASE_PATHS": str(media),
+            "BASE_PATHS": str(tmp_path),
             "TMDB_API_KEY": "test_key",
             "AUTH_USERNAME": "",
             "AUTH_PASSWORD": "",
@@ -435,15 +476,15 @@ class TestEncoderLifespan:
             importlib.reload(auth_mod)
             import app.encoder.routes as encoder_routes_mod
             importlib.reload(encoder_routes_mod)
-            import app.encoder.watcher as encoder_watcher_mod
+            import app.encoder.runtime as encoder_runtime_mod
             import app.main as main_mod
             importlib.reload(main_mod)
 
-            # EncoderWatcher is constructed *after* encoder_queue.start(), so
+            # EncoderRuntime constructs its watcher *after* encoder_queue.start(), so
             # forcing the failure here (rather than earlier) proves the
             # worker thread genuinely existed before the induced failure.
             with patch.object(
-                encoder_watcher_mod, "EncoderWatcher",
+                encoder_runtime_mod, "EncoderWatcher",
                 side_effect=RuntimeError("boom"),
             ):
                 with TestClient(main_mod.app) as c:
@@ -458,8 +499,9 @@ class TestEncoderLifespan:
                     # The caller does not get a quiet 200 -- approving (or
                     # any other store/queue-backed route) fails loud instead
                     # of silently accepting work nobody will ever process.
-                    with pytest.raises(RuntimeError):
-                        c.post("/api/encoder/jobs/some-id/approve")
+                    response = c.post("/api/encoder/jobs/some-id/approve")
+                    assert response.status_code == 503
+                    assert response.json()["code"] == "encoder_configuration_unavailable"
 
                 # No leaked dispatch worker thread survives the failure.
                 assert not any(
@@ -491,7 +533,7 @@ class TestEncoderLifespan:
         enc_db = enc_data / "encoder.db"
 
         with patch.dict(os.environ, {
-            "BASE_PATHS": str(media),
+            "BASE_PATHS": str(tmp_path),
             "TMDB_API_KEY": "test_key",
             "AUTH_USERNAME": "",
             "AUTH_PASSWORD": "",

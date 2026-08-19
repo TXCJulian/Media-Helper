@@ -12,8 +12,15 @@ from typing import Any
 # Fields a condition may name, mapped to how they compare. Enumerated rather
 # than accepting any key from the probe dict so a typo is an error at
 # evaluation instead of a rule that silently never fires.
-_NUMERIC_FIELDS = {"height", "width", "size", "bit_rate", "bit_depth",
-                   "frame_rate", "duration"}
+_NUMERIC_FIELDS = {
+    "height",
+    "width",
+    "size",
+    "bit_rate",
+    "bit_depth",
+    "frame_rate",
+    "duration",
+}
 _STRING_FIELDS = {"video_codec", "profile", "source_tool", "encoder_tag"}
 _BOOL_FIELDS = {"hdr", "dolby_vision"}
 _FIELDS = _NUMERIC_FIELDS | _STRING_FIELDS | _BOOL_FIELDS
@@ -74,8 +81,7 @@ def evaluate(facts: dict, rules: list[Rule], fallback: str) -> Match:
 def _holds(facts: dict, condition: Condition) -> bool:
     if condition.field not in _FIELDS:
         raise RuleError(
-            f"Unknown condition field {condition.field!r}. "
-            f"Known: {sorted(_FIELDS)}"
+            f"Unknown condition field {condition.field!r}. " f"Known: {sorted(_FIELDS)}"
         )
     if condition.op not in _OPERATORS:
         raise RuleError(
@@ -93,9 +99,7 @@ def _holds(facts: dict, condition: Condition) -> bool:
 
     if condition.field in _STRING_FIELDS:
         # ffprobe reports `hevc`; a user typing `HEVC` means the same thing.
-        return _compare(
-            str(actual).lower(), str(condition.value).lower(), condition.op
-        )
+        return _compare(str(actual).lower(), str(condition.value).lower(), condition.op)
 
     if condition.op in _STRING_ONLY_OPERATORS:
         raise RuleError(

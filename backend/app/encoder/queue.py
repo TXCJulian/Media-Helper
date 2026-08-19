@@ -15,6 +15,7 @@ The stage machine:
 import logging
 import os
 import queue as queue_mod
+import sqlite3
 import threading
 import time
 
@@ -22,7 +23,7 @@ from app.encoder.client import EncoderRejected, EncoderUnreachable, is_retryable
 from app.encoder.events import EventBroadcaster, job_to_payload
 from app.encoder.probe import ProbeError, probe
 from app.encoder.rules import SKIP, RuleError, evaluate
-from app.encoder.store import EncoderStore, Job
+from app.encoder.store import EncoderStore, Job, StoredPreset
 from app.encoder.swap import SwapError, purge_original, swap_in
 
 logger = logging.getLogger(__name__)
@@ -39,10 +40,16 @@ _WORKER_POLL_SECONDS = 0.5
 # encoder that never comes back would otherwise hold every other job hostage
 # forever with no signal the UI could act on.
 _UNREACHABLE_BLOCK_SECONDS = 1800.0
+_PROBE_RETRY_ATTEMPTS = 3
+_PROBE_RETRY_DELAY_SECONDS = 1.0
 
 # Codes/statuses meaning "the remote has no memory of this job at all", the
 # only condition under which a reattach may fall back to a fresh submit.
 _REMOTE_JOB_GONE_CODES = frozenset({"source_not_found_on_encoder", "job_not_found"})
+
+
+class _PlanningCancelled(Exception):
+    """Internal signal used to stop a bulk plan without recording a failure."""
 
 
 class EncodeQueue:
@@ -69,6 +76,18 @@ class EncodeQueue:
         self._stopping = threading.Event()
         self._timers: set[threading.Timer] = set()
         self._timers_lock = threading.Lock()
+        self._job_locks: dict[str, threading.RLock] = {}
+        self._job_locks_lock = threading.Lock()
+
+    def _job_lock(self, job_id: str) -> threading.RLock:
+        """Return the lock that serializes cancellation and file publication."""
+        with self._job_locks_lock:
+            return self._job_locks.setdefault(job_id, threading.RLock())
+
+    @property
+    def events(self) -> EventBroadcaster:
+        """The encoder broadcaster shared by queue and bulk reprocess events."""
+        return self._events
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -164,50 +183,178 @@ class EncodeQueue:
         self._publish(job_id)
         self._queue.put(job_id)
 
-    def cancel(self, job_id: str) -> bool:
-        job = self._store.get_job(job_id)
-        if job is None:
+    def enqueue_if_stage(self, job_id: str, allowed_stages: set[str]) -> bool:
+        """Atomically enqueue only while an approval-stage claim is still valid."""
+        if not self._store.transition_stage(job_id, allowed_stages, "queued"):
             return False
-        if job.remote_job_id:
-            try:
-                self._client.cancel(job.remote_job_id)
-            except (EncoderRejected, EncoderUnreachable):
-                logger.warning("Could not cancel remote job %s", job.remote_job_id)
-        self._store.set_stage(job_id, "cancelled")
         self._publish(job_id)
+        self._queue.put(job_id)
         return True
+
+    def cancel(self, job_id: str) -> bool:
+        with self._job_lock(job_id):
+            job = self._store.get_job(job_id)
+            if job is None or job.stage == "swapping":
+                return False
+            if job.remote_job_id:
+                try:
+                    self._client.cancel(job.remote_job_id)
+                except (EncoderRejected, EncoderUnreachable):
+                    logger.warning("Could not cancel remote job %s", job.remote_job_id)
+            self._store.set_stage(job_id, "cancelled")
+            self._publish(job_id)
+            return True
 
     # ---- planning --------------------------------------------------------
 
-    def plan_new(self, source_path: str, size: int, mtime_ns: int) -> str:
-        """Create a job for a newly settled file and plan it.
+    def _probe_once(self, path: str) -> dict:
+        """Probe a single media file with ffprobe. Forwarding helper used for test mocking."""
+        return probe(path)
 
-        The watcher's entry point, and the only place that pairs job creation
-        with planning. It exists so that an *unexpected* failure in `plan()`
-        cannot leave the row in `settling`: that stage is neither terminal nor
-        resumable, so the job would hold its source path against the unique
-        active index forever, never be retried by restart recovery, and never
-        be reconsidered by the watcher -- the file silently drops out of the
-        system with a row that looks like work in progress.
+    def _probe_with_retry(
+        self, path: str, cancel_event: threading.Event | None = None
+    ) -> dict:
+        """Retry short-lived share permission/read races before failing."""
+        for attempt in range(_PROBE_RETRY_ATTEMPTS):
+            if cancel_event is not None and cancel_event.is_set():
+                raise _PlanningCancelled
+            try:
+                facts = self._probe_once(path)
+                if cancel_event is not None and cancel_event.is_set():
+                    raise _PlanningCancelled
+                return facts
+            except ProbeError as exc:
+                message = str(exc).lower()
+                transient = any(
+                    marker in message
+                    for marker in (
+                        "permission denied",
+                        "resource temporarily unavailable",
+                        "input/output error",
+                        "temporarily",
+                    )
+                )
+                if not transient or attempt == _PROBE_RETRY_ATTEMPTS - 1:
+                    raise
+                delay = _PROBE_RETRY_DELAY_SECONDS * (attempt + 1)
+                logger.warning(
+                    "Transient ffprobe failure for %s; retrying in %.1fs (%d/%d): %s",
+                    path,
+                    delay,
+                    attempt + 1,
+                    _PROBE_RETRY_ATTEMPTS - 1,
+                    exc,
+                )
+                if cancel_event is not None:
+                    if cancel_event.wait(delay):
+                        raise _PlanningCancelled from exc
+                else:
+                    time.sleep(delay)
+        raise AssertionError("unreachable")
 
-        `plan()` already converts the failures it anticipates into `failed`.
-        This is the backstop for the ones it does not.
+    def plan_new(
+        self,
+        source_path: str,
+        size: int,
+        mtime_ns: int,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> str:
+        """Create a job for *source_path* and run planning synchronously.
+
+        Returns the resulting stage (e.g., 'pending', 'queued', 'skipped',
+        'failed'). If the target rule evaluated to 'skip', the job is still
+        created with stage='skipped' to record that the file was processed.
         """
         job = self._store.create_job(source_path, size, mtime_ns)
+        self._publish(job.id)
         try:
-            return self.plan(job.id)
+            return self.plan(job.id, cancel_event=cancel_event)
         except Exception:
-            # The message reaches the API and the panel, and an *unexpected*
-            # exception carries whatever internal state it happened to hold --
-            # filesystem paths, SQL, driver text. The anticipated failures in
-            # `plan()` set their own curated messages; this one only says that
-            # something broke and where to look.
-            logger.exception("Planning %s failed unexpectedly", source_path)
-            self._fail(job.id, "Internal planning error; see server logs",
-                       "plan_failed")
+            logger.exception("Initial plan failed for %s", source_path)
+            self._fail(
+                job.id, "Internal planning error; see server logs", "plan_failed"
+            )
             return "failed"
 
-    def plan(self, job_id: str) -> str:
+    def reprocess_path(
+        self,
+        source_path: str,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, object]:
+        """Immediately reconsider a path, bypassing watcher deduplication.
+
+        Precondition: `source_path` must be an absolute path that has already been
+        authorized and validated by the caller (e.g. via `_resolve_probe_path` or
+        `resolve_authorized_path`).
+        """
+        if cancel_event is not None and cancel_event.is_set():
+            return {
+                "job_id": None,
+                "path": source_path,
+                "stage": "cancelled",
+                "created": False,
+            }
+        active = self._store.active_job_for_source(source_path)
+        if active is not None:
+            return {
+                "job_id": active.id,
+                "path": active.source_path,
+                "stage": active.stage,
+                "created": False,
+            }
+
+        try:
+            stat = os.stat(source_path)
+        except OSError as exc:
+            logger.warning(
+                "Could not stat path for reprocess: %s (%s)", source_path, exc
+            )
+            return {
+                "job_id": None,
+                "path": source_path,
+                "stage": "failed",
+                "created": False,
+            }
+        self._store.forget_seen(source_path)
+        try:
+            stage = self.plan_new(
+                source_path,
+                stat.st_size,
+                stat.st_mtime_ns,
+                cancel_event=cancel_event,
+            )
+        except sqlite3.IntegrityError:
+            # Another caller won the unique active-source race between the
+            # lookup above and create_job(). Return that job as the idempotent
+            # result of this request.
+            active = self._store.active_job_for_source(source_path)
+            if active is not None:
+                return {
+                    "job_id": active.id,
+                    "path": active.source_path,
+                    "stage": active.stage,
+                    "created": False,
+                }
+            logger.warning(
+                "IntegrityError on reprocess for %s, but active job already transitioned to terminal",
+                source_path,
+            )
+            return {
+                "job_id": None,
+                "path": source_path,
+                "stage": "failed",
+                "created": False,
+            }
+
+        job = self._store.newest_job_for_source(source_path)
+        if job is None:
+            raise RuntimeError("planned job disappeared")
+        job_id, path, stage = job.id, job.source_path, job.stage
+        return {"job_id": job_id, "path": path, "stage": stage, "created": True}
+
+    def plan(self, job_id: str, *, cancel_event: threading.Event | None = None) -> str:
         """Probe the file, pick a target, and record the decision.
 
         Returns the resulting stage. In `review` mode this stops at `pending`
@@ -219,7 +366,9 @@ class EncodeQueue:
             return "failed"
 
         try:
-            facts = probe(job.source_path)
+            facts = self._probe_with_retry(job.source_path, cancel_event)
+        except _PlanningCancelled:
+            return self._cancel_planning(job_id)
         except ProbeError as exc:
             self._fail(job_id, str(exc), "probe_failed")
             return "failed"
@@ -232,6 +381,9 @@ class EncodeQueue:
             self._fail(job_id, str(exc), "invalid_rule")
             return "failed"
 
+        if cancel_event is not None and cancel_event.is_set():
+            return self._cancel_planning(job_id)
+
         self._store.set_plan(
             job_id,
             preset_name=None if match.target == SKIP else match.target,
@@ -239,6 +391,9 @@ class EncodeQueue:
             facts=facts,
             original_size=facts.get("size") or 0,
         )
+
+        if cancel_event is not None and cancel_event.is_set():
+            return self._cancel_planning(job_id)
 
         if match.target == SKIP:
             self._store.set_stage(job_id, "skipped")
@@ -257,12 +412,19 @@ class EncodeQueue:
             return "failed"
 
         if self._mode == "auto":
+            if cancel_event is not None and cancel_event.is_set():
+                return self._cancel_planning(job_id)
             self.enqueue(job_id)
             return "queued"
 
         self._store.set_stage(job_id, "pending")
         self._publish(job_id)
         return "pending"
+
+    def _cancel_planning(self, job_id: str) -> str:
+        self._store.set_stage(job_id, "cancelled")
+        self._publish(job_id)
+        return "cancelled"
 
     # ---- retention -------------------------------------------------------
 
@@ -301,17 +463,92 @@ class EncodeQueue:
                 logger.exception("Encode job %s crashed the dispatcher", job_id)
                 self._fail(job_id, "Internal error; see server logs", "internal")
 
+    def _lookup_preset(
+        self, job_id: str, preset_name: str | None
+    ) -> StoredPreset | None:
+        if preset_name is None:
+            self._fail(job_id, "No preset selected for job", "preset_missing")
+            return None
+        preset = next(
+            (p for p in self._store.list_presets() if p.name == preset_name), None
+        )
+        if preset is None:
+            self._fail(
+                job_id, f"Preset {preset_name!r} no longer exists", "preset_missing"
+            )
+            return None
+        return preset
+
+    def _reevaluate_before_dispatch(
+        self, job_id: str, job: Job, stat: os.stat_result
+    ) -> StoredPreset | None:
+        """Re-evaluate an active job if its source was modified on disk while queued."""
+        seen_fp = self._store.get_seen(job.source_path)
+        if seen_fp is None or (stat.st_size, stat.st_mtime_ns) == seen_fp:
+            return self._lookup_preset(job_id, job.preset_name)
+
+        logger.warning(
+            "Source file %s modified on disk while queued; re-evaluating before encode",
+            job.source_path,
+        )
+        try:
+            facts = self._probe_with_retry(job.source_path)
+        except (ProbeError, OSError) as exc:
+            self._fail(job_id, str(exc), "probe_failed")
+            return None
+
+        rules = self._store.list_rules()
+        fallback = self._store.get_setting("fallback_target", SKIP)
+        try:
+            match = evaluate(facts, rules, fallback)
+        except RuleError as exc:
+            self._fail(job_id, str(exc), "invalid_rule")
+            return None
+
+        if match.target == SKIP:
+            logger.info(
+                "Modified source file %s now matches SKIP; skipping job %s",
+                job.source_path,
+                job_id,
+            )
+            self._store.set_plan(
+                job_id,
+                preset_name=None,
+                rule_id=match.rule_id,
+                facts=facts,
+                original_size=facts.get("size") or 0,
+            )
+            self._store.mark_seen(job.source_path, stat.st_size, stat.st_mtime_ns)
+            self._store.set_stage(job_id, "skipped")
+            self._publish(job_id)
+            return None
+
+        target_preset = next(
+            (p for p in self._store.list_presets() if p.name == match.target),
+            None,
+        )
+        if target_preset is None:
+            self._fail(
+                job_id,
+                f"Rule selected preset {match.target!r}, which no longer exists",
+                "preset_missing",
+            )
+            return None
+
+        self._store.set_plan(
+            job_id,
+            preset_name=match.target,
+            rule_id=match.rule_id,
+            facts=facts,
+            original_size=facts.get("size") or 0,
+        )
+        self._store.mark_seen(job.source_path, stat.st_size, stat.st_mtime_ns)
+        self._publish(job_id)
+        return target_preset
+
     def _run(self, job_id: str) -> None:
         job = self._store.get_job(job_id)
         if job is None or job.stage == "cancelled":
-            return
-
-        preset = next(
-            (p for p in self._store.list_presets() if p.name == job.preset_name), None
-        )
-        if preset is None:
-            self._fail(job_id, f"Preset {job.preset_name!r} no longer exists",
-                       "preset_missing")
             return
 
         if job.remote_job_id:
@@ -320,18 +557,42 @@ class EncodeQueue:
             # resubmit -- submitting again would start a second remote
             # encode of the same source while the first may still be
             # running.
+            preset = self._lookup_preset(job_id, job.preset_name)
+            if preset is None:
+                return
             remote_id = self._reattach(job_id, job, preset)
             if remote_id is None:
                 return
         else:
             try:
-                remote_id = self._client.submit(job.source_path, preset.body, preset.name)
-            except (EncoderRejected, EncoderUnreachable) as exc:
-                self._handle_dispatch_error(job_id, exc)
+                stat = os.stat(job.source_path)
+            except OSError as exc:
+                self._fail(
+                    job_id,
+                    f"Source file no longer exists on disk: {exc}",
+                    "source_missing",
+                )
                 return
-            self._store.set_remote_job(job_id, remote_id)
-            self._store.set_stage(job_id, "encoding")
-            self._publish(job_id)
+
+            preset = self._reevaluate_before_dispatch(job_id, job, stat)
+            if preset is None:
+                return
+
+            with self._job_lock(job_id):
+                current = self._store.get_job(job_id)
+                if current is None or current.stage == "cancelled":
+                    return
+
+                try:
+                    remote_id = self._client.submit(
+                        job.source_path, preset.body, preset.name
+                    )
+                except (EncoderRejected, EncoderUnreachable) as exc:
+                    self._handle_dispatch_error(job_id, exc)
+                    return
+                self._store.set_remote_job(job_id, remote_id)
+                self._store.set_stage(job_id, "encoding")
+                self._publish(job_id)
 
         result = self._await_remote(job_id, remote_id)
         if result is None:
@@ -345,7 +606,7 @@ class EncodeQueue:
         if current is None or current.stage == "cancelled":
             return
 
-        self._publish_result(job_id, job.source_path, result)
+        self._publish_result(job_id, current.source_path, result)
 
     def _reattach(self, job_id: str, job: Job, preset) -> str | None:
         """Rejoin a job that already has a remote id instead of resubmitting.
@@ -371,18 +632,30 @@ class EncodeQueue:
             if not gone:
                 self._fail(job_id, exc.reason, exc.code)
                 return None
-            try:
-                remote_id = self._client.submit(
-                    job.source_path, preset.body, preset.name
-                )
-            except (EncoderRejected, EncoderUnreachable) as submit_exc:
-                self._handle_dispatch_error(job_id, submit_exc)
-                return None
+            with self._job_lock(job_id):
+                current = self._store.get_job(job_id)
+                if current is None or current.stage == "cancelled":
+                    return None
+                try:
+                    remote_id = self._client.submit(
+                        job.source_path, preset.body, preset.name
+                    )
+                except (EncoderRejected, EncoderUnreachable) as submit_exc:
+                    self._handle_dispatch_error(job_id, submit_exc)
+                    return None
+                self._store.set_remote_job(job_id, remote_id)
+                self._store.set_stage(job_id, "encoding")
+                self._publish(job_id)
+                return remote_id
 
-        self._store.set_remote_job(job_id, remote_id)
-        self._store.set_stage(job_id, "encoding")
-        self._publish(job_id)
-        return remote_id
+        with self._job_lock(job_id):
+            current = self._store.get_job(job_id)
+            if current is None or current.stage == "cancelled":
+                return None
+            self._store.set_remote_job(job_id, remote_id)
+            self._store.set_stage(job_id, "encoding")
+            self._publish(job_id)
+            return remote_id
 
     def _await_remote(self, job_id: str, remote_id: str) -> dict | None:
         """Poll until the remote job is terminal. Returns its final body."""
@@ -433,75 +706,84 @@ class EncodeQueue:
             if status == "completed":
                 return body
             if status in {"failed", "cancelled"}:
-                self._fail(job_id, body.get("error") or f"Encode {status}",
-                           "encode_failed")
+                self._fail(
+                    job_id, body.get("error") or f"Encode {status}", "encode_failed"
+                )
                 return None
             time.sleep(self._poll_interval)
         return None
 
     def _publish_result(self, job_id: str, source_path: str, body: dict) -> None:
-        output_path = body.get("output_path")
-        if not output_path:
-            self._fail(job_id, "Encoder reported success without an output path",
-                       "no_output")
-            return
-
-        self._store.set_stage(job_id, "swapping")
-        self._publish(job_id)
-        try:
-            result = swap_in(
-                source_path,
-                output_path,
-                original_ttl=self._original_ttl,
-                holding_dir=self._holding_dir,
-            )
-        except SwapError as exc:
-            # The source is intact by construction *unless* the original had
-            # already been moved into holding and the restore-back also
-            # failed -- in that case exc.kept_path names where it survives,
-            # and saying "left untouched" would be a lie the user would act
-            # on (they'd go looking for it at source and not find it).
-            if exc.kept_path is None:
-                self._fail(job_id, f"{exc} (the original was left untouched)",
-                           "swap_failed")
-            else:
+        with self._job_lock(job_id):
+            current = self._store.get_job(job_id)
+            if current is None or current.stage == "cancelled":
+                return
+            output_path = body.get("output_path")
+            if not output_path:
                 self._fail(
                     job_id,
-                    f"{exc} The original was preserved at {exc.kept_path}.",
-                    "swap_failed",
+                    "Encoder reported success without an output path",
+                    "no_output",
                 )
-            return
+                return
 
-        self._store.set_result(job_id, result.final_path, result.encoded_size)
-        # Re-fingerprint what we just published. The swap replaced the file, so
-        # the watcher's record for this path is now stale and the next rescan
-        # would see the encode as a new arrival -- and under a rule that still
-        # matches, re-encode our own output. Recording the published file's
-        # fingerprint (which the swap gave a new mtime) closes that loop; a
-        # container change publishes under a different name, hence final_path
-        # rather than source_path.
-        try:
-            published = os.stat(result.final_path)
-            self._store.mark_seen(
-                result.final_path, published.st_size, published.st_mtime_ns
-            )
-        except OSError:
-            logger.warning("Could not fingerprint the published file %s",
-                           result.final_path, exc_info=True)
-        if result.kept_path:
-            self._store.set_retention(
-                job_id, result.kept_path, time.time() + self._original_ttl
-            )
-        self._store.set_progress(job_id, 100.0)
-        self._store.set_stage(job_id, "done")
-        self._publish(job_id)
+            self._store.set_stage(job_id, "swapping")
+            self._publish(job_id)
+            try:
+                result = swap_in(
+                    source_path,
+                    output_path,
+                    original_ttl=self._original_ttl,
+                    holding_dir=self._holding_dir,
+                )
+            except SwapError as exc:
+                # The source is intact by construction *unless* the original
+                # had already been moved into holding and the restore-back
+                # also failed. In that case exc.kept_path names where it
+                # survives, so do not claim the source was untouched.
+                if exc.kept_path is None:
+                    self._fail(
+                        job_id,
+                        f"{exc} (the original was left untouched)",
+                        "swap_failed",
+                    )
+                else:
+                    self._fail(
+                        job_id,
+                        f"{exc} The original was preserved at {exc.kept_path}.",
+                        "swap_failed",
+                    )
+                return
+
+            self._store.set_result(job_id, result.final_path, result.encoded_size)
+            # Re-fingerprint what we just published so the watcher does not
+            # treat our own output as a new arrival on the next scan.
+            try:
+                published = os.stat(result.final_path)
+                self._store.mark_seen(
+                    result.final_path, published.st_size, published.st_mtime_ns
+                )
+            except OSError:
+                logger.warning(
+                    "Could not fingerprint the published file %s",
+                    result.final_path,
+                    exc_info=True,
+                )
+            if result.kept_path:
+                self._store.set_retention(
+                    job_id, result.kept_path, time.time() + self._original_ttl
+                )
+            self._store.set_progress(job_id, 100.0)
+            self._store.set_stage(job_id, "done")
+            self._publish(job_id)
 
     def _handle_dispatch_error(self, job_id: str, exc: Exception) -> None:
         if isinstance(exc, EncoderRejected) and exc.code == "encoder_unavailable":
             # Never a silent CPU fallback: the user chooses. Blocked jobs are
             # excluded from restart recovery for the same reason.
-            self._store.set_stage(job_id, "blocked", error=exc.reason,
-                                  error_code=exc.code)
+            self._store.set_stage(
+                job_id, "blocked", error=exc.reason, error_code=exc.code
+            )
             self._publish(job_id)
             return
 
@@ -514,8 +796,9 @@ class EncodeQueue:
             retry_after = getattr(exc, "retry_after", None)
             delay = retry_after if retry_after is not None else _REQUEUE_SECONDS
             delay = max(float(delay), 1.0)
-            logger.info("Encoder busy or unreachable; requeueing %s in %ss",
-                        job_id, delay)
+            logger.info(
+                "Encoder busy or unreachable; requeueing %s in %ss", job_id, delay
+            )
             self._store.set_stage(job_id, "queued")
             self._publish(job_id)
             self._schedule_requeue(job_id, delay)
