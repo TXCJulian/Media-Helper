@@ -73,7 +73,13 @@ describe('EncoderJobCard', () => {
   })
 
   it('shows Waiting in the pipeline while a job is queued and awaiting encoding', () => {
-    render(<EncoderJobCard job={job({ stage: 'queued', progress: 0 })} onApprove={vi.fn()} onDelete={vi.fn()} />)
+    render(
+      <EncoderJobCard
+        job={job({ stage: 'queued', progress: 0 })}
+        onApprove={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
 
     for (const label of ['Settling', 'Waiting', 'Swapping', 'Done']) {
       expect(screen.getByText(label)).toBeTruthy()

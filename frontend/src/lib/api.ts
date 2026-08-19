@@ -454,7 +454,7 @@ export function importEncoderPresets(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       document,
-      ...(includeNames === undefined ? {} : { include_names: includeNames }),
+      ...(includeNames != null && { include_names: includeNames }),
     }),
   })
 }
@@ -518,11 +518,15 @@ export function startEncoderReprocessAll(): Promise<import('@/types').EncoderRep
 }
 
 export function stopEncoderReprocessAll(): Promise<{ status: string }> {
-  return fetchJson('/api/encoder/reprocess-all', undefined, DEFAULT_TIMEOUT_MS, { method: 'DELETE' })
+  return fetchJson('/api/encoder/reprocess-all', undefined, DEFAULT_TIMEOUT_MS, {
+    method: 'DELETE',
+  })
 }
 
-export function fetchEncoderReprocessStatus(): Promise<import('@/types').EncoderReprocessState> {
-  return fetchJson('/api/encoder/reprocess-all/status')
+export function fetchEncoderReprocessStatus(
+  signal?: AbortSignal,
+): Promise<import('@/types').EncoderReprocessState> {
+  return fetchJson('/api/encoder/reprocess-all/status', undefined, DEFAULT_TIMEOUT_MS, { signal })
 }
 
 export function fetchEncoderJobs(): Promise<import('@/types').EncoderJob[]> {

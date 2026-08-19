@@ -1,6 +1,6 @@
 function compactJson(value: object): string {
   try {
-    return JSON.stringify(value) ?? '[unserializable value]'
+    return JSON.stringify(value)
   } catch {
     return '[unserializable value]'
   }

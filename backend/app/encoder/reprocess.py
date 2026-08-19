@@ -21,7 +21,11 @@ def _norm_dir(path: str) -> str:
 def is_excluded_path(path: str, base: str) -> bool:
     """Whether a media-library walk must omit *path* and its descendants."""
     name = os.path.basename(os.path.normpath(path))
-    if name.startswith(".") or name.endswith(".trickplay") or ".trickplay" in name.lower():
+    if (
+        name.startswith(".")
+        or name.endswith(".trickplay")
+        or ".trickplay" in name.lower()
+    ):
         return True
     return name == config.MUSIC_FOLDER_NAME and _norm_dir(
         os.path.dirname(os.path.normpath(path))

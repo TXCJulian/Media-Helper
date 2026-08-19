@@ -146,8 +146,15 @@ export function useEncoderStream(): {
   useEffect(() => {
     if (!connected) return
     let current = true
+    const controller = new AbortController()
     const sseGenerationAtRequest = reprocessSseGenerationRef.current
-    void fetchEncoderReprocessStatus()
+
+    // Recover authoritative bulk status on initial SSE connection.
+    // In React 18 Strict Mode, effects double-invoke on mount. The combination of
+    // AbortController, the local `current` boolean flag, and comparing `reprocessSseGenerationRef.current`
+    // against `sseGenerationAtRequest` guarantees that neither double-invocation nor in-flight HTTP
+    // responses overwrite fresher SSE events arriving during flight.
+    void fetchEncoderReprocessStatus(controller.signal)
       .then((status) => {
         if (!current || reprocessSseGenerationRef.current !== sseGenerationAtRequest) return
         const latest = latestReprocessEventRef.current
@@ -156,7 +163,9 @@ export function useEncoderStream(): {
           latest &&
           recovered &&
           latest.run_id === recovered.run_id &&
-          (latest.status === 'completed' || latest.status === 'failed') &&
+          (latest.status === 'completed' ||
+            latest.status === 'failed' ||
+            latest.status === 'cancelled') &&
           (recovered.status === 'started' || recovered.status === 'running')
         ) {
           return
@@ -165,11 +174,14 @@ export function useEncoderStream(): {
         setReprocessActive(status.active)
         setLatestReprocessEvent(recovered)
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return
         // SSE remains authoritative while the lightweight recovery request is unavailable.
       })
+
     return () => {
       current = false
+      controller.abort()
     }
   }, [connected])
 

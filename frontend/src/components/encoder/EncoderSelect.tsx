@@ -54,9 +54,8 @@ export default function EncoderSelect({
   useEffect(() => {
     if (!isOpen || focusedIndex < 0 || !listRef.current) return
     const items = listRef.current.children
-    if (items[focusedIndex]) {
-      ;(items[focusedIndex] as HTMLElement).scrollIntoView?.({ block: 'nearest' })
-    }
+    const el = items[focusedIndex] as HTMLElement | undefined
+    el?.scrollIntoView({ block: 'nearest' })
   }, [focusedIndex, isOpen])
 
   const findIndex = () => normalizedOptions.findIndex((option) => option.value === value)
@@ -197,9 +196,7 @@ export default function EncoderSelect({
                 className={`flex cursor-pointer items-center justify-between rounded-lg px-[0.75rem] py-[0.5rem] text-[0.84rem] transition-colors duration-100 ${
                   option.disabled ? 'cursor-not-allowed opacity-40' : ''
                 } ${
-                  isSelected
-                    ? 'font-medium text-[var(--accent-5)]'
-                    : 'text-[var(--text-primary)]'
+                  isSelected ? 'font-medium text-[var(--accent-5)]' : 'text-[var(--text-primary)]'
                 } ${isFocused ? 'bg-[var(--bg-glass-hover)]' : ''}`}
               >
                 <span className="truncate">{option.label ?? option.value}</span>

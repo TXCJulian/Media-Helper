@@ -300,7 +300,8 @@
       0 12px 34px rgba(0, 0, 0, 0.24);
   }
 
-  .encoder-panel input:not([type='file']):not([type='checkbox']):not([type='radio']):not([type='range']),
+  .encoder-panel
+    input:not([type='file']):not([type='checkbox']):not([type='radio']):not([type='range']),
   .encoder-panel textarea,
   .encoder-panel select {
     width: 100%;
@@ -314,21 +315,15 @@
     outline: none;
     transition: all 200ms;
   }
-  .encoder-panel input:not([type='file']):not([type='checkbox']):not([type='radio']):not([type='range']):focus,
+  .encoder-panel
+    input:not([type='file']):not([type='checkbox']):not([type='radio']):not([type='range']):focus,
   .encoder-panel textarea:focus,
   .encoder-panel select:focus {
     border-color: var(--accent-5);
     background: var(--bg-input-focus);
     box-shadow: 0 0 0 3px var(--accent-5-glow);
   }
-  .encoder-panel button {
-    cursor: pointer;
-  }
-  .encoder-panel button:disabled {
-    cursor: not-allowed;
-  }
   .encoder-panel button:not([class]) {
-    cursor: pointer;
     border: 1px solid rgba(45, 212, 191, 0.2);
     border-radius: 0.5rem;
     background: var(--accent-5-glow);
@@ -342,7 +337,6 @@
     background: rgba(45, 212, 191, 0.24);
   }
   .encoder-panel button:not([class]):disabled {
-    cursor: not-allowed;
     opacity: 0.4;
   }
   .encoder-panel button:focus-visible {

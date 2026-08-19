@@ -150,6 +150,43 @@ const COMMON_SPEEDS = [
 
 const COMMON_QUALITY_VALUES = ['16', '18', '20', '22', '24', '26', '28', '30', '32']
 
+function PresetEditorTabs({
+  view,
+  onSelectView,
+}: {
+  view: 'guided' | 'raw'
+  onSelectView: (view: 'guided' | 'raw') => void
+}) {
+  return (
+    <div className="flex gap-2" aria-label="Preset editor mode">
+      <button
+        type="button"
+        aria-pressed={view === 'guided'}
+        onClick={() => onSelectView('guided')}
+        className={`rounded-lg border px-3 py-1.5 text-[0.75rem] font-medium transition ${
+          view === 'guided'
+            ? 'border-teal-400/30 bg-teal-400/15 text-teal-300'
+            : 'border-white/8 bg-white/4 text-[var(--text-secondary)] hover:text-white'
+        }`}
+      >
+        Guided fields
+      </button>
+      <button
+        type="button"
+        aria-pressed={view === 'raw'}
+        onClick={() => onSelectView('raw')}
+        className={`rounded-lg border px-3 py-1.5 text-[0.75rem] font-medium transition ${
+          view === 'raw'
+            ? 'border-teal-400/30 bg-teal-400/15 text-teal-300'
+            : 'border-white/8 bg-white/4 text-[var(--text-secondary)] hover:text-white'
+        }`}
+      >
+        Raw JSON
+      </button>
+    </div>
+  )
+}
+
 export default function PresetEditor({
   presets,
   health,
@@ -389,7 +426,10 @@ export default function PresetEditor({
           <p className="text-[0.78rem] font-medium text-[var(--text-secondary)]">
             Choose the presets to import.
           </p>
-          <ul className="max-h-[360px] space-y-2 overflow-y-auto pr-1" aria-label="Preset import candidates">
+          <ul
+            className="max-h-[360px] space-y-2 overflow-y-auto pr-1"
+            aria-label="Preset import candidates"
+          >
             {importCandidates.map((candidate) => {
               const isSelected = selectedImportNames.includes(candidate.name)
               return (
@@ -533,32 +573,7 @@ export default function PresetEditor({
 
       {draft && form && (
         <div className="space-y-3">
-          <div className="flex gap-2" aria-label="Preset editor mode">
-            <button
-              type="button"
-              aria-pressed={view === 'guided'}
-              onClick={() => setView('guided')}
-              className={`rounded-lg border px-3 py-1.5 text-[0.75rem] font-medium transition ${
-                view === 'guided'
-                  ? 'border-teal-400/30 bg-teal-400/15 text-teal-300'
-                  : 'border-white/8 bg-white/4 text-[var(--text-secondary)] hover:text-white'
-              }`}
-            >
-              Guided fields
-            </button>
-            <button
-              type="button"
-              aria-pressed={view === 'raw'}
-              onClick={() => setView('raw')}
-              className={`rounded-lg border px-3 py-1.5 text-[0.75rem] font-medium transition ${
-                view === 'raw'
-                  ? 'border-teal-400/30 bg-teal-400/15 text-teal-300'
-                  : 'border-white/8 bg-white/4 text-[var(--text-secondary)] hover:text-white'
-              }`}
-            >
-              Raw JSON
-            </button>
-          </div>
+          <PresetEditorTabs view={view} onSelectView={setView} />
 
           {view === 'guided' ? (
             <div className="grid gap-2">

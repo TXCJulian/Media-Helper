@@ -230,7 +230,10 @@ describe('encoder rule and job transport', () => {
       '/api/encoder/reprocess-all/status',
     )
 
-    await expect(startEncoderReprocessAll()).resolves.toEqual({ run_id: 'bulk-1', status: 'started' })
+    await expect(startEncoderReprocessAll()).resolves.toEqual({
+      run_id: 'bulk-1',
+      status: 'started',
+    })
     expect(fetchMock.mock.calls[1]![1]?.method).toBe('POST')
 
     await expect(stopEncoderReprocessAll()).resolves.toEqual({ status: 'stopping' })

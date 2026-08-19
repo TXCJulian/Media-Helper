@@ -71,9 +71,8 @@ export default function DirectorySelect({
   useEffect(() => {
     if (!isOpen || focusedIndex < 0 || !listRef.current) return
     const items = listRef.current.children
-    if (items[focusedIndex]) {
-      ;(items[focusedIndex] as HTMLElement).scrollIntoView?.({ block: 'nearest' })
-    }
+    const el = items[focusedIndex] as HTMLElement | undefined
+    el?.scrollIntoView({ block: 'nearest' })
   }, [focusedIndex, isOpen])
 
   const findIndex = () => directories.findIndex((d) => d.path === value && d.base === base)
