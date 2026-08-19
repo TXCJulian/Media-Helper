@@ -55,16 +55,11 @@ const FIELDS = [
   'profile',
   'source_tool',
   'encoder_tag',
-  'audio_codec',
-  'audio_channels',
-  'subtitle_codec',
-  'container',
-  'audio_only',
-  'is_hdr',
+  'hdr',
   'dolby_vision',
 ]
 
-const BOOLEAN_FIELDS = new Set(['audio_only', 'is_hdr', 'dolby_vision'])
+const BOOLEAN_FIELDS = new Set(['hdr', 'dolby_vision'])
 const NUMERIC_FIELDS = new Set([
   'height',
   'width',
@@ -73,11 +68,10 @@ const NUMERIC_FIELDS = new Set([
   'bit_depth',
   'frame_rate',
   'duration',
-  'audio_channels',
 ])
 const SOURCE_TOOLS = ['', 'makemkv', 'handbrake', 'lavf', 'unknown', 'other']
 
-const STRING_OPERATORS = ['==', '!=', 'contains', 'startswith', 'endswith']
+const STRING_OPERATORS = ['==', '!=', 'contains']
 const NUMERIC_OPERATORS = ['==', '!=', '<', '<=', '>', '>=']
 const BOOLEAN_OPERATORS = ['==', '!=']
 

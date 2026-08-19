@@ -17,6 +17,24 @@ async function extractErrorMessage(res: Response): Promise<string> {
   return `HTTP ${res.status}: ${res.statusText}`
 }
 
+function composeSignals(
+  signalA?: AbortSignal | null,
+  signalB?: AbortSignal | null,
+): AbortSignal | undefined {
+  if (!signalA) return signalB ?? undefined
+  if (!signalB) return signalA ?? undefined
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any([signalA, signalB])
+  }
+  const controller = new AbortController()
+  const onAbort = () => controller.abort()
+  if (signalA.aborted) return signalA
+  if (signalB.aborted) return signalB
+  signalA.addEventListener('abort', onAbort, { once: true })
+  signalB.addEventListener('abort', onAbort, { once: true })
+  return controller.signal
+}
+
 export async function fetchJson<T>(
   path: string,
   params?: Record<string, string>,
@@ -29,10 +47,12 @@ export async function fetchJson<T>(
       if (v) url.searchParams.set(k, v)
     }
   }
+  const timeoutSignal = AbortSignal.timeout(timeoutMs)
+  const signal = composeSignals(init?.signal, timeoutSignal)
   const res = await fetch(url.toString(), {
-    signal: AbortSignal.timeout(timeoutMs),
     credentials: 'include',
     ...init,
+    signal,
   })
   assertAuthenticated(res)
   if (!res.ok) {

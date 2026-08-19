@@ -575,7 +575,7 @@ class EncodeQueue:
         if current is None or current.stage == "cancelled":
             return
 
-        self._publish_result(job_id, job.source_path, result)
+        self._publish_result(job_id, current.source_path, result)
 
     def _reattach(self, job_id: str, job: Job, preset) -> str | None:
         """Rejoin a job that already has a remote id instead of resubmitting.
