@@ -287,6 +287,8 @@ class EncoderWatcher:
         if active_job is not None:
             if active_job.stage in {"encoding", "swapping"}:
                 return
+            if active_job.stage == "blocked" and active_job.remote_job_id:
+                return
             if active_job.stage in {"settling", "pending", "blocked"}:
                 if seen is None:
                     seen = self._store.seen_fingerprints()

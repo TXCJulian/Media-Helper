@@ -821,3 +821,33 @@ def test_watcher_cancels_stale_active_job_when_file_modified_on_disk(store, tmp_
     # Watcher tracks and settles the new modified file on subsequent scans
     watcher.scan_existing()
     assert planner.paths == [str(target), str(target)]
+
+
+def test_watcher_preserves_blocked_job_with_remote_work_when_file_modified(store, tmp_path):
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"original data" * 100)
+
+    planner = Planner(store)
+    watcher = make_watcher(store, tmp_path, planner)
+
+    # Initial scan creates a job
+    watcher.scan_existing()
+    watcher.scan_existing()
+    assert planner.paths == [str(target)]
+    job = store.newest_job_for_source(str(target))
+    assert job is not None
+
+    # Job is blocked with an active remote_job_id
+    store.set_stage(job.id, "blocked", error="Remote in flight", error_code="remote_in_flight")
+    store.set_remote_job(job.id, "remote-task-42")
+
+    # File on disk is modified
+    target.write_bytes(b"modified data" * 200)
+
+    # Watcher rescans: it must preserve the blocked job with remote work
+    watcher.scan_existing()
+    recheck_job = store.get_job(job.id)
+    assert recheck_job.stage == "blocked"
+    assert recheck_job.remote_job_id == "remote-task-42"
+    # No new planning triggered
+    assert planner.paths == [str(target)]

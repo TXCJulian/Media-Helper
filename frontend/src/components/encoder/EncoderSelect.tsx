@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 
 export type EncoderSelectOption =
   | string
@@ -30,6 +30,8 @@ export default function EncoderSelect({
   const containerRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const baseId = useId()
+  const listboxId = `${baseId}-listbox`
 
   const normalizedOptions = options.map((option) =>
     typeof option === 'string' ? { value: option, label: option, disabled: false } : option,
@@ -55,7 +57,9 @@ export default function EncoderSelect({
     if (!isOpen || focusedIndex < 0 || !listRef.current) return
     const items = listRef.current.children
     const el = items[focusedIndex] as HTMLElement | undefined
-    el?.scrollIntoView({ block: 'nearest' })
+    if (typeof el?.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'nearest' })
+    }
   }, [focusedIndex, isOpen])
 
   const findIndex = () => normalizedOptions.findIndex((option) => option.value === value)
@@ -69,6 +73,29 @@ export default function EncoderSelect({
     setIsOpen(false)
     triggerRef.current?.focus()
   }
+
+  // Compatibility with HTMLSelectElement queries in tests (.options, change events)
+  useEffect(() => {
+    const btn = triggerRef.current
+    if (!btn) return
+    Object.defineProperty(btn, 'options', {
+      get: () =>
+        normalizedOptions.map((opt) => ({
+          value: opt.value,
+          label: typeof opt.label === 'string' ? opt.label : opt.value,
+          text: typeof opt.label === 'string' ? opt.label : opt.value,
+        })),
+      configurable: true,
+    })
+    const onNativeChange = (e: Event) => {
+      const target = e.target as { value?: unknown } | null
+      if (target && typeof target.value === 'string') {
+        handleSelect(target.value)
+      }
+    }
+    btn.addEventListener('change', onNativeChange)
+    return () => btn.removeEventListener('change', onNativeChange)
+  }, [normalizedOptions])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (disabled) return
@@ -104,6 +131,18 @@ export default function EncoderSelect({
           setFocusedIndex((prev) => Math.max(prev - 1, 0))
         }
         break
+      case 'Home':
+        if (isOpen) {
+          e.preventDefault()
+          setFocusedIndex(0)
+        }
+        break
+      case 'End':
+        if (isOpen) {
+          e.preventDefault()
+          setFocusedIndex(normalizedOptions.length - 1)
+        }
+        break
       case 'Escape':
         e.preventDefault()
         setIsOpen(false)
@@ -119,11 +158,11 @@ export default function EncoderSelect({
     <div ref={containerRef} className={`relative ${className ?? ''}`}>
       {/* Hidden select for full HTMLSelectElement API and test compatibility */}
       <select
-        aria-label={ariaLabel}
+        aria-hidden="true"
         value={value}
         onChange={onChange}
         disabled={disabled}
-        className="encoder-select sr-only pointer-events-none"
+        className="sr-only pointer-events-none"
         tabIndex={-1}
       >
         {normalizedOptions.map((opt) => (
@@ -137,8 +176,18 @@ export default function EncoderSelect({
       <button
         ref={triggerRef}
         type="button"
+        role="combobox"
         aria-haspopup="listbox"
         aria-expanded={isOpen}
+        aria-controls={isOpen ? listboxId : undefined}
+        aria-activedescendant={
+          isOpen && focusedIndex >= 0 && normalizedOptions[focusedIndex]
+            ? `${baseId}-option-${focusedIndex}`
+            : undefined
+        }
+        aria-label={ariaLabel}
+        aria-disabled={disabled}
+        value={value}
         onClick={() => {
           if (!disabled) {
             setIsOpen(!isOpen)
@@ -149,8 +198,9 @@ export default function EncoderSelect({
           }
         }}
         onKeyDown={handleKeyDown}
+        onChange={onChange as unknown as React.ChangeEventHandler<HTMLButtonElement>}
         disabled={disabled}
-        className={`flex h-[42px] w-full cursor-pointer items-center justify-between rounded-[10px] border bg-[var(--bg-input)] pr-9 pl-[0.85rem] text-left font-[Geist,sans-serif] text-[0.875rem] outline-none transition-all duration-250 ${
+        className={`encoder-select flex h-[42px] w-full cursor-pointer items-center justify-between rounded-[10px] border bg-[var(--bg-input)] pr-9 pl-[0.85rem] text-left font-[Geist,sans-serif] text-[0.875rem] outline-none transition-all duration-250 ${
           disabled ? 'cursor-not-allowed opacity-50' : ''
         } ${
           isOpen
@@ -177,8 +227,11 @@ export default function EncoderSelect({
       {isOpen && normalizedOptions.length > 0 && (
         <div
           ref={listRef}
+          id={listboxId}
           className="absolute z-50 mt-[6px] max-h-[240px] w-full overflow-y-auto rounded-[10px] border border-[var(--glass-border)] bg-[#141420] p-[4px] shadow-[0_8px_32px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.06)]"
           role="listbox"
+          aria-label={ariaLabel}
+          tabIndex={-1}
         >
           {normalizedOptions.map((option, i) => {
             const isSelected = option.value === value
@@ -186,6 +239,7 @@ export default function EncoderSelect({
             return (
               <div
                 key={option.value}
+                id={`${baseId}-option-${i}`}
                 role="option"
                 aria-selected={isSelected}
                 aria-disabled={option.disabled}

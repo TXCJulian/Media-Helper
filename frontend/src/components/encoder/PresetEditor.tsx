@@ -585,8 +585,8 @@ export default function PresetEditor({
                   onChange={(event) => updateGuided('name', event.target.value)}
                 />
               </label>
-              <label>
-                Video encoder
+              <div>
+                <span className="block text-[0.78rem] text-[var(--text-secondary)] mb-1">Video encoder</span>
                 <EncoderSelect
                   aria-label="Video encoder"
                   value={form.encoder}
@@ -598,43 +598,43 @@ export default function PresetEditor({
                   }}
                   options={encoderOptions}
                 />
-              </label>
-              <label>
-                Speed preset
+              </div>
+              <div>
+                <span className="block text-[0.78rem] text-[var(--text-secondary)] mb-1">Speed preset</span>
                 <EncoderSelect
                   aria-label="Speed preset"
                   value={form.videoPreset}
                   onChange={(event) => updateGuided('videoPreset', event.target.value)}
                   options={speedOptions}
                 />
-              </label>
-              <label>
-                File format
+              </div>
+              <div>
+                <span className="block text-[0.78rem] text-[var(--text-secondary)] mb-1">File format</span>
                 <EncoderSelect
                   aria-label="File format"
                   value={form.fileFormat}
                   onChange={(event) => updateGuided('fileFormat', event.target.value)}
                   options={['av_mkv', 'av_mp4', 'av_webm']}
                 />
-              </label>
-              <label>
-                Quality type
+              </div>
+              <div>
+                <span className="block text-[0.78rem] text-[var(--text-secondary)] mb-1">Quality type</span>
                 <EncoderSelect
                   aria-label="Quality type"
                   value={form.qualityType}
                   onChange={(event) => updateGuided('qualityType', event.target.value)}
                   options={['0', '1', '2']}
                 />
-              </label>
-              <label>
-                Quality
+              </div>
+              <div>
+                <span className="block text-[0.78rem] text-[var(--text-secondary)] mb-1">Quality</span>
                 <EncoderSelect
                   aria-label="Quality"
                   value={form.quality}
                   onChange={(event) => updateGuided('quality', event.target.value)}
                   options={[{ value: '', label: 'Not set' }, ...qualityOptions]}
                 />
-              </label>
+              </div>
             </div>
           ) : (
             <label className="grid min-h-0 gap-1 text-[0.78rem] text-[var(--text-secondary)]">
