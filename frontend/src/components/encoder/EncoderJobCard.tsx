@@ -152,6 +152,7 @@ export default function EncoderJobCard({
           }
           const active = job.stage === stage || (stage === 'encoding' && job.stage === 'queued')
           const reached = currentPosition >= index || currentPosition === -1
+          const displayLabel = stage === 'encoding' && job.stage === 'queued' ? 'Waiting' : label
           return (
             <span
               key={stage}
@@ -163,7 +164,7 @@ export default function EncoderJobCard({
                     : 'text-[var(--text-tertiary)]/40'
               }`}
             >
-              {label}
+              {displayLabel}
             </span>
           )
         })}

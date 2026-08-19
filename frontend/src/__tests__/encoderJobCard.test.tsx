@@ -72,6 +72,17 @@ describe('EncoderJobCard', () => {
     expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('42')
   })
 
+  it('shows Waiting in the pipeline while a job is queued and awaiting encoding', () => {
+    render(<EncoderJobCard job={job({ stage: 'queued', progress: 0 })} onApprove={vi.fn()} onDelete={vi.fn()} />)
+
+    for (const label of ['Settling', 'Waiting', 'Swapping', 'Done']) {
+      expect(screen.getByText(label)).toBeTruthy()
+    }
+    expect(screen.queryByText('Encoding')).toBeNull()
+    expect(screen.getByText('Waiting').className).toContain('text-teal-300')
+    expect(screen.queryByRole('progressbar')).toBeNull()
+  })
+
   it('renders a terminal outcome as a status pill without duplicating Done', () => {
     render(
       <EncoderJobCard
