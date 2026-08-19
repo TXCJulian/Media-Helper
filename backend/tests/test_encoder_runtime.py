@@ -162,7 +162,12 @@ def test_bulk_reprocess_leaves_an_active_source_as_a_single_job(runtime_env):
 
 
 def test_bulk_reprocess_uses_the_picker_exclusions(runtime_env):
-    """Walking hidden trees would plan files the picker hides."""
+    """Walking hidden trees (.cache) omits files the picker hides.
+
+    Note: Music folders are excluded at the top-level BASE_PATHS, but when
+    nested inside a configured watch root (e.g. Movies/Music), files remain
+    eligible so music videos / concerts under a video root are scanned.
+    """
     store, root, events, build = runtime_env
     (root / ".cache").mkdir()
     (root / ".cache" / "hidden.mkv").write_bytes(b"video")

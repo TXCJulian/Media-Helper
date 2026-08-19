@@ -1,5 +1,6 @@
 """Background re-evaluation of every configured encoder source."""
 
+from dataclasses import dataclass
 import logging
 import os
 import threading
@@ -18,18 +19,35 @@ def _norm_dir(path: str) -> str:
     return norm.rstrip("/\\") or norm
 
 
-def is_excluded_path(path: str, base: str) -> bool:
-    """Whether a media-library walk must omit *path* and its descendants."""
-    name = os.path.basename(os.path.normpath(path))
+def _is_excluded_name(
+    name: str,
+    parent_dir: str | None = None,
+    base: str | None = None,
+    *,
+    exclude_music: bool = True,
+) -> bool:
+    """Shared predicate for paths, directories, and ancestor components."""
     if (
         name.startswith(".")
         or name.endswith(".trickplay")
         or ".trickplay" in name.lower()
     ):
         return True
-    return name == config.MUSIC_FOLDER_NAME and _norm_dir(
-        os.path.dirname(os.path.normpath(path))
-    ) == _norm_dir(base)
+    if exclude_music and name == config.MUSIC_FOLDER_NAME:
+        if parent_dir is not None and base is not None:
+            return _norm_dir(parent_dir) == _norm_dir(base)
+    return False
+
+
+def is_excluded_path(path: str, base: str) -> bool:
+    """Whether a media-library walk must omit *path* and its descendants."""
+    norm = os.path.normpath(path)
+    return _is_excluded_name(
+        name=os.path.basename(norm),
+        parent_dir=os.path.dirname(norm),
+        base=base,
+        exclude_music=True,
+    )
 
 
 def prune_excluded_dirs(root: str, dirs: list[str], bases: Iterable[str]) -> None:
@@ -58,17 +76,12 @@ def has_excluded_ancestor(path: str, base: str, *, exclude_music: bool = True) -
     current = resolved_base
     for component in relative.split(os.sep):
         current = os.path.join(current, component)
-        name = os.path.basename(os.path.normpath(current))
-        if (
-            name.startswith(".")
-            or name.endswith(".trickplay")
-            or ".trickplay" in name.lower()
-            or (
-                exclude_music
-                and name == config.MUSIC_FOLDER_NAME
-                and _norm_dir(os.path.dirname(os.path.normpath(current)))
-                == _norm_dir(resolved_base)
-            )
+        norm = os.path.normpath(current)
+        if _is_excluded_name(
+            name=os.path.basename(norm),
+            parent_dir=os.path.dirname(norm),
+            base=resolved_base,
+            exclude_music=exclude_music,
         ):
             return True
     return False
@@ -82,9 +95,6 @@ def is_within(path: str, base: str) -> bool:
         )
     except ValueError:
         return False
-
-
-from dataclasses import dataclass
 
 
 def _absolute(path: str) -> str:

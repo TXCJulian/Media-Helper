@@ -193,14 +193,6 @@ class BulkRunIn(BaseModel):
     paths: list[str]
 
 
-# Request aliases are kept ready for the follow-up routes; response contracts
-# belong with the routes that introduce them.
-ReprocessRequest = ReprocessIn
-BulkRunRequest = BulkRunIn
-JobReevaluationRequest = ReprocessIn
-BulkRunStartRequest = BulkRunIn
-
-
 class PresetLeaf(BaseModel):
     body: dict
 

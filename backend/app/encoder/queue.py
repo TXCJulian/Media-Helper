@@ -23,7 +23,7 @@ from app.encoder.client import EncoderRejected, EncoderUnreachable, is_retryable
 from app.encoder.events import EventBroadcaster, job_to_payload
 from app.encoder.probe import ProbeError, probe
 from app.encoder.rules import SKIP, RuleError, evaluate
-from app.encoder.store import EncoderStore, Job
+from app.encoder.store import EncoderStore, Job, StoredPreset
 from app.encoder.swap import SwapError, purge_original, swap_in
 
 logger = logging.getLogger(__name__)
@@ -330,12 +330,21 @@ class EncodeQueue:
             # lookup above and create_job(). Return that job as the idempotent
             # result of this request.
             active = self._store.active_job_for_source(source_path)
-            if active is None:
-                raise
+            if active is not None:
+                return {
+                    "job_id": active.id,
+                    "path": active.source_path,
+                    "stage": active.stage,
+                    "created": False,
+                }
+            logger.warning(
+                "IntegrityError on reprocess for %s, but active job already transitioned to terminal",
+                source_path,
+            )
             return {
-                "job_id": active.id,
-                "path": active.source_path,
-                "stage": active.stage,
+                "job_id": None,
+                "path": source_path,
+                "stage": "failed",
                 "created": False,
             }
 
@@ -454,18 +463,97 @@ class EncodeQueue:
                 logger.exception("Encode job %s crashed the dispatcher", job_id)
                 self._fail(job_id, "Internal error; see server logs", "internal")
 
-    def _run(self, job_id: str) -> None:
-        job = self._store.get_job(job_id)
-        if job is None or job.stage == "cancelled":
-            return
-
+    def _lookup_preset(self, job_id: str, preset_name: str | None) -> StoredPreset | None:
+        if preset_name is None:
+            self._fail(job_id, "No preset selected for job", "preset_missing")
+            return None
         preset = next(
-            (p for p in self._store.list_presets() if p.name == job.preset_name), None
+            (p for p in self._store.list_presets() if p.name == preset_name), None
         )
         if preset is None:
             self._fail(
-                job_id, f"Preset {job.preset_name!r} no longer exists", "preset_missing"
+                job_id, f"Preset {preset_name!r} no longer exists", "preset_missing"
             )
+            return None
+        return preset
+
+    def _reevaluate_before_dispatch(
+        self, job_id: str, job: Job, stat: os.stat_result
+    ) -> StoredPreset | None:
+        """Re-evaluate an active job if its source was modified on disk while queued."""
+        seen_fp = self._store.get_seen(job.source_path)
+        if seen_fp is None or (stat.st_size, stat.st_mtime_ns) == seen_fp:
+            return self._lookup_preset(job_id, job.preset_name)
+
+        logger.warning(
+            "Source file %s modified on disk while queued; re-evaluating before encode",
+            job.source_path,
+        )
+        try:
+            facts = self._probe_with_retry(job.source_path)
+        except ProbeError as exc:
+            self._fail(job_id, str(exc), "probe_failed")
+            return None
+        except Exception as exc:
+            self._fail(
+                job_id,
+                f"Re-evaluating modified source file failed: {exc}",
+                "probe_failed",
+            )
+            return None
+
+        rules = self._store.list_rules()
+        fallback = self._store.get_setting("fallback_target", SKIP)
+        try:
+            match = evaluate(facts, rules, fallback)
+        except RuleError as exc:
+            self._fail(job_id, str(exc), "invalid_rule")
+            return None
+
+        if match.target == SKIP:
+            logger.info(
+                "Modified source file %s now matches SKIP; skipping job %s",
+                job.source_path,
+                job_id,
+            )
+            self._store.set_plan(
+                job_id,
+                preset_name=None,
+                rule_id=match.rule_id,
+                facts=facts,
+                original_size=facts.get("size") or 0,
+            )
+            self._store.mark_seen(job.source_path, stat.st_size, stat.st_mtime_ns)
+            self._store.set_stage(job_id, "skipped")
+            self._publish(job_id)
+            return None
+
+        target_preset = next(
+            (p for p in self._store.list_presets() if p.name == match.target),
+            None,
+        )
+        if target_preset is None:
+            self._fail(
+                job_id,
+                f"Rule selected preset {match.target!r}, which no longer exists",
+                "preset_missing",
+            )
+            return None
+
+        self._store.set_plan(
+            job_id,
+            preset_name=match.target,
+            rule_id=match.rule_id,
+            facts=facts,
+            original_size=facts.get("size") or 0,
+        )
+        self._store.mark_seen(job.source_path, stat.st_size, stat.st_mtime_ns)
+        self._publish(job_id)
+        return target_preset
+
+    def _run(self, job_id: str) -> None:
+        job = self._store.get_job(job_id)
+        if job is None or job.stage == "cancelled":
             return
 
         if job.remote_job_id:
@@ -474,6 +562,9 @@ class EncodeQueue:
             # resubmit -- submitting again would start a second remote
             # encode of the same source while the first may still be
             # running.
+            preset = self._lookup_preset(job_id, job.preset_name)
+            if preset is None:
+                return
             remote_id = self._reattach(job_id, job, preset)
             if remote_id is None:
                 return
@@ -488,77 +579,9 @@ class EncodeQueue:
                 )
                 return
 
-            seen_fp = self._store.get_seen(job.source_path)
-            if seen_fp is not None and (stat.st_size, stat.st_mtime_ns) != seen_fp:
-                logger.warning(
-                    "Source file %s modified on disk while queued; re-evaluating before encode",
-                    job.source_path,
-                )
-                try:
-                    facts = self._probe_with_retry(job.source_path)
-                except ProbeError as exc:
-                    self._fail(job_id, str(exc), "probe_failed")
-                    return
-                except Exception as exc:
-                    self._fail(
-                        job_id,
-                        f"Re-evaluating modified source file failed: {exc}",
-                        "probe_failed",
-                    )
-                    return
-
-                rules = self._store.list_rules()
-                fallback = self._store.get_setting("fallback_target", SKIP)
-                try:
-                    match = evaluate(facts, rules, fallback)
-                except RuleError as exc:
-                    self._fail(job_id, str(exc), "invalid_rule")
-                    return
-
-                if match.target == SKIP:
-                    logger.info(
-                        "Modified source file %s now matches SKIP; skipping job %s",
-                        job.source_path,
-                        job_id,
-                    )
-                    self._store.set_plan(
-                        job_id,
-                        preset_name=None,
-                        rule_id=match.rule_id,
-                        facts=facts,
-                        original_size=facts.get("size") or 0,
-                    )
-                    self._store.mark_seen(
-                        job.source_path, stat.st_size, stat.st_mtime_ns
-                    )
-                    self._store.set_stage(job_id, "skipped")
-                    self._publish(job_id)
-                    return
-
-                target_preset = next(
-                    (p for p in self._store.list_presets() if p.name == match.target),
-                    None,
-                )
-                if target_preset is None:
-                    self._fail(
-                        job_id,
-                        f"Rule selected preset {match.target!r}, which no longer exists",
-                        "preset_missing",
-                    )
-                    return
-
-                preset = target_preset
-                self._store.set_plan(
-                    job_id,
-                    preset_name=match.target,
-                    rule_id=match.rule_id,
-                    facts=facts,
-                    original_size=facts.get("size") or 0,
-                )
-                self._store.mark_seen(
-                    job.source_path, stat.st_size, stat.st_mtime_ns
-                )
-                self._publish(job_id)
+            preset = self._reevaluate_before_dispatch(job_id, job, stat)
+            if preset is None:
+                return
 
             try:
                 remote_id = self._client.submit(

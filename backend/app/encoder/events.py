@@ -11,9 +11,8 @@ from typing import Any
 
 from app.encoder.store import Job
 
-_REPROCESS_STATUSES = frozenset(
-    {"started", "running", "completed", "failed", "cancelled"}
-)
+_TERMINAL_REPROCESS_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_REPROCESS_STATUSES = frozenset({"started", "running"}) | _TERMINAL_REPROCESS_STATUSES
 
 
 def reprocess_to_payload(
