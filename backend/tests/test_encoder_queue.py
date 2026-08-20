@@ -17,6 +17,7 @@ class FakeClient:
     def __init__(self):
         self.submitted = []
         self.polls = []
+        self.cancels = []
         self.submit_error = None
         self.submit_attempts = 0
         self.terminal = {"status": "completed", "progress": 100.0,
@@ -34,6 +35,7 @@ class FakeClient:
         return self.terminal
 
     def cancel(self, remote_job_id):
+        self.cancels.append(remote_job_id)
         return True
 
 
@@ -743,3 +745,57 @@ def test_run_fails_with_invalid_rule_when_modified_file_hits_malformed_rule(env,
     assert updated.stage == "failed"
     assert updated.error_code == "invalid_rule"
     assert len(client.submitted) == 0
+
+
+def test_cancel_returns_false_for_terminal_stages(env):
+    """Cancelling a job that is already terminal (done, failed, skipped, cancelled)
+    must return False without sending a spurious remote cancel or altering the stage."""
+    store, client, *_ = env
+    q = _queue(store, client)
+
+    for terminal_stage in ("done", "failed", "skipped", "cancelled"):
+        job = store.create_job(f"/media/terminal_{terminal_stage}.mkv")
+        store.set_stage(job.id, terminal_stage)
+        store.set_remote_job(job.id, f"remote_{terminal_stage}")
+
+        assert q.cancel(job.id) is False
+        assert store.get_job(job.id).stage == terminal_stage
+        assert client.cancels == []
+
+
+def test_cancel_racing_remote_failed_response_retains_cancelled(env):
+    """When a cancel races a remote failed status in _await_remote,
+    the job must stay 'cancelled' and not get clobbered to 'failed'."""
+    store, client, *_ = env
+    q = _queue(store, client)
+
+    job = store.create_job("/media/test_racing.mkv")
+    store.set_stage(job.id, "encoding")
+    store.set_remote_job(job.id, "rem-1")
+
+    # Cancel the job
+    assert q.cancel(job.id) is True
+    assert store.get_job(job.id).stage == "cancelled"
+
+    # Simulate _fail() call or _await_remote receiving failed
+    q._fail(job.id, "Remote failed", "encode_failed")
+    assert store.get_job(job.id).stage == "cancelled"
+
+
+def test_cancel_racing_remote_rejected_response_retains_cancelled(env):
+    """When a cancel races an EncoderRejected error, _fail must not clobber 'cancelled'."""
+    store, client, *_ = env
+    q = _queue(store, client)
+
+    job = store.create_job("/media/test_racing_rejected.mkv")
+    store.set_stage(job.id, "encoding")
+    store.set_remote_job(job.id, "rem-2")
+
+    assert q.cancel(job.id) is True
+
+    from app.encoder.client import EncoderRejected
+    exc = EncoderRejected("bad_source", "Encoder error", 400)
+    q._handle_dispatch_error(job.id, exc)
+
+    assert store.get_job(job.id).stage == "cancelled"
+

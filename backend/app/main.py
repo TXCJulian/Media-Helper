@@ -316,8 +316,6 @@ async def lifespan(app: FastAPI):
             # local uuid4. The two namespaces never intersect, so passing
             # `j.id` here would make every live partial look orphaned and
             # delete it on every restart, wiping out in-progress GPU work.
-            encoder_queue.start()
-            encoder_queue.recover()
             encoder_runtime = EncoderRuntime(
                 encoder_store,
                 encoder_queue,
@@ -331,6 +329,8 @@ async def lifespan(app: FastAPI):
             }
             for watch_path in encoder_runtime.watch_paths:
                 sweep_orphans(watch_path, active)
+            encoder_queue.start()
+            encoder_queue.recover()
             encoder_runtime.start()
             encoder_routes.register_runtime(encoder_runtime)
             # Mirrors the downloader's cleanup task: without it, nothing ever

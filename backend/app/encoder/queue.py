@@ -23,7 +23,7 @@ from app.encoder.client import EncoderRejected, EncoderUnreachable, is_retryable
 from app.encoder.events import EventBroadcaster, job_to_payload
 from app.encoder.probe import ProbeError, probe
 from app.encoder.rules import SKIP, RuleError, evaluate
-from app.encoder.store import EncoderStore, Job, StoredPreset
+from app.encoder.store import TERMINAL_STAGES, EncoderStore, Job, StoredPreset
 from app.encoder.swap import SwapError, purge_original, swap_in
 
 logger = logging.getLogger(__name__)
@@ -194,7 +194,11 @@ class EncodeQueue:
     def cancel(self, job_id: str) -> bool:
         with self._job_lock(job_id):
             job = self._store.get_job(job_id)
-            if job is None or job.stage == "swapping":
+            if (
+                job is None
+                or job.stage == "swapping"
+                or job.stage in TERMINAL_STAGES
+            ):
                 return False
             if job.remote_job_id:
                 try:
@@ -511,16 +515,20 @@ class EncodeQueue:
                 job.source_path,
                 job_id,
             )
-            self._store.set_plan(
-                job_id,
-                preset_name=None,
-                rule_id=match.rule_id,
-                facts=facts,
-                original_size=facts.get("size") or 0,
-            )
-            self._store.mark_seen(job.source_path, stat.st_size, stat.st_mtime_ns)
-            self._store.set_stage(job_id, "skipped")
-            self._publish(job_id)
+            with self._job_lock(job_id):
+                current = self._store.get_job(job_id)
+                if current is None or current.stage == "cancelled":
+                    return None
+                self._store.set_plan(
+                    job_id,
+                    preset_name=None,
+                    rule_id=match.rule_id,
+                    facts=facts,
+                    original_size=facts.get("size") or 0,
+                )
+                self._store.mark_seen(job.source_path, stat.st_size, stat.st_mtime_ns)
+                self._store.set_stage(job_id, "skipped")
+                self._publish(job_id)
             return None
 
         target_preset = next(
@@ -535,15 +543,19 @@ class EncodeQueue:
             )
             return None
 
-        self._store.set_plan(
-            job_id,
-            preset_name=match.target,
-            rule_id=match.rule_id,
-            facts=facts,
-            original_size=facts.get("size") or 0,
-        )
-        self._store.mark_seen(job.source_path, stat.st_size, stat.st_mtime_ns)
-        self._publish(job_id)
+        with self._job_lock(job_id):
+            current = self._store.get_job(job_id)
+            if current is None or current.stage == "cancelled":
+                return None
+            self._store.set_plan(
+                job_id,
+                preset_name=match.target,
+                rule_id=match.rule_id,
+                facts=facts,
+                original_size=facts.get("size") or 0,
+            )
+            self._store.mark_seen(job.source_path, stat.st_size, stat.st_mtime_ns)
+            self._publish(job_id)
         return target_preset
 
     def _run(self, job_id: str) -> None:
@@ -677,18 +689,22 @@ class EncodeQueue:
                 if unreachable_since is None:
                     unreachable_since = now
                 elif now - unreachable_since >= _UNREACHABLE_BLOCK_SECONDS:
-                    self._store.set_stage(
-                        job_id,
-                        "blocked",
-                        error=(
-                            "The encoder has been unreachable for over "
-                            f"{int(_UNREACHABLE_BLOCK_SECONDS // 60)} minutes. "
-                            "Check the encoder service, then approve this "
-                            "job to resume polling it."
-                        ),
-                        error_code="encoder_unreachable",
-                    )
-                    self._publish(job_id)
+                    with self._job_lock(job_id):
+                        current = self._store.get_job(job_id)
+                        if current is None or current.stage == "cancelled":
+                            return None
+                        self._store.set_stage(
+                            job_id,
+                            "blocked",
+                            error=(
+                                "The encoder has been unreachable for over "
+                                f"{int(_UNREACHABLE_BLOCK_SECONDS // 60)} minutes. "
+                                "Check the encoder service, then approve this "
+                                "job to resume polling it."
+                            ),
+                            error_code="encoder_unreachable",
+                        )
+                        self._publish(job_id)
                     return None
                 time.sleep(self._poll_interval)
                 continue
@@ -699,8 +715,11 @@ class EncodeQueue:
             unreachable_since = None
             progress = body.get("progress")
             if isinstance(progress, (int, float)):
-                self._store.set_progress(job_id, float(progress))
-                self._publish(job_id)
+                with self._job_lock(job_id):
+                    current = self._store.get_job(job_id)
+                    if current is not None and current.stage != "cancelled":
+                        self._store.set_progress(job_id, float(progress))
+                        self._publish(job_id)
 
             status = body.get("status")
             if status == "completed":
@@ -778,34 +797,39 @@ class EncodeQueue:
             self._publish(job_id)
 
     def _handle_dispatch_error(self, job_id: str, exc: Exception) -> None:
-        if isinstance(exc, EncoderRejected) and exc.code == "encoder_unavailable":
-            # Never a silent CPU fallback: the user chooses. Blocked jobs are
-            # excluded from restart recovery for the same reason.
-            self._store.set_stage(
-                job_id, "blocked", error=exc.reason, error_code=exc.code
-            )
-            self._publish(job_id)
-            return
+        with self._job_lock(job_id):
+            current = self._store.get_job(job_id)
+            if current is None or current.stage == "cancelled":
+                return
 
-        if is_retryable(exc):
-            # `None` means the response carried no Retry-After and we fall
-            # back to our own default; `0` is a legitimate value from the
-            # server (retry immediately) and must not be treated as absent.
-            # Floored to 1s regardless: a server-supplied `retry_after=0`
-            # must not produce an uncapped hot loop of immediate resubmits.
-            retry_after = getattr(exc, "retry_after", None)
-            delay = retry_after if retry_after is not None else _REQUEUE_SECONDS
-            delay = max(float(delay), 1.0)
-            logger.info(
-                "Encoder busy or unreachable; requeueing %s in %ss", job_id, delay
-            )
-            self._store.set_stage(job_id, "queued")
-            self._publish(job_id)
-            self._schedule_requeue(job_id, delay)
-            return
+            if isinstance(exc, EncoderRejected) and exc.code == "encoder_unavailable":
+                # Never a silent CPU fallback: the user chooses. Blocked jobs are
+                # excluded from restart recovery for the same reason.
+                self._store.set_stage(
+                    job_id, "blocked", error=exc.reason, error_code=exc.code
+                )
+                self._publish(job_id)
+                return
 
-        code = getattr(exc, "code", "dispatch_failed")
-        self._fail(job_id, str(exc), code)
+            if is_retryable(exc):
+                # `None` means the response carried no Retry-After and we fall
+                # back to our own default; `0` is a legitimate value from the
+                # server (retry immediately) and must not be treated as absent.
+                # Floored to 1s regardless: a server-supplied `retry_after=0`
+                # must not produce an uncapped hot loop of immediate resubmits.
+                retry_after = getattr(exc, "retry_after", None)
+                delay = retry_after if retry_after is not None else _REQUEUE_SECONDS
+                delay = max(float(delay), 1.0)
+                logger.info(
+                    "Encoder busy or unreachable; requeueing %s in %ss", job_id, delay
+                )
+                self._store.set_stage(job_id, "queued")
+                self._publish(job_id)
+                self._schedule_requeue(job_id, delay)
+                return
+
+            code = getattr(exc, "code", "dispatch_failed")
+            self._fail(job_id, str(exc), code)
 
     def _schedule_requeue(self, job_id: str, delay: float) -> None:
         """Put *job_id* back on the dispatch queue after *delay* seconds.
@@ -832,8 +856,12 @@ class EncodeQueue:
         timer.start()
 
     def _fail(self, job_id: str, error: str, code: str) -> None:
-        self._store.set_stage(job_id, "failed", error=error, error_code=code)
-        self._publish(job_id)
+        with self._job_lock(job_id):
+            current = self._store.get_job(job_id)
+            if current is None or current.stage == "cancelled":
+                return
+            self._store.set_stage(job_id, "failed", error=error, error_code=code)
+            self._publish(job_id)
 
     def _publish(self, job_id: str) -> None:
         job = self._store.get_job(job_id)

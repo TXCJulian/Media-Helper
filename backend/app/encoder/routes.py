@@ -35,7 +35,7 @@ from app.encoder.rules import (
     evaluate,
 )
 from app.encoder.runtime import EncoderRuntime
-from app.encoder.store import EncoderStore
+from app.encoder.store import TERMINAL_STAGES, EncoderStore
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/encoder")
@@ -491,6 +491,8 @@ def replace_config(payload: WatchPathsIn) -> dict | JSONResponse:
         return _error(400, "invalid_watch_path", str(exc))
     try:
         return {"watch_paths": get_runtime().replace_watch_paths(paths)}
+    except EncoderConfigurationUnavailable:
+        raise
     except RuntimeError as exc:
         return _error(500, "watch_paths_replace_failed", str(exc))
 
@@ -980,8 +982,18 @@ def delete_job(job_id: str):
             "job_swapping",
             "This job is publishing its result and cannot be deleted yet",
         )
-    if not get_queue().cancel(job_id):
-        return _error(409, "job_not_cancellable", "The job changed state; try again")
+    if job.stage not in TERMINAL_STAGES and not get_queue().cancel(job_id):
+        current = store.get_job(job_id)
+        if current is None:
+            return _error(404, "job_not_found", f"No job {job_id!r}")
+        if current.stage == "swapping":
+            return _error(
+                409,
+                "job_swapping",
+                "This job is publishing its result and cannot be deleted yet",
+            )
+        if current.stage not in TERMINAL_STAGES:
+            return _error(409, "job_not_cancellable", "The job changed state; try again")
     if store.delete_job(job_id):
         get_events().publish({"type": "deleted", "job_id": job_id})
 
@@ -1004,9 +1016,10 @@ async def events() -> StreamingResponse:
             # A connection always starts with one authoritative snapshot,
             # including an empty one. This gives clients a liveness frame and
             # lets reconnects remove jobs that were purged while offline.
+            jobs = await asyncio.to_thread(store.list_jobs)
             snapshot = {
                 "type": "snapshot",
-                "jobs": [job_to_payload(job) for job in store.list_jobs()],
+                "jobs": [job_to_payload(job) for job in jobs],
             }
             yield f"data: {json.dumps(snapshot)}\n\n"
             while True:

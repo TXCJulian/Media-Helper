@@ -740,11 +740,14 @@ def _unregister_job_process(job_id: str, proc: object) -> None:
 
 def _stop_process(proc: object, kill: bool = False) -> None:
     poll = getattr(proc, "poll", None)
-    try:
-        if callable(poll) and poll() is not None:
+    if callable(poll):
+        try:
+            if poll() is not None:
+                return
+        except ProcessLookupError:
             return
-    except Exception:
-        pass
+        except Exception:
+            logger.debug("Error polling process %s state", proc, exc_info=True)
     action = getattr(proc, "kill" if kill else "terminate", None)
     if callable(action):
         try:

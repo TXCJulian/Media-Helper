@@ -580,6 +580,72 @@ class TestEncoderLifespan:
                 assert active == {"remote-xyz"}
                 assert job.id not in active
 
+    def test_sweep_orphans_runs_before_queue_start_and_recover(self, tmp_path):
+        """Sweep before recovering: a crash mid-encode leaves partials no
+        live job owns. Sweeping before queue start/recover prevents racing
+        with reattach/resubmit."""
+        import importlib
+
+        media = tmp_path / "media"
+        media.mkdir(parents=True)
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir(parents=True)
+        enc_data = tmp_path / "enc-data"
+        enc_db = enc_data / "encoder.db"
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(tmp_path),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes,encoder",
+            "ENCODER_DATA_DIR": str(enc_data),
+            "ENCODER_DB": str(enc_db),
+            "ENCODER_WATCH_PATHS": str(watch_dir),
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.encoder.queue as queue_mod
+            import app.encoder.routes as encoder_routes_mod
+            import app.encoder.swap as swap_mod
+            importlib.reload(encoder_routes_mod)
+
+            event_order = []
+
+            original_sweep = swap_mod.sweep_orphans
+            def _spy_sweep(*a, **k):
+                event_order.append("sweep_orphans")
+                return original_sweep(*a, **k)
+
+            original_start = queue_mod.EncodeQueue.start
+            def _spy_start(self, *a, **k):
+                event_order.append("queue_start")
+                return original_start(self, *a, **k)
+
+            original_recover = queue_mod.EncodeQueue.recover
+            def _spy_recover(self, *a, **k):
+                event_order.append("queue_recover")
+                return original_recover(self, *a, **k)
+
+            with patch.object(swap_mod, "sweep_orphans", side_effect=_spy_sweep), \
+                 patch.object(queue_mod.EncodeQueue, "start", side_effect=_spy_start, autospec=True), \
+                 patch.object(queue_mod.EncodeQueue, "recover", side_effect=_spy_recover, autospec=True):
+                import app.main as main_mod
+                importlib.reload(main_mod)
+                with TestClient(main_mod.app):
+                    pass
+
+            assert "sweep_orphans" in event_order
+            assert "queue_start" in event_order
+            assert "queue_recover" in event_order
+            sweep_idx = event_order.index("sweep_orphans")
+            start_idx = event_order.index("queue_start")
+            recover_idx = event_order.index("queue_recover")
+            assert sweep_idx < start_idx < recover_idx
+
 
 class TestCutterStreamValidation:
     def test_cutter_stream_rejects_invalid_audio_index(self, client, tmp_path, monkeypatch):

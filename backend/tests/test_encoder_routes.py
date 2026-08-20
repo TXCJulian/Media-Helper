@@ -1652,3 +1652,42 @@ def test_reprocess_all_preserves_the_startup_configuration_error_envelope():
         "code": "encoder_configuration_unavailable",
         "reason": "Encoder configuration is unavailable: watch path is unavailable",
     }
+
+
+def test_put_config_preserves_the_startup_configuration_error_envelope():
+    """PUT /config must return 503 when startup failed instead of being masked as a 500."""
+    routes_mod.reset_state_for_tests()
+    routes_mod.mark_startup_failed("persisted watch paths are corrupted")
+    app = FastAPI()
+    app.include_router(routes_mod.router)
+    routes_mod.register_error_handlers(app)
+
+    with TestClient(app) as client:
+        response = client.put("/api/encoder/config", json={"watch_paths": []})
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "code": "encoder_configuration_unavailable",
+        "reason": "Encoder configuration is unavailable: persisted watch paths are corrupted",
+    }
+
+
+def test_delete_terminal_jobs_succeeds_without_spurious_cancel(client, tmp_path):
+    """Deleting jobs in terminal stages (done, failed, skipped, cancelled) must return 204,
+    delete the row, and publish only a 'deleted' event (not 'cancelled')."""
+    store = routes_mod.get_store()
+    events = routes_mod.get_events()
+    sub = events.subscribe()
+
+    for terminal_stage in ("done", "failed", "skipped", "cancelled"):
+        job = store.create_job(str(tmp_path / f"{terminal_stage}.mkv"))
+        store.set_stage(job.id, terminal_stage)
+
+        response = client.delete(f"/api/encoder/jobs/{job.id}")
+        assert response.status_code == 204
+        assert store.get_job(job.id) is None
+
+        # Check published event
+        event = sub.get_nowait()
+        assert event == {"type": "deleted", "job_id": job.id}
+
