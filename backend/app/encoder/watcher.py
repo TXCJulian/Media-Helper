@@ -37,28 +37,46 @@ logger = logging.getLogger(__name__)
 # on network-mounted libraries, which is exactly where this watcher runs.
 _SCAN_INTERVAL = 30.0
 
+# Stages in which a job's source is expected to be sitting on disk, untouched,
+# at the path the job was planned for. `encoding` and `swapping` are absent on
+# purpose: the swap step moves the original aside and may publish the encode
+# under a different extension, so an in-flight job's source is *meant* to
+# disappear.
+_SOURCE_REQUIRED_STAGES = frozenset({"settling", "pending", "queued", "blocked"})
+
 
 class SettleTracker:
     """Decides when a file has stopped changing.
 
-    ``saw`` returns True the first time a path is observed at the same size for
-    at least ``settle_seconds``. It never returns True on first sight: a single
-    observation cannot establish that a size is stable.
+    ``saw`` returns True the first time a path is observed with the same
+    (size, mtime) for at least ``settle_seconds``. It never returns True on
+    first sight: a single observation cannot establish that a file is stable.
+
+    Size alone is not enough. Rip and copy tools routinely set the final
+    end-of-file up front and then fill it in, so a 72GB file reports its final
+    byte count from the moment it appears and holds it for the whole copy. A
+    size-only window therefore expires mid-copy, dispatches the file, and the
+    next scan cancels the resulting job as "modified on disk" -- one created
+    and cancelled job per settle window for as long as the copy runs. mtime is
+    the only thing that moves while a file is being written, which is why it
+    belongs in the settle decision and not just in the staleness fingerprint
+    the two are compared against later.
     """
 
     def __init__(self, settle_seconds: int, now: Callable[[], float] = time.time):
         self._settle = settle_seconds
         self._now = now
-        self._seen: dict[str, tuple[int, float]] = {}
+        self._seen: dict[str, tuple[tuple[int, int], float]] = {}
         self._lock = threading.Lock()
 
-    def saw(self, path: str, size: int) -> bool:
+    def saw(self, path: str, size: int, mtime_ns: int) -> bool:
         with self._lock:
             previous = self._seen.get(path)
             now = self._now()
-            if previous is None or previous[0] != size:
-                # First sight, or the size changed: (re)start the window.
-                self._seen[path] = (size, now)
+            fingerprint = (size, mtime_ns)
+            if previous is None or previous[0] != fingerprint:
+                # First sight, or the file changed: (re)start the window.
+                self._seen[path] = (fingerprint, now)
                 return False
             return now - previous[1] >= self._settle
 
@@ -231,6 +249,73 @@ class EncoderWatcher:
                 "Pruned %d dedup record(s) for files no longer present", removed
             )
 
+        # The prune above only drops dedup records. A job planned against one
+        # of those vanished files is still active, and nothing else will ever
+        # revisit it: invalidation is otherwise driven entirely by `_consider`,
+        # which the walk only reaches for files that are still there. Renaming
+        # or moving a source therefore stranded its job as active forever while
+        # the new path quietly got a job of its own.
+        self._cancel_jobs_with_missing_sources(active_jobs, present, walked)
+
+    def _cancel_jobs_with_missing_sources(
+        self,
+        active_jobs: dict[str, Job],
+        present: set[str],
+        walked: list[str],
+    ) -> None:
+        """Cancel active jobs whose source has been renamed, moved or deleted."""
+        for path, job in list(active_jobs.items()):
+            if job.stage not in _SOURCE_REQUIRED_STAGES:
+                continue
+            if job.stage == "blocked" and (
+                job.remote_job_id or job.error_code == "swap_interrupted"
+            ):
+                # Either running on another host, or waiting on a human to
+                # confirm what a half-finished swap left behind. `_consider`
+                # and the approve route both refuse to touch these, for the
+                # same reasons.
+                continue
+            if path in present:
+                continue
+            if not any(
+                path == root or path.startswith(root + os.sep) for root in walked
+            ):
+                # The same guard the dedup prune uses: a path this scan never
+                # covered -- outside the watch roots, or under a root that
+                # failed to read because its share is unmounted -- is no
+                # evidence that anything was removed.
+                continue
+            if os.path.exists(path):
+                # `present` is a snapshot taken during the walk; the file may
+                # have landed back since (a rename undone, a share remounting).
+                # This is the authoritative check, and it costs one stat for
+                # the handful of candidates that get this far.
+                continue
+            current = self._store.get_job(job.id)
+            if current is None or current.stage != job.stage:
+                # It moved on under us between the walk and now -- most likely
+                # the queue picked it up. Cancelling would clobber that.
+                continue
+            logger.info(
+                "Source file %s no longer exists; cancelling stale %s job %s",
+                path,
+                job.stage,
+                job.id,
+            )
+            self._store.set_stage(
+                job.id,
+                "cancelled",
+                error="Source file no longer exists; invalidating stale job",
+                error_code="source_missing",
+            )
+            if self._events is not None:
+                updated = self._store.get_job(job.id)
+                if updated is not None:
+                    self._events.publish(job_to_payload(updated))
+            self._store.forget_seen(path)
+            self._tracker.forget(path)
+            active_jobs.pop(path, None)
+
     def _scan_loop(self) -> None:
         while not self._stopping.wait(timeout=_SCAN_INTERVAL):
             try:
@@ -332,7 +417,7 @@ class EncoderWatcher:
             # count but gives it a new mtime, and a size-only check silently
             # ignored exactly that case.
             return
-        if not self._tracker.saw(path, size):
+        if not self._tracker.saw(path, size, mtime_ns):
             return
         self._tracker.forget(path)
         # The fingerprint travels with the dispatch rather than being written

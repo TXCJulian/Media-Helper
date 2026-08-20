@@ -5,6 +5,10 @@ import pytest
 from app.encoder.store import EncoderStore
 from app.encoder.watcher import EncoderWatcher, SettleTracker
 
+# These cases vary size against a fixed mtime, so they keep testing what
+# they always did now that the window keys on both.
+STEADY_MTIME = 1_787_205_348_537_719_273
+
 
 class FakeClock:
     def __init__(self):
@@ -20,15 +24,15 @@ class FakeClock:
 def test_a_file_is_not_settled_on_first_sight():
     clock = FakeClock()
     tracker = SettleTracker(settle_seconds=30, now=clock)
-    assert tracker.saw("/media3/x.mkv", 1000) is False
+    assert tracker.saw("/media3/x.mkv", 1000, STEADY_MTIME) is False
 
 
 def test_a_file_settles_once_its_size_holds_for_the_window():
     clock = FakeClock()
     tracker = SettleTracker(settle_seconds=30, now=clock)
-    tracker.saw("/media3/x.mkv", 1000)
+    tracker.saw("/media3/x.mkv", 1000, STEADY_MTIME)
     clock.advance(31)
-    assert tracker.saw("/media3/x.mkv", 1000) is True
+    assert tracker.saw("/media3/x.mkv", 1000, STEADY_MTIME) is True
 
 
 def test_growth_restarts_the_window():
@@ -36,42 +40,42 @@ def test_growth_restarts_the_window():
     whatever has landed so far and match the wrong rule."""
     clock = FakeClock()
     tracker = SettleTracker(settle_seconds=30, now=clock)
-    tracker.saw("/media3/x.mkv", 1000)
+    tracker.saw("/media3/x.mkv", 1000, STEADY_MTIME)
     clock.advance(20)
-    tracker.saw("/media3/x.mkv", 5000)  # still growing
+    tracker.saw("/media3/x.mkv", 5000, STEADY_MTIME)  # still growing
     clock.advance(20)  # 40s since first sight, 20s since growth
-    assert tracker.saw("/media3/x.mkv", 5000) is False
+    assert tracker.saw("/media3/x.mkv", 5000, STEADY_MTIME) is False
     clock.advance(11)
-    assert tracker.saw("/media3/x.mkv", 5000) is True
+    assert tracker.saw("/media3/x.mkv", 5000, STEADY_MTIME) is True
 
 
 def test_shrinking_also_restarts_the_window():
     clock = FakeClock()
     tracker = SettleTracker(settle_seconds=30, now=clock)
-    tracker.saw("/media3/x.mkv", 5000)
+    tracker.saw("/media3/x.mkv", 5000, STEADY_MTIME)
     clock.advance(20)
-    tracker.saw("/media3/x.mkv", 1000)
+    tracker.saw("/media3/x.mkv", 1000, STEADY_MTIME)
     clock.advance(20)
-    assert tracker.saw("/media3/x.mkv", 1000) is False
+    assert tracker.saw("/media3/x.mkv", 1000, STEADY_MTIME) is False
 
 
 def test_files_are_tracked_independently():
     clock = FakeClock()
     tracker = SettleTracker(settle_seconds=30, now=clock)
-    tracker.saw("/media3/a.mkv", 100)
+    tracker.saw("/media3/a.mkv", 100, STEADY_MTIME)
     clock.advance(31)
-    tracker.saw("/media3/b.mkv", 100)
-    assert tracker.saw("/media3/a.mkv", 100) is True
-    assert tracker.saw("/media3/b.mkv", 100) is False
+    tracker.saw("/media3/b.mkv", 100, STEADY_MTIME)
+    assert tracker.saw("/media3/a.mkv", 100, STEADY_MTIME) is True
+    assert tracker.saw("/media3/b.mkv", 100, STEADY_MTIME) is False
 
 
 def test_forget_drops_state_so_a_replaced_file_starts_over():
     clock = FakeClock()
     tracker = SettleTracker(settle_seconds=30, now=clock)
-    tracker.saw("/media3/x.mkv", 100)
+    tracker.saw("/media3/x.mkv", 100, STEADY_MTIME)
     tracker.forget("/media3/x.mkv")
     clock.advance(31)
-    assert tracker.saw("/media3/x.mkv", 100) is False
+    assert tracker.saw("/media3/x.mkv", 100, STEADY_MTIME) is False
 
 
 def test_a_zero_settle_window_settles_on_second_sight():
@@ -79,8 +83,8 @@ def test_a_zero_settle_window_settles_on_second_sight():
     observation cannot establish that a size is stable."""
     clock = FakeClock()
     tracker = SettleTracker(settle_seconds=0, now=clock)
-    assert tracker.saw("/media3/x.mkv", 100) is False
-    assert tracker.saw("/media3/x.mkv", 100) is True
+    assert tracker.saw("/media3/x.mkv", 100, STEADY_MTIME) is False
+    assert tracker.saw("/media3/x.mkv", 100, STEADY_MTIME) is True
 
 
 # ---------------------------------------------------------------------------
@@ -620,9 +624,9 @@ def test_an_unreadable_watch_root_does_not_prune_its_records(store, tmp_path):
     target.unlink()
     root.rmdir()
     watcher.scan_existing()
-    assert set(store.seen_fingerprints()) == {
-        str(target)
-    }, "records were pruned for a root that could not be read"
+    assert set(store.seen_fingerprints()) == {str(target)}, (
+        "records were pruned for a root that could not be read"
+    )
 
 
 def test_a_fingerprint_written_during_the_scan_is_not_pruned(store, tmp_path):
@@ -663,9 +667,9 @@ def test_a_fingerprint_written_during_the_scan_is_not_pruned(store, tmp_path):
     finally:
         watcher_mod.os.walk = original
 
-    assert (
-        str(published) in store.seen_fingerprints()
-    ), "a fingerprint written mid-scan was pruned"
+    assert str(published) in store.seen_fingerprints(), (
+        "a fingerprint written mid-scan was pruned"
+    )
 
     # And therefore the published output is never treated as a new arrival.
     watcher.scan_existing()
@@ -715,9 +719,9 @@ def test_an_unreadable_subtree_does_not_prune_its_root(store, tmp_path):
     finally:
         watcher_mod.os.walk = original
 
-    assert set(store.seen_fingerprints()) == {
-        str(target)
-    }, "fingerprints were pruned after a walk error"
+    assert set(store.seen_fingerprints()) == {str(target)}, (
+        "fingerprints were pruned after a walk error"
+    )
 
 
 def test_a_fingerprint_updated_during_the_scan_is_not_pruned(store, tmp_path):
@@ -823,7 +827,9 @@ def test_watcher_cancels_stale_active_job_when_file_modified_on_disk(store, tmp_
     assert planner.paths == [str(target), str(target)]
 
 
-def test_watcher_preserves_blocked_job_with_remote_work_when_file_modified(store, tmp_path):
+def test_watcher_preserves_blocked_job_with_remote_work_when_file_modified(
+    store, tmp_path
+):
     target = tmp_path / "movie.mkv"
     target.write_bytes(b"original data" * 100)
 
@@ -838,7 +844,9 @@ def test_watcher_preserves_blocked_job_with_remote_work_when_file_modified(store
     assert job is not None
 
     # Job is blocked with an active remote_job_id
-    store.set_stage(job.id, "blocked", error="Remote in flight", error_code="remote_in_flight")
+    store.set_stage(
+        job.id, "blocked", error="Remote in flight", error_code="remote_in_flight"
+    )
     store.set_remote_job(job.id, "remote-task-42")
 
     # File on disk is modified
@@ -909,3 +917,136 @@ def test_watcher_cancels_queued_job_when_file_modified(store, tmp_path):
     watcher.scan_existing()
     assert planner.paths == [str(target), str(target)]
 
+
+# ---------------------------------------------------------------------------
+# Sources that stop existing, and sources that only *look* like they changed.
+# ---------------------------------------------------------------------------
+
+
+def test_a_preallocated_file_does_not_settle_while_only_its_mtime_moves():
+    """Rip tools set the final end-of-file up front, then fill it in. Size is
+    therefore final from byte zero and a size-only settle check declares the
+    file ready mid-copy -- which is what produced a job every ~66s for the
+    length of a 72GB copy, each one cancelled by the next scan as "modified
+    on disk". Only mtime distinguishes the two states, so mtime has to be
+    part of the settle decision, not just of the staleness fingerprint."""
+    clock = FakeClock()
+    tracker = SettleTracker(settle_seconds=30, now=clock)
+    tracker.saw("/media3/x.mkv", 71925569674, 1787205348537719273)
+    clock.advance(31)
+    assert tracker.saw("/media3/x.mkv", 71925569674, 1787205415713480961) is False
+    clock.advance(31)
+    assert tracker.saw("/media3/x.mkv", 71925569674, 1787205415713480961) is True
+
+
+def test_a_preallocated_file_is_never_dispatched_while_being_written(store, tmp_path):
+    target = tmp_path / "movie.mkv"
+    target.write_bytes(b"data")
+    settled = []
+    watcher = make_watcher(store, tmp_path, lambda path, _s, _m: settled.append(path))
+
+    watcher.scan_existing()  # first sight
+    st = os.stat(target)
+    os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    watcher.scan_existing()  # same size, new mtime: window restarts
+    assert settled == []
+
+    watcher.scan_existing()  # nothing moved since: settles
+    assert settled == [str(target)]
+
+
+def test_a_job_whose_source_was_renamed_away_is_cancelled(store, tmp_path):
+    """A file renamed or moved out of its directory leaves its job stranded:
+    invalidation only ever ran for paths the walk still found, so the old job
+    stayed active forever while the new path got a job of its own."""
+    target = tmp_path / "A1_t02.mkv"
+    target.write_bytes(b"data")
+    job = store.create_job(str(target), 4, os.stat(target).st_mtime_ns)
+    store.set_stage(job.id, "pending")
+    watcher = make_watcher(store, tmp_path, lambda *_a: None)
+
+    moved = tmp_path / "Bibi Blocksberg (2002).mkv"
+    target.rename(moved)
+    watcher.scan_existing()
+
+    reloaded = store.get_job(job.id)
+    assert reloaded.stage == "cancelled"
+    assert reloaded.error_code == "source_missing"
+
+
+def test_an_encoding_job_survives_its_source_vanishing(store, tmp_path):
+    """The swap step moves the original aside and can publish the encode under
+    a different extension, so an in-flight job's source is *expected* to
+    disappear. Cancelling it would kill a running encode."""
+    watcher = make_watcher(store, tmp_path, lambda *_a: None)
+
+    for stage in ("encoding", "swapping"):
+        job = store.create_job(str(tmp_path / f"{stage}.mkv"))
+        store.set_stage(job.id, stage)
+        watcher.scan_existing()
+        assert store.get_job(job.id).stage == stage
+
+
+def test_a_remotely_running_job_survives_its_source_vanishing(store, tmp_path):
+    """`blocked` with a remote_job_id means the encode is live on another
+    host, which _consider already refuses to touch for the same reason."""
+    job = store.create_job(str(tmp_path / "gone.mkv"))
+    store.set_stage(job.id, "blocked")
+    store.set_remote_job(job.id, "remote-1")
+    watcher = make_watcher(store, tmp_path, lambda *_a: None)
+
+    watcher.scan_existing()
+
+    assert store.get_job(job.id).stage == "blocked"
+
+
+def test_an_interrupted_swap_survives_its_source_vanishing(store, tmp_path):
+    """A swap_interrupted job's on-disk state is unknown and needs a human;
+    routes.py refuses to auto-act on it, and so must the sweep. Cancelling it
+    would hand the file straight back to the watcher to re-plan."""
+    job = store.create_job(str(tmp_path / "gone.mkv"))
+    store.set_stage(job.id, "blocked", error="swap died", error_code="swap_interrupted")
+    watcher = make_watcher(store, tmp_path, lambda *_a: None)
+
+    watcher.scan_existing()
+
+    assert store.get_job(job.id).stage == "blocked"
+
+
+def test_jobs_outside_a_walked_root_are_not_cancelled(store, tmp_path):
+    """A job whose source lives outside the watch paths (created by hand, or
+    left over from a reconfigured install) is not evidence of anything -- the
+    walk never had a chance to see it."""
+    job = store.create_job(str(tmp_path.parent / "elsewhere" / "movie.mkv"))
+    store.set_stage(job.id, "pending")
+    watcher = make_watcher(store, tmp_path, lambda *_a: None)
+
+    watcher.scan_existing()
+
+    assert store.get_job(job.id).stage == "pending"
+
+
+def test_an_unreadable_subtree_does_not_cancel_its_jobs(store, tmp_path):
+    """An unmounted share walks as empty. Treating that as "every file was
+    deleted" would cancel every job under it and re-detect the whole share
+    when it came back -- the same guard the dedup prune already uses."""
+    movie = tmp_path / "movie.mkv"
+    movie.write_bytes(b"data")
+    job = store.create_job(str(movie))
+    store.set_stage(job.id, "pending")
+    watcher = make_watcher(store, tmp_path, lambda *_a: None)
+
+    movie.unlink()
+    real_walk = os.walk
+
+    def failing_walk(root, onerror=None, **kwargs):
+        if onerror is not None:
+            onerror(OSError(5, "Input/output error", str(tmp_path)))
+        return real_walk(root, onerror=onerror, **kwargs)
+
+    from unittest.mock import patch
+
+    with patch("app.encoder.watcher.os.walk", failing_walk):
+        watcher.scan_existing()
+
+    assert store.get_job(job.id).stage == "pending"
