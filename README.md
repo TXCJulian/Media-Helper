@@ -26,6 +26,10 @@ A media management tool for renaming TV shows, music files, transcribing lyrics,
 | --- | --- |
 | ![Cutter Panel](docs/screenshots/cutter-panel.png) | ![Cutter Upload](docs/screenshots/cutter-upload.png) |
 
+| Auto Encoder |
+| --- |
+| ![Encoder Panel](docs/screenshots/encoder-panel.png) |
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -42,13 +46,14 @@ A media management tool for renaming TV shows, music files, transcribing lyrics,
 
 ## Overview
 
-Media-Helper is a dockerized tool with five modules:
+Media-Helper is a dockerized tool with six modules:
 
 1. **Episode Renamer** - Renames TV show episodes using TMDB metadata
 2. **Music Renamer** - Renames music files based on ID3/audio tags
 3. **Lyric Transcriber** - Transcribes lyrics from audio files using AI (HDemucs + Whisper + Genius)
 4. **Media Cutter** - Trim and cut audio/video files with waveform preview and per-track codec control
 5. **Downloader** - Download media via yt-dlp with codec/format/quality selection, playlist support, and cookie authentication
+6. **Auto Encoder** - Watches folders for new video files and re-encodes them via a remote HandBrake service, driven by rules or manual review
 
 The application consists of a FastAPI backend (Python 3.14), a React frontend (Vite + Tailwind CSS), and an optional GPU-powered lyrics transcription service. All services communicate over a Docker bridge network behind an Nginx reverse proxy.
 
@@ -63,8 +68,9 @@ This repo deliberately keeps some functionality out of its own backend and deleg
 | Service | Purpose | Required for |
 | --- | --- | --- |
 | [Whisper_Lyric-Transcriber](https://github.com/TXCJulian/Whisper_Lyric-Transcriber) | Vocal separation (Demucs) → speech-to-text (faster-whisper) → Genius lyrics correction | The **Lyrics Transcription** module (`TRANSCRIBER_URL`) |
+| [HandBrake_Video-Encoder](https://github.com/TXCJulian/HandBrake_Video-Encoder) | Remote HandBrake CLI wrapper that performs the actual video encode | The **Auto Encoder** module (`ENCODER_URL`) |
 
-More companion services following this pattern may be added as GPU-heavy features (e.g. automated encoding) are introduced.
+More companion services following this pattern may be added as GPU-heavy features are introduced.
 
 ## Features
 
@@ -132,6 +138,20 @@ More companion services following this pattern may be added as GPU-heavy feature
 - Queued and in-progress jobs are persisted to SQLite and resume automatically after a backend restart
 - Concurrent download workers (`DOWNLOADER_WORKERS`, default 3) — additional jobs wait in the queue rather than being rejected
 
+### Auto Encoder
+
+- Watches configured folders for new video files and re-encodes them via a remote [HandBrake_Video-Encoder](https://github.com/TXCJulian/HandBrake_Video-Encoder) service
+- `review` mode queues each detected file for manual approval; `auto` mode encodes unattended
+- Rule engine picks a HandBrake preset (or skips the file) from probed facts — resolution, size, bitrate, bit depth, frame rate, duration, video codec, profile, HDR/Dolby Vision flags, source tool, and encoder tag — using an ordered, first-match-wins list of AND'ed conditions with a fallback target
+- "Test against a file" runs the rule engine against a picked file without encoding it, showing which rule matched and why
+- Guided or raw JSON preset editor, importing directly from a HandBrake preset export and validated against the connected encoder's actual capabilities
+- Bulk re-evaluation of every configured source against the current rules ("reprocess all"), plus per-job re-evaluation and re-approval
+- Retains the original file for a configurable TTL after a successful encode before purging it (`ENCODER_ORIGINAL_TTL`)
+- Live job cards via SSE with per-job approve, re-evaluate, cancel, and delete actions; a collapsible history section for completed/failed/cancelled/skipped jobs
+- Watch-folder list is persisted in the encoder's own database and survives container restarts and environment-variable changes
+- GPU health indicator showing connected encoder vendor (NVENC/QSV/VCE/CPU)
+- **Requires the separate [HandBrake_Video-Encoder](https://github.com/TXCJulian/HandBrake_Video-Encoder) service, reachable at `ENCODER_URL`**
+
 ### General
 
 - Modern dark-themed web interface with glassmorphism design
@@ -194,6 +214,12 @@ Browser                    Frontend Container               Backend Container
   |                               |    http://helper-backend:3332    |
   |                               |                                  |---> lyric-transcriber:3334
   |<--[8] SSE events--------------|<---[9] SSE stream----------------|     (GPU service)
+  |                               |                                  |
+  |--[10] GET :3333/api/--------->|                                  |
+  |     encoder/events            |--[11] proxy_pass (no buffering)->|
+  |    (SSE stream)               |    http://helper-backend:3332    |
+  |                               |                                  |---> video-encoder:3335
+  |<--[12] SSE events-------------|<---[13] SSE stream---------------|     (remote HandBrake service)
 ```
 
 ### Benefits
@@ -437,6 +463,36 @@ The application expects the following structure in your media directory:
 | `DELETE` | `/download/cookies` | Remove the stored cookie file |
 
 Jobs beyond `DOWNLOADER_WORKERS` wait in the queue rather than being rejected. A job holds one or more output items, so playlist URLs report progress per item. When a codec is explicitly selected, re-encoding runs as a separate, cancellable stage after the download completes. Queued and in-progress jobs are persisted to SQLite and resume automatically after a backend restart.
+
+### Auto Encoder Endpoints
+
+| Method | Endpoint | Description |
+| ------ | -------- | ----------- |
+| `GET` | `/api/encoder/health` | Remote encoder health, capabilities, and detected vendor (NVENC/QSV/VCE/CPU) |
+| `GET` | `/api/encoder/config` | Current watch paths, mode, settle seconds, original/job TTLs |
+| `PUT` | `/api/encoder/config` | Replace the watch-folder list (JSON body: `watch_paths`) |
+| `GET` | `/api/encoder/directories` | List directories under `BASE_PATHS` for the watch-folder picker (query: `search`) |
+| `GET` | `/api/encoder/files` | List video files under a directory for the test picker (query: `directory`, `search`) |
+| `GET` | `/api/encoder/presets` | List stored preset summaries |
+| `GET` | `/api/encoder/presets/{name}` | Get a stored preset's full HandBrake JSON body |
+| `PUT` | `/api/encoder/presets/{name}` | Create/replace one preset leaf (JSON body: `body`) |
+| `POST` | `/api/encoder/presets/preview` | Report which leaves in a HandBrake preset export the connected encoder supports (JSON body: `document`) |
+| `POST` | `/api/encoder/presets` | Import presets from a HandBrake preset export (JSON body: `document`, `include_names`) |
+| `DELETE` | `/api/encoder/presets/{name}` | Delete a stored preset |
+| `GET` | `/api/encoder/rules` | List stored rules and the fallback target |
+| `PUT` | `/api/encoder/rules` | Replace the rule list and fallback target (JSON body: `rules`, `fallback`) |
+| `POST` | `/api/encoder/test` | Probe a file and evaluate it against the current rules without encoding (JSON body: `path`) |
+| `POST` | `/api/encoder/reprocess` | Re-evaluate one source path immediately (JSON body: `path`) |
+| `POST` | `/api/encoder/reprocess-all` | Start a background pass re-evaluating every configured source |
+| `DELETE` | `/api/encoder/reprocess-all` | Stop an in-flight bulk re-evaluation pass |
+| `GET` | `/api/encoder/reprocess-all/status` | Bulk re-evaluation progress |
+| `GET` | `/api/encoder/jobs` | List all encode jobs |
+| `POST` | `/api/encoder/jobs/{job_id}/approve` | Approve a pending/blocked job for encoding |
+| `POST` | `/api/encoder/jobs/{job_id}/reprocess` | Re-evaluate a job's source, keeping its prior row as history |
+| `DELETE` | `/api/encoder/jobs/{job_id}` | Cancel (if active) and delete a job |
+| `GET` | `/api/encoder/events` | SSE stream: a full snapshot on connect, then incremental job updates |
+
+The rule engine evaluates an ordered list of AND'ed conditions against probed file facts (`height`, `width`, `size`, `bit_rate`, `bit_depth`, `frame_rate`, `duration`, `video_codec`, `profile`, `hdr`, `dolby_vision`, `source_tool`, `encoder_tag`) using `>=`, `<=`, `>`, `<`, `==`, `!=`, or `contains` (text fields only); the first matching rule's target — a preset name or `skip` — wins, falling back to the configured fallback target if none match.
 
 ## Deployment
 
