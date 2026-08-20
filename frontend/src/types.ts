@@ -245,3 +245,151 @@ export interface DownloaderStatus {
   queue_depth: number
   workers: number
 }
+
+export interface EncoderHealth {
+  status: string
+  vendor?: 'NVENC' | 'QSV' | 'VCE' | 'CPU'
+  gpu_name?: string | null
+  handbrake_version?: string
+  encoders?: string[]
+  encoder_presets?: Record<string, string[]>
+  allowed_roots?: string[]
+  workers?: number
+  error?: string
+}
+
+export interface EncoderConfig {
+  watch_paths: string[]
+  mode: 'auto' | 'review'
+  settle_seconds: number
+  original_ttl: number
+  job_ttl: number
+}
+
+export interface EncoderDirectory {
+  path: string
+  base: string
+}
+
+export interface EncoderFile {
+  path: string
+  name: string
+}
+
+export interface EncoderPreset {
+  name: string
+  encoder: string
+  video_preset: string
+  file_format: string
+  /** The full HandBrake leaf, fetched before editing. */
+  body?: Record<string, unknown>
+}
+
+export interface EncoderPresetPreview {
+  name: string
+  encoder: string
+  supported: boolean
+  reason: string | null
+}
+
+export interface EncoderPresetPreviewResult {
+  presets: EncoderPresetPreview[]
+}
+
+export interface EncoderPresetImportSkip {
+  name: string
+  encoder: string
+  reason: string
+}
+
+export interface EncoderPresetImportResult {
+  imported: string[]
+  skipped: EncoderPresetImportSkip[]
+  unselected: string[]
+}
+
+export type EncoderJobStage =
+  | 'settling'
+  | 'pending'
+  | 'queued'
+  | 'encoding'
+  | 'swapping'
+  | 'done'
+  | 'failed'
+  | 'blocked'
+  | 'cancelled'
+  | 'skipped'
+
+export interface EncoderJob {
+  job_id: string
+  source_path: string
+  stage: EncoderJobStage
+  progress: number
+  preset_name: string | null
+  rule_id: string | null
+  error: string | null
+  error_code: string | null
+  remote_job_id?: string | null
+  output_path: string | null
+  facts: Record<string, unknown>
+  original_size: number | null
+  encoded_size: number | null
+  saved_bytes: number | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ReprocessResult {
+  job_id: string
+  path: string
+  stage: EncoderJobStage
+  created: boolean
+}
+
+export type EncoderReprocessStatus = 'started' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+export interface EncoderReprocessEvent {
+  type: 'reprocess'
+  run_id: string
+  status: EncoderReprocessStatus
+  scanned: number
+  created: number
+  skipped: number
+  failed: number
+  path: string | null
+  error: string | null
+}
+
+export interface EncoderReprocessRun {
+  run_id: string
+  status: EncoderReprocessStatus | 'already_running'
+}
+
+export interface EncoderReprocessStopResult {
+  status: 'stopping'
+}
+
+export interface EncoderReprocessState {
+  active: boolean
+  event: EncoderReprocessEvent | null
+}
+
+export interface EncoderRuleCondition {
+  field: string
+  op: string
+  value: unknown
+}
+
+export interface EncoderRule {
+  id: string
+  conditions: EncoderRuleCondition[]
+  target: string
+}
+
+export interface EncoderTestResult {
+  facts: Record<string, unknown>
+  matched_rule: string | null
+  target: string
+  evaluated: string[]
+  not_evaluated: string[]
+}

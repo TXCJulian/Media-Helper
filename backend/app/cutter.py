@@ -12,10 +12,10 @@ import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Callable, Optional
 
-from app.config import resolve_base, BASE_PATH_LABELS, CUTTER_JOBS_DIR, CUTTER_JOB_TTL
+from app.config import BASE_PATH_LABELS, CUTTER_JOB_TTL, CUTTER_JOBS_DIR, resolve_base
 from app.fs_utils import collision_safe_path
 from app.hwaccel import (
     blacklist_encoder,
@@ -73,8 +73,10 @@ def _monitor_cancel(proc, cancel_event):
             return
         try:
             cancel_event.wait(timeout=0.25)
-        except Exception:
-            pass
+        except (OSError, RuntimeError):
+            # A mocked or already-closed event can reject the wait; the
+            # monitor should continue polling the process in that case.
+            continue
 
 
 class _JobActivityState:
@@ -208,6 +210,7 @@ def get_ffmpeg_info() -> dict:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         logger.warning("Could not run 'ffmpeg -version'", exc_info=True)
@@ -252,7 +255,7 @@ def _extract_window(filepath: str, position: float, window_secs: float = 5.0) ->
         "pipe:1",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, timeout=30, check=False)
     except subprocess.TimeoutExpired:
         logger.warning(
             "Waveform sample timed out at %.2fs for %s",
@@ -297,7 +300,7 @@ def _waveform_cached(filepath: str, mtime: float, num_peaks: int) -> list[float]
             "pipe:1",
         ]
         try:
-            result = subprocess.run(cmd, capture_output=True, timeout=120)
+            result = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"ffmpeg waveform timed out for {filepath}") from exc
         if result.returncode != 0:
@@ -374,6 +377,7 @@ def probe_file(filepath: str) -> dict:
             encoding="utf-8",
             errors="replace",
             timeout=30,
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"ffprobe timed out for {filepath}") from exc
@@ -736,11 +740,14 @@ def _unregister_job_process(job_id: str, proc: object) -> None:
 
 def _stop_process(proc: object, kill: bool = False) -> None:
     poll = getattr(proc, "poll", None)
-    try:
-        if callable(poll) and poll() is not None:
+    if callable(poll):
+        try:
+            if poll() is not None:
+                return
+        except ProcessLookupError:
             return
-    except Exception:
-        pass
+        except Exception:
+            logger.debug("Error polling process %s state", proc, exc_info=True)
     action = getattr(proc, "kill" if kill else "terminate", None)
     if callable(action):
         try:
@@ -1230,10 +1237,10 @@ def get_track_preview(
                 )
                 monitor.start()
                 try:
-                    stdout_blob, stderr_blob = proc.communicate(timeout=300)
+                    _stdout_blob, stderr_blob = proc.communicate(timeout=300)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-                    stdout_blob, stderr_blob = proc.communicate(timeout=10)
+                    _stdout_blob, stderr_blob = proc.communicate(timeout=10)
             finally:
                 _unregister_job_process(job_id, proc)
                 _close_pipe(proc.stdout)
@@ -1329,10 +1336,10 @@ def get_audio_track_preview(
                 )
                 monitor.start()
                 try:
-                    stdout_blob, stderr_blob = proc.communicate(timeout=120)
+                    _stdout_blob, stderr_blob = proc.communicate(timeout=120)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-                    stdout_blob, stderr_blob = proc.communicate(timeout=10)
+                    _stdout_blob, stderr_blob = proc.communicate(timeout=10)
             finally:
                 _unregister_job_process(job_id, proc)
                 _close_pipe(proc.stdout)
@@ -1968,10 +1975,10 @@ def get_track_remux(
                 )
                 monitor.start()
                 try:
-                    stdout_blob, stderr_blob = proc.communicate(timeout=300)
+                    _stdout_blob, stderr_blob = proc.communicate(timeout=300)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-                    stdout_blob, stderr_blob = proc.communicate(timeout=10)
+                    _stdout_blob, stderr_blob = proc.communicate(timeout=10)
             finally:
                 _unregister_job_process(job_id, proc)
                 _close_pipe(proc.stdout)
@@ -2355,18 +2362,18 @@ def cut_file(
     out_point: float,
     output_path: str,
     stream_copy: bool,
-    codec: Optional[str],
+    codec: str | None,
     audio_tracks: list[dict] | None,
-    container: Optional[str],
+    container: str | None,
     progress_cb: Callable[[str], None],
     keep_quality: bool = False,
     source_video_bitrate: int | None = None,
     source_audio_bitrates: dict[int, int] | None = None,
     audio_streams: list[dict] | None = None,
     audio_stream_index: int | None = None,
-    audio_codec: Optional[str] = None,
+    audio_codec: str | None = None,
     job_id: str | None = None,
-    cancel_event: Optional[threading.Event] = None,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     """Cut a segment from a media file using ffmpeg.
 
@@ -2714,7 +2721,7 @@ def generate_thumbnail_strip(filepath: str, count: int = 30) -> bytes:
         "pipe:1",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"ffmpeg thumbnail generation timed out: {exc}") from exc
     if result.returncode != 0:
@@ -2940,9 +2947,8 @@ def migrate_jobs() -> int:
             continue
 
         # --- v0 -> v1: add "base" field ---
-        if version < 1:
-            if not meta.get("base"):
-                meta["base"] = _infer_base_label(meta, default_base)
+        if version < 1 and not meta.get("base"):
+            meta["base"] = _infer_base_label(meta, default_base)
 
         # --- v1 -> v2: rename "transcoding" status to "full_transcoding" ---
         if meta.get("status") == "transcoding":

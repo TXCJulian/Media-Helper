@@ -1,10 +1,11 @@
+import io
+import logging
 import os
 import time
 import zipfile
-import io
-import logging
+from collections.abc import Callable
+
 import requests
-from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ def check_transcriber_health(transcriber_url: str) -> dict:
         resp = requests.get(f"{transcriber_url}/health", timeout=5)
         resp.raise_for_status()
         return resp.json()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - normalize all client/JSON failures
         return {"status": "unreachable", "error": str(e)}
 
 
@@ -110,7 +111,7 @@ def get_file_lyrics_status(filepath: str) -> dict:
     }
 
 
-def check_existing_lyrics(filepath: str, requested_format: str) -> Optional[str]:
+def check_existing_lyrics(filepath: str, requested_format: str) -> str | None:
     """Determine which format actually needs to be transcribed.
 
     Returns the effective format to request, or None if everything exists already.
@@ -153,7 +154,7 @@ def transcribe_file(
     title: str | None = None,
     no_correction: bool = False,
     progress_callback: Callable[[str], None] | None = None,
-) -> tuple[list[str], Optional[str]]:
+) -> tuple[list[str], str | None]:
     """Transcribe a single audio file via the remote transcriber API.
 
     1. Upload the file to POST /transcribe
@@ -199,7 +200,7 @@ def transcribe_file(
             )
         resp.raise_for_status()
         job_id = resp.json()["job_id"]
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - normalize all upload failures
         return logs, f"Upload failed for {filename}: {e}"
 
     # Step 2: Poll for completion
@@ -246,7 +247,9 @@ def transcribe_file(
                 "RETRY",
             )
             continue
-        except Exception as e:
+        except (
+            Exception  # noqa: BLE001 - polling must retry any transient client failure
+        ) as e:
             consecutive_errors += 1
             if consecutive_errors >= max_consecutive_errors:
                 return logs, (
@@ -289,7 +292,7 @@ def transcribe_file(
         result_resp = requests.get(
             f"{transcriber_url}/jobs/{job_id}/result", timeout=30
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - normalize all result-download failures
         _cleanup_job(transcriber_url, job_id)
         return logs, f"Download failed for {filename}: {e}"
 
@@ -301,7 +304,7 @@ def transcribe_file(
 
     try:
         result_resp.raise_for_status()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - normalize all result HTTP failures
         _cleanup_job(transcriber_url, job_id)
         return logs, f"Download failed for {filename}: {e}"
 
@@ -330,7 +333,7 @@ def transcribe_file(
             info_resp.raise_for_status()
             files_info = info_resp.json().get("files", [])
             ext = "." + files_info[0]["format"] if files_info else f".{output_format}"
-        except Exception:
+        except Exception:  # noqa: BLE001 - optional metadata is best-effort
             ext = f".{output_format}"
 
         out_path = stem + ext
@@ -349,5 +352,5 @@ def _cleanup_job(transcriber_url: str, job_id: str):
     """Best-effort cleanup of a remote job."""
     try:
         requests.delete(f"{transcriber_url}/jobs/{job_id}", timeout=5)
-    except Exception:
-        pass
+    except Exception:  # cleanup is deliberately best-effort
+        logger.debug("Could not clean up transcriber job %s", job_id, exc_info=True)

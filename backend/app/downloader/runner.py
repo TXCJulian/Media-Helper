@@ -291,13 +291,13 @@ def run_job(
             title = str(
                 entry.get("title") or _display_name(path) or f"Item {index + 1}"
             )
-            item_fields: dict[str, Any] = dict(
-                title=title,
-                path=path,
-                size=_file_size(path),
-                progress=100.0,
-                stage="done",
-            )
+            item_fields: dict[str, Any] = {
+                "title": title,
+                "path": path,
+                "size": _file_size(path),
+                "progress": 100.0,
+                "stage": "done",
+            }
             fetched = (
                 os.path.realpath(path) in downloaded_paths
                 or _output_key(path) in downloaded_outputs
@@ -332,7 +332,7 @@ def run_job(
         _drop_vanished_items(store, job.id)
         store.set_job_stage(job.id, "cancelled", "Cancelled by user")
     except Exception as exc:
-        logger.error("Download job %s failed: %s", job.id, exc, exc_info=True)
+        logger.exception("Download job %s failed", job.id)
         _drop_vanished_items(store, job.id)
         store.set_job_stage(job.id, "error", _friendly_error(exc))
 
@@ -426,13 +426,13 @@ def _make_hook(
                 return
             assert_within_allowed_roots(path)
             index = allocator.for_path(path)
-            fields: dict[str, Any] = dict(
-                title=_display_name(path),
-                path=path,
-                size=_file_size(path),
-                progress=100.0,
-                stage="done",
-            )
+            fields: dict[str, Any] = {
+                "title": _display_name(path),
+                "path": path,
+                "size": _file_size(path),
+                "progress": 100.0,
+                "stage": "done",
+            }
             if track_pre_existing and not (
                 os.path.realpath(path) in downloaded_paths
                 or _output_key(path) in downloaded_outputs

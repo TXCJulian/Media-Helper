@@ -18,9 +18,9 @@ A media management tool for renaming TV shows, music files, transcribing lyrics,
 | --- | --- |
 | ![Episode Panel](docs/screenshots/episode-panel.png) | ![Music Panel](docs/screenshots/music-panel.png) |
 
-| Lyrics Transcriber | Downloader |
+| Lyric Transcriber | Downloader |
 | --- | --- |
-| ![Lyrics Panel](docs/screenshots/lyrics-panel.png) | ![Downloader Panel](docs/screenshots/downloader-panel.png) |
+| ![Lyric Panel](docs/screenshots/lyrics-panel.png) | ![Downloader Panel](docs/screenshots/downloader-panel.png) |
 
 | Media Cutter (Server) | Media Cutter (Upload) |
 | --- | --- |
@@ -46,7 +46,7 @@ Media-Helper is a dockerized tool with five modules:
 
 1. **Episode Renamer** - Renames TV show episodes using TMDB metadata
 2. **Music Renamer** - Renames music files based on ID3/audio tags
-3. **Lyrics Transcriber** - Transcribes lyrics from audio files using AI (HDemucs + Whisper + Genius)
+3. **Lyric Transcriber** - Transcribes lyrics from audio files using AI (HDemucs + Whisper + Genius)
 4. **Media Cutter** - Trim and cut audio/video files with waveform preview and per-track codec control
 5. **Downloader** - Download media via yt-dlp with codec/format/quality selection, playlist support, and cookie authentication
 
@@ -239,7 +239,7 @@ Edit the `docker-compose.yml` and adjust the following values:
 ```yaml
 environment:
   - TMDB_API_KEY=YOUR_TMDB_API_KEY_HERE
-  - ENABLED_FEATURES=episodes,music,lyrics,cutter,download  # Enable modules
+  - ENABLED_FEATURES=episodes,music,lyrics,cutter,download,encoder  # Enable modules
 volumes:
   - /path/to/your/media:/media:rw
 ```
@@ -273,8 +273,8 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `TMDB_API_KEY` | TMDB API key (**required**) | - |
 | `VALID_VIDEO_EXT` | Video file extensions (CSV) | `.mp4,.mkv,.mov,.avi` |
 | `VALID_MUSIC_EXT` | Music file extensions (CSV) | `.flac,.wav,.mp3` |
-| `TRANSCRIBER_URL` | Lyrics transcriber service URL | `http://lyric-transcriber:3334` |
-| `ENABLED_FEATURES` | Active modules (CSV) | `episodes,music,cutter,download` (+ `lyrics` when `TRANSCRIBER_URL` is set) |
+| `TRANSCRIBER_URL` | Lyric transcriber service URL | `http://lyric-transcriber:3334` |
+| `ENABLED_FEATURES` | Active modules (CSV): `episodes,music,lyrics,cutter,download,encoder` | `episodes,music,cutter,download` (+ `lyrics` when `TRANSCRIBER_URL` is set) |
 | `ALLOWED_ORIGINS` | CORS allowed origins | `http://localhost:3333` |
 | `VALID_CUTTER_EXT` | Cutter file extensions (CSV) | `.mp4,.mkv,.mov,.avi,.webm,.mp3,.flac,.m4a,.wav,.aac,.ac3,.dts,.opus,.ogg,.aiff` |
 | `CUTTER_JOBS_DIR` | Directory for cutter job data | `/data/cutter-jobs` |
@@ -286,6 +286,14 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `DOWNLOADER_WORKERS` | Number of concurrent download workers | `3` |
 | `DOWNLOADER_JOB_TTL` | Download job history retention in seconds | `604800` (7 days) |
 | `YT_DLP_COOKIES` | Path to cookies.txt for yt-dlp (optional) | `$DOWNLOADER_DATA_DIR/cookies.txt` |
+| `ENCODER_URL` | URL of the remote `HandBrake_Video-Encoder` service (**required** for the `encoder` feature) | `http://video-encoder:3335` |
+| `ENCODER_WATCH_PATHS` | Folders to watch for new video files (CSV, in-container paths) | *(empty — watcher stays off)* |
+| `ENCODER_MODE` | `review` (queue for approval) or `auto` (encode unattended) | `review` |
+| `ENCODER_ORIGINAL_TTL` | Seconds to retain the original after a successful encode before purging it (`0` deletes immediately) | `604800` (7 days) |
+| `ENCODER_SETTLE_SECONDS` | Seconds a watched file's size must be stable before it is probed | `30` |
+| `ENCODER_JOB_TTL` | Encode job history retention in seconds | `604800` (7 days) |
+| `ENCODER_DATA_DIR` | Directory for the encoder's SQLite job store and retained-originals holding area | `/data/encoder` |
+| `ENCODER_DB` | Path to the SQLite job store | `$ENCODER_DATA_DIR/encoder.db` |
 | `HWACCEL` | Cutter hardware acceleration mode (`off` disables; otherwise auto-detect) | auto-detect |
 | `VAAPI_DEVICE` | VAAPI render node path (used for VAAPI backend) | `/dev/dri/renderD128` |
 | `AUTH_USERNAME` | Login username (optional - auth disabled if unset) | - |
@@ -293,6 +301,12 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `SECRET_KEY` | Session signing key (optional - auto-generated and persisted if unset) | auto-generated |
 | `PUID` | User ID the container process runs as | `1000` |
 | `PGID` | Group ID the container process runs as | `1000` |
+
+The `encoder` feature requires the separate `HandBrake_Video-Encoder` service to be deployed and reachable at `ENCODER_URL`. Both this renamer and the encoder service must mount the media library at identical in-container paths, since the renamer sends the encoder in-container source paths and never transfers file contents itself.
+
+`ENCODER_WATCH_PATHS` seeds the watch-folder list only on the encoder's first run. After that first seed, changes saved from **Auto Encoder → Watch Folders** are persisted in the encoder SQLite database and restored across restarts; later environment-variable changes do not overwrite them. Saving an empty list intentionally pauses the watcher. Every watch folder must already exist within one of the configured `BASE_PATHS`. Mount `ENCODER_DATA_DIR` (default `/data/encoder`) as a persistent volume if the saved configuration and job history must also survive container replacement.
+
+The preset editor always loads the complete stored HandBrake preset leaf. For a new guided preset, the name is editable; an existing preset keeps its stored name. Guided edits update the encoder, speed, format, and quality fields while preserving advanced JSON keys that are not shown in the guided form. When the encoder health endpoint reports capabilities, guided creation can start from those capabilities even before a preset is imported; **New raw preset** remains available for complete HandBrake leaves with at least `PresetName`, `VideoEncoder`, `VideoPreset`, and `FileFormat`.
 
 ### Frontend Environment Variables
 
@@ -512,14 +526,20 @@ Media-Helper/
 │   │   ├── hwaccel.py                  # GPU encoder detection + ffmpeg arg mapping
 │   │   ├── get_dirs.py                 # Directory listing (cached)
 │   │   ├── fs_utils.py                 # Filesystem utilities (fsync)
-│   │   └── downloader/                 # Queue-backed yt-dlp downloads
-│   │       ├── routes.py               # FastAPI routes
-│   │       ├── store.py                # SQLite-backed job store
-│   │       ├── queue.py                # Worker pool + startup recovery
-│   │       ├── runner.py               # Per-job download/transcode orchestration
-│   │       ├── ydl.py                  # yt-dlp option building
-│   │       ├── transcode.py            # Cancellable ffmpeg re-encode stage
-│   │       └── events.py               # SSE event broadcaster
+│   │   ├── downloader/                 # Queue-backed yt-dlp downloads
+│   │   │   ├── routes.py               # FastAPI routes
+│   │   │   ├── store.py                # SQLite-backed job store
+│   │   │   ├── queue.py                # Worker pool + startup recovery
+│   │   │   ├── runner.py               # Per-job download/transcode orchestration
+│   │   │   ├── ydl.py                  # yt-dlp option building
+│   │   │   ├── transcode.py            # Cancellable ffmpeg re-encode stage
+│   │   │   └── events.py               # SSE event broadcaster
+│   │   └── encoder/                    # Watcher + remote HandBrake orchestration
+│   │       ├── routes.py               # Runtime config, presets, rules, and jobs API
+│   │       ├── runtime.py              # Persisted Watchdog lifecycle
+│   │       ├── store.py                # SQLite settings, presets, and job store
+│   │       ├── queue.py                # Encode queue + startup recovery
+│   │       └── events.py               # SSE job event broadcaster
 │   ├── tests/                          # pytest test suite (incl. hwaccel + audio-only transcode)
 │   ├── Dockerfile
 │   └── requirements.txt
@@ -533,6 +553,7 @@ Media-Helper/
 │   │   │   ├── LyricsPanel.tsx         # Lyrics transcription panel
 │   │   │   ├── CutterPanel.tsx         # Media cutting panel
 │   │   │   ├── DownloaderPanel.tsx     # Downloader panel
+│   │   │   ├── EncoderPanel.tsx        # Auto Encoder operator panel
 │   │   │   ├── downloader/             # Downloader sub-components
 │   │   │   │   ├── DownloadOptions.tsx
 │   │   │   │   └── DownloadJobCard.tsx
@@ -545,6 +566,10 @@ Media-Helper/
 │   │   │   │   ├── AudioTrackSelect.tsx
 │   │   │   │   ├── TrackModeSelect.tsx
 │   │   │   │   └── JobManager.tsx
+│   │   │   ├── encoder/                # Encoder settings, presets, and job cards
+│   │   │   │   ├── EncoderSettings.tsx
+│   │   │   │   ├── PresetEditor.tsx
+│   │   │   │   └── EncoderJobCard.tsx
 │   │   │   ├── PanelLayout.tsx         # Shared panel layout
 │   │   │   ├── LogPanel.tsx            # Output log display
 │   │   │   ├── ErrorBoundary.tsx
@@ -556,6 +581,8 @@ Media-Helper/
 │   │   ├── lib/
 │   │   │   ├── api.ts                  # API fetch utilities
 │   │   │   └── sse.ts                  # Server-Sent Events client
+│   │   ├── hooks/
+│   │   │   └── useEncoderStream.ts     # Live encoder job state
 │   │   └── __tests__/                  # Vitest test suite
 │   ├── public/fonts/                   # Self-hosted Geist + JetBrains Mono
 │   ├── nginx-app.conf                  # Nginx reverse proxy config
@@ -634,7 +661,7 @@ docker network inspect helper-network
 docker exec media-helper_frontend cat /etc/nginx/conf.d/default.conf | grep proxy_pass
 ```
 
-### Lyrics transcriber shows "Offline"
+### Lyric transcriber shows "Offline"
 
 1. Ensure the GPU service is running: `docker compose --profile gpu ps`
 2. Check the transcriber health: `curl http://localhost:3334/health`

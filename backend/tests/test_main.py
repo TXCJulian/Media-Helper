@@ -326,6 +326,327 @@ class TestDownloaderEndpoints:
                 assert all(not obs.is_alive() for obs in main_mod._observers)
 
 
+class TestEncoderLifespan:
+    def test_encoder_routes_absent_when_feature_disabled(self, tmp_path):
+        """The feature flag gates route registration, not just the handler --
+        mirrors test_download_routes_absent_when_feature_disabled."""
+        import importlib
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(tmp_path),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes",
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.encoder.routes as encoder_routes_mod
+            importlib.reload(encoder_routes_mod)
+            import app.main as main_mod
+            importlib.reload(main_mod)
+
+            with TestClient(main_mod.app) as c:
+                paths = c.get("/openapi.json").json()["paths"]
+                assert not any(p.startswith("/api/encoder") for p in paths)
+                assert c.get("/api/encoder/config").status_code == 404
+                # No store or worker pool was built either.
+                assert encoder_routes_mod._store is None
+                assert encoder_routes_mod._queue is None
+
+    def test_encoder_routes_present_when_feature_enabled(self, tmp_path):
+        """The counterpart of the above: the flag being on actually mounts
+        the routes, not just leaves them absent either way."""
+        import importlib
+
+        media = tmp_path / "media"
+        media.mkdir(parents=True)
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(media),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes,encoder",
+            "ENCODER_DATA_DIR": str(tmp_path / "enc-data"),
+            "ENCODER_DB": str(tmp_path / "enc-data" / "encoder.db"),
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.encoder.routes as encoder_routes_mod
+            importlib.reload(encoder_routes_mod)
+            import app.main as main_mod
+            importlib.reload(main_mod)
+
+            with TestClient(main_mod.app) as c:
+                paths = c.get("/openapi.json").json()["paths"]
+                assert any(p.startswith("/api/encoder") for p in paths)
+                assert c.get("/api/encoder/config").status_code == 200
+
+    def test_encoder_does_not_persist_an_invalid_default_watch_path(self, tmp_path):
+        """Environment defaults get the same BASE_PATHS boundary as PUT config."""
+        import importlib
+
+        media = tmp_path / "media"
+        media.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        encoder_db = tmp_path / "enc-data" / "encoder.db"
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(media),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes,encoder",
+            "ENCODER_DATA_DIR": str(tmp_path / "enc-data"),
+            "ENCODER_DB": str(encoder_db),
+            "ENCODER_WATCH_PATHS": str(outside),
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.encoder.routes as encoder_routes_mod
+            importlib.reload(encoder_routes_mod)
+            import app.main as main_mod
+            importlib.reload(main_mod)
+
+            with TestClient(main_mod.app) as c:
+                assert c.get("/health").status_code == 200
+
+            from app.encoder.store import EncoderStore
+
+            store = EncoderStore(str(encoder_db))
+            try:
+                assert store.get_setting("watch_paths", "missing") == "missing"
+            finally:
+                store.close()
+
+    def test_encoder_failing_to_start_does_not_kill_the_app(self, tmp_path):
+        """A failure that happens *after* the queue has already started its
+        dispatch worker thread must not leak that thread, must not take the
+        rest of the app down with it, and -- critically -- must not leave
+        the encoder routes handing back a fake success once the singletons
+        are dead.
+
+        Mirrors test_downloader_failing_to_start_does_not_kill_the_app for
+        the "app survives" half. Without the try/except around the encoder
+        startup block, the exception aborts the lifespan generator before
+        the `finally` that would stop the queue is ever entered, and
+        `TestClient(...)` itself would raise instead of the app coming up.
+
+        Round 2 of review added the second half: a first fix contained the
+        thread leak by stopping the queue, but left `get_queue()` free to
+        silently rebuild a fresh, never-started replacement -- so
+        `POST /jobs/{id}/approve` would report `200 {"stage": "queued"}` for
+        a job nobody would ever dispatch. `mark_startup_failed()` is what
+        closes that: this test asserts the route raises instead of quietly
+        "succeeding".
+        """
+        import importlib
+        import threading
+
+        media = tmp_path / "media"
+        media.mkdir(parents=True)
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir(parents=True)
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(tmp_path),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes,encoder",
+            "ENCODER_DATA_DIR": str(tmp_path / "enc-data"),
+            "ENCODER_DB": str(tmp_path / "enc-data" / "encoder.db"),
+            "ENCODER_WATCH_PATHS": str(watch_dir),
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.encoder.routes as encoder_routes_mod
+            importlib.reload(encoder_routes_mod)
+            import app.encoder.runtime as encoder_runtime_mod
+            import app.main as main_mod
+            importlib.reload(main_mod)
+
+            # EncoderRuntime constructs its watcher *after* encoder_queue.start(), so
+            # forcing the failure here (rather than earlier) proves the
+            # worker thread genuinely existed before the induced failure.
+            with patch.object(
+                encoder_runtime_mod, "EncoderWatcher",
+                side_effect=RuntimeError("boom"),
+            ):
+                with TestClient(main_mod.app) as c:
+                    # The app serves, and the untouched features still work.
+                    assert c.get("/health").status_code == 200
+                    assert c.get("/directories/tvshows").status_code == 200
+
+                    # The singletons were torn down, not left dangling.
+                    assert encoder_routes_mod._store is None
+                    assert encoder_routes_mod._queue is None
+
+                    # The caller does not get a quiet 200 -- approving (or
+                    # any other store/queue-backed route) fails loud instead
+                    # of silently accepting work nobody will ever process.
+                    response = c.post("/api/encoder/jobs/some-id/approve")
+                    assert response.status_code == 503
+                    assert response.json()["code"] == "encoder_configuration_unavailable"
+
+                # No leaked dispatch worker thread survives the failure.
+                assert not any(
+                    t.name == "encoder-dispatch" and t.is_alive()
+                    for t in threading.enumerate()
+                )
+
+    def test_sweep_orphans_is_wired_with_remote_job_ids_not_local_ids(self, tmp_path):
+        """`.hbenc-<id>` filenames carry the *encoder service's* job id
+        (swap.py's OUTPUT_PREFIX docstring), stored per row as
+        `remote_job_id` -- not `Job.id`, the renamer's own local uuid4. The
+        two namespaces never intersect: passing local ids here would make
+        every live partial look orphaned and delete it on every restart.
+
+        This drives the actual lifespan wiring (unlike swap.py's own unit
+        tests, which pass remote-shaped ids to `sweep_orphans` directly and
+        would never have caught main.py handing it the wrong set) -- a job
+        is seeded with deliberately different local/remote ids *before* the
+        app starts, and the id set the lifespan actually passes to
+        `sweep_orphans` is captured and asserted on.
+        """
+        import importlib
+
+        media = tmp_path / "media"
+        media.mkdir(parents=True)
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir(parents=True)
+        enc_data = tmp_path / "enc-data"
+        enc_db = enc_data / "encoder.db"
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(tmp_path),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes,encoder",
+            "ENCODER_DATA_DIR": str(enc_data),
+            "ENCODER_DB": str(enc_db),
+            "ENCODER_WATCH_PATHS": str(watch_dir),
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.encoder.routes as encoder_routes_mod
+            importlib.reload(encoder_routes_mod)
+            import app.encoder.store as encoder_store_mod
+
+            # Seed a job whose local id and remote id are deliberately
+            # different, in a non-terminal stage, before lifespan (and
+            # therefore the sweep) ever runs.
+            seed_store = encoder_store_mod.EncoderStore(str(enc_db))
+            job = seed_store.create_job(str(watch_dir / "Film.mkv"))
+            seed_store.set_remote_job(job.id, "remote-xyz")
+            seed_store.set_stage(job.id, "encoding")
+            seed_store.close()
+            assert job.id != "remote-xyz"
+
+            import app.encoder.swap as swap_mod
+            calls = []
+            original_sweep = swap_mod.sweep_orphans
+
+            def _spy(directory, active_job_ids):
+                calls.append(set(active_job_ids))
+                return original_sweep(directory, active_job_ids)
+
+            with patch.object(swap_mod, "sweep_orphans", side_effect=_spy):
+                import app.main as main_mod
+                importlib.reload(main_mod)
+                with TestClient(main_mod.app):
+                    pass
+
+            assert calls, "sweep_orphans was never called"
+            for active in calls:
+                assert active == {"remote-xyz"}
+                assert job.id not in active
+
+    def test_sweep_orphans_runs_before_queue_start_and_recover(self, tmp_path):
+        """Sweep before recovering: a crash mid-encode leaves partials no
+        live job owns. Sweeping before queue start/recover prevents racing
+        with reattach/resubmit."""
+        import importlib
+
+        media = tmp_path / "media"
+        media.mkdir(parents=True)
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir(parents=True)
+        enc_data = tmp_path / "enc-data"
+        enc_db = enc_data / "encoder.db"
+
+        with patch.dict(os.environ, {
+            "BASE_PATHS": str(tmp_path),
+            "TMDB_API_KEY": "test_key",
+            "AUTH_USERNAME": "",
+            "AUTH_PASSWORD": "",
+            "SECRET_KEY": "test-secret-key",
+            "ENABLED_FEATURES": "episodes,encoder",
+            "ENCODER_DATA_DIR": str(enc_data),
+            "ENCODER_DB": str(enc_db),
+            "ENCODER_WATCH_PATHS": str(watch_dir),
+        }):
+            import app.config as config_mod
+            importlib.reload(config_mod)
+            import app.auth as auth_mod
+            importlib.reload(auth_mod)
+            import app.encoder.queue as queue_mod
+            import app.encoder.routes as encoder_routes_mod
+            import app.encoder.swap as swap_mod
+            importlib.reload(encoder_routes_mod)
+
+            event_order = []
+
+            original_sweep = swap_mod.sweep_orphans
+            def _spy_sweep(*a, **k):
+                event_order.append("sweep_orphans")
+                return original_sweep(*a, **k)
+
+            original_start = queue_mod.EncodeQueue.start
+            def _spy_start(self, *a, **k):
+                event_order.append("queue_start")
+                return original_start(self, *a, **k)
+
+            original_recover = queue_mod.EncodeQueue.recover
+            def _spy_recover(self, *a, **k):
+                event_order.append("queue_recover")
+                return original_recover(self, *a, **k)
+
+            with patch.object(swap_mod, "sweep_orphans", side_effect=_spy_sweep), \
+                 patch.object(queue_mod.EncodeQueue, "start", side_effect=_spy_start, autospec=True), \
+                 patch.object(queue_mod.EncodeQueue, "recover", side_effect=_spy_recover, autospec=True):
+                import app.main as main_mod
+                importlib.reload(main_mod)
+                with TestClient(main_mod.app):
+                    pass
+
+            assert "sweep_orphans" in event_order
+            assert "queue_start" in event_order
+            assert "queue_recover" in event_order
+            sweep_idx = event_order.index("sweep_orphans")
+            start_idx = event_order.index("queue_start")
+            recover_idx = event_order.index("queue_recover")
+            assert sweep_idx < start_idx < recover_idx
+
+
 class TestCutterStreamValidation:
     def test_cutter_stream_rejects_invalid_audio_index(self, client, tmp_path, monkeypatch):
         import app.main as main_mod

@@ -3,7 +3,7 @@ import os
 import subprocess
 import tempfile
 import threading
-from typing import Callable
+from collections.abc import Callable
 
 from app.hwaccel import build_video_encode_args, get_hwaccel_input_args
 
@@ -128,6 +128,7 @@ def probe_duration(path: str) -> float:
             capture_output=True,
             text=True,
             timeout=30,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return 0.0

@@ -749,3 +749,67 @@ def test_create_job_includes_schema_version(tmp_path, monkeypatch):
 
     meta = cutter.load_job_metadata(job_id)
     assert meta["schema_version"] == 2
+
+
+def test_stop_process_handles_poll_exception_terminate():
+    class FailingPollProc:
+        def __init__(self):
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            raise OSError("poll failed")
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    proc = FailingPollProc()
+    cutter._stop_process(proc, kill=False)
+    assert proc.terminated is True
+    assert proc.killed is False
+
+
+def test_stop_process_handles_poll_exception_kill():
+    class FailingPollProc:
+        def __init__(self):
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            raise RuntimeError("poll failed")
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    proc = FailingPollProc()
+    cutter._stop_process(proc, kill=True)
+    assert proc.killed is True
+    assert proc.terminated is False
+
+
+def test_stop_process_skips_already_exited_process():
+    class ExitedProc:
+        def __init__(self):
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return 0
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    proc = ExitedProc()
+    cutter._stop_process(proc, kill=True)
+    assert proc.killed is False
+    assert proc.terminated is False
+

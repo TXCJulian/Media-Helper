@@ -306,7 +306,9 @@ async def download_events() -> StreamingResponse:
 
 
 @router.post("/download/cookies")
-async def upload_cookies(file: UploadFile = File(...)) -> dict[str, str]:
+async def upload_cookies(
+    file: UploadFile = File(...),  # noqa: B008
+) -> dict[str, str]:
     path = cookie_path()
     max_size = 1024 * 1024
     content = await file.read(max_size + 1)

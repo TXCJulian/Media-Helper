@@ -9,10 +9,11 @@ interface DirectorySelectProps {
   onRefresh: () => void
   isLoading: boolean
   disabled?: boolean
-  color?: 'blue' | 'indigo' | 'rose' | 'emerald' | 'cyan'
+  color?: 'blue' | 'indigo' | 'rose' | 'emerald' | 'cyan' | 'teal'
   showBaseLabel?: boolean
   /** When provided, shows a button that resets the selection back to "no directory". */
   onClear?: () => void
+  ariaLabel?: string
 }
 
 const focusClasses = {
@@ -23,6 +24,7 @@ const focusClasses = {
   emerald:
     'border-[var(--accent-4)] shadow-[0_0_0_3px_var(--accent-4-glow),0_0_20px_rgba(52,211,153,0.08)]',
   cyan: 'border-[var(--accent-6)] shadow-[0_0_0_3px_var(--accent-6-glow),0_0_20px_rgba(34,211,238,0.08)]',
+  teal: 'border-[var(--accent-5)] shadow-[0_0_0_3px_var(--accent-5-glow),0_0_20px_rgba(45,212,191,0.08)]',
 }
 
 const selectedTextClasses = {
@@ -31,6 +33,7 @@ const selectedTextClasses = {
   rose: 'text-[var(--accent-3)]',
   emerald: 'text-[var(--accent-4)]',
   cyan: 'text-[var(--accent-6)]',
+  teal: 'text-[var(--accent-5)]',
 }
 
 export default function DirectorySelect({
@@ -44,6 +47,7 @@ export default function DirectorySelect({
   color = 'blue',
   showBaseLabel,
   onClear,
+  ariaLabel,
 }: DirectorySelectProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [focusedIndex, setFocusedIndex] = useState(-1)
@@ -67,9 +71,8 @@ export default function DirectorySelect({
   useEffect(() => {
     if (!isOpen || focusedIndex < 0 || !listRef.current) return
     const items = listRef.current.children
-    if (items[focusedIndex]) {
-      ;(items[focusedIndex] as HTMLElement).scrollIntoView({ block: 'nearest' })
-    }
+    const el = items[focusedIndex] as HTMLElement | undefined
+    el?.scrollIntoView({ block: 'nearest' })
   }, [focusedIndex, isOpen])
 
   const findIndex = () => directories.findIndex((d) => d.path === value && d.base === base)
@@ -140,6 +143,8 @@ export default function DirectorySelect({
             type="button"
             aria-haspopup="listbox"
             aria-expanded={isOpen}
+            aria-label={ariaLabel}
+            value={value}
             onClick={() => {
               if (!disabled) {
                 setIsOpen(!isOpen)

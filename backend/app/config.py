@@ -1,6 +1,7 @@
 import logging
 import os
 import secrets
+
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "dependencies", ".env"))
@@ -76,7 +77,32 @@ DOWNLOADER_DB = os.getenv(
 DOWNLOADER_WORKERS = int(os.getenv("DOWNLOADER_WORKERS", "3"))
 DOWNLOADER_JOB_TTL = int(os.getenv("DOWNLOADER_JOB_TTL", "604800"))
 
-_VALID_FEATURES = {"episodes", "music", "lyrics", "cutter", "download"}
+# --- Auto-encoder ---
+# Mirrors TRANSCRIBER_URL: the encode service is remote and optional.
+ENCODER_URL = os.getenv("ENCODER_URL", "http://video-encoder:3335")
+ENCODER_WATCH_PATHS: list[str] = [
+    p.strip() for p in os.getenv("ENCODER_WATCH_PATHS", "").split(",") if p.strip()
+]
+# `auto` encodes on detection; `review` waits for confirmation. Anything else
+# falls back to review rather than raising: a typo in a compose file must not
+# silently upgrade the deployment to rewriting files unattended.
+_encoder_mode_raw = os.getenv("ENCODER_MODE", "review").strip().lower()
+ENCODER_MODE = (
+    _encoder_mode_raw if _encoder_mode_raw in {"auto", "review"} else "review"
+)
+if _encoder_mode_raw and ENCODER_MODE != _encoder_mode_raw:
+    logger.warning(
+        "Invalid ENCODER_MODE '%s', falling back to 'review'", _encoder_mode_raw
+    )
+# Seconds to keep the replaced original. 0 deletes it immediately, so one
+# variable covers both retention policies without a separate mode flag.
+ENCODER_ORIGINAL_TTL = int(os.getenv("ENCODER_ORIGINAL_TTL", "604800"))
+ENCODER_SETTLE_SECONDS = int(os.getenv("ENCODER_SETTLE_SECONDS", "30"))
+ENCODER_JOB_TTL = int(os.getenv("ENCODER_JOB_TTL", "604800"))
+ENCODER_DATA_DIR = os.getenv("ENCODER_DATA_DIR", "/data/encoder")
+ENCODER_DB = os.getenv("ENCODER_DB", os.path.join(ENCODER_DATA_DIR, "encoder.db"))
+
+_VALID_FEATURES = {"episodes", "music", "lyrics", "cutter", "download", "encoder"}
 _default_features = (
     "episodes,music,lyrics,cutter,download"
     if TRANSCRIBER_URL

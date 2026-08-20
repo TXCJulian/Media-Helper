@@ -3,8 +3,9 @@ import os
 import sqlite3
 import threading
 import uuid
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any
 
 STAGES = frozenset(
     {"queued", "downloading", "transcoding", "done", "cancelled", "error"}

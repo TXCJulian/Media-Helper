@@ -303,7 +303,7 @@ export default function LyricsPanel({
   )
 
   return (
-    <PanelLayout title="Lyrics Transcriber" onBack={onBack} rightElement={healthPill}>
+    <PanelLayout title="Lyric Transcriber" onBack={onBack} rightElement={healthPill}>
       <form onSubmit={handleSubmit}>
         <FormSection label="Search">
           <div className="flex gap-3">
@@ -489,7 +489,8 @@ export default function LyricsPanel({
                     color="rose"
                   />
                   <p className="mt-[0.35rem] text-[0.68rem] leading-snug text-[var(--text-tertiary)]">
-                    Fine-tuned gives the cleanest vocal isolation at similar VRAM cost, but runs slower. Low VRAM trades some quality for a lighter footprint.
+                    Fine-tuned gives the cleanest vocal isolation at similar VRAM cost, but runs
+                    slower. Low VRAM trades some quality for a lighter footprint.
                   </p>
                 </div>
 

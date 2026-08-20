@@ -1,101 +1,115 @@
-from fastapi import FastAPI, Query, Form, Request, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel
-from starlette.types import ASGIApp, Receive, Scope, Send
-from contextlib import asynccontextmanager
-from email.utils import formatdate
 import asyncio
 import json
+import logging
 import mimetypes
 import os
-import logging
 import queue
 import re
 import shutil
 import threading
+from contextlib import asynccontextmanager
+from email.utils import formatdate
 from urllib.parse import unquote
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
 
+from fastapi import FastAPI, Form, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel
+from starlette.types import ASGIApp, Receive, Scope, Send
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
+from app.auth import (
+    check_session,
+    clear_session_cookie,
+    create_session_cookie,
+    verify_login,
+)
 from app.config import (
-    BASE_PATHS,
+    ALLOWED_ORIGINS,
+    AUTH_ENABLED,
     BASE_PATH_LABELS,
-    resolve_base,
-    TVSHOW_FOLDER_NAME,
-    MUSIC_FOLDER_NAME,
-    VALID_MUSIC_EXT,
-    VALID_CUTTER_EXT,
+    BASE_PATHS,
     CUTTER_JOBS_DIR,
     CUTTER_MAX_DIRECT_REMUX_BYTES,
-    TRANSCRIBER_URL,
-    ALLOWED_ORIGINS,
     ENABLED_FEATURES,
     ENABLED_FEATURES_SET,
-    AUTH_ENABLED,
+    ENCODER_SETTLE_SECONDS,
+    ENCODER_WATCH_PATHS,
+    MUSIC_FOLDER_NAME,
+    TRANSCRIBER_URL,
+    TVSHOW_FOLDER_NAME,
+    VALID_CUTTER_EXT,
+    VALID_MUSIC_EXT,
+    VALID_VIDEO_EXT,
+    resolve_base,
 )
-from app.auth import (
-    verify_login,
-    create_session_cookie,
-    clear_session_cookie,
-    check_session,
+from app.cutter import (
+    cleanup_old_jobs,
+    create_job,
+    cut_file,
+    decode_file_id,
+    delete_job,
+    encode_file_id,
+    generate_thumbnail_strip,
+    generate_thumbnail_strip_cached,
+    generate_waveform,
+    get_audio_track_preview,
+    get_audio_transcode_status,
+    get_ffmpeg_info,
+    get_job_dir,
+    get_job_meta_lock,
+    get_preview_path_if_ready,
+    get_preview_status,
+    get_track_preview,
+    get_track_remux,
+    list_jobs,
+    load_job_metadata,
+    needs_transcoding,
+    probe_file,
+    save_job_metadata,
+    start_background_audio_transcode,
+    start_background_transcode,
+    wait_for_audio_transcode,
 )
-from app.rename_episodes import rename_episodes
-from app.rename_music import (
-    rename_music,
-    load_audio_file,
-    get_first_tag_value,
-    LYRICS_ACTIONS,
+from app.downloader.routes import (
+    get_store as get_downloader_store,
 )
-from app.get_dirs import (
-    _get_all_dirs_cached,
-    _get_music_dirs_cached,
-    _get_cutter_dirs_cached,
-)
-from app.transcribe_lyrics import (
-    check_transcriber_health,
-    get_music_files,
-    get_file_lyrics_status,
-    check_existing_lyrics,
-    transcribe_file,
-    VALID_WHISPER_MODELS,
-    DEFAULT_WHISPER_MODEL,
-    VALID_DEMUCS_MODELS,
-    DEFAULT_DEMUCS_MODEL,
+from app.downloader.routes import (
+    init_downloader,
+    shutdown_downloader,
 )
 from app.downloader.routes import (
     router as downloader_router,
-    init_downloader,
-    shutdown_downloader,
-    get_store as get_downloader_store,
 )
-from app.cutter import (
-    get_ffmpeg_info,
-    probe_file,
-    generate_waveform,
-    generate_thumbnail_strip,
-    generate_thumbnail_strip_cached,
-    needs_transcoding,
-    get_preview_path_if_ready,
-    get_preview_status,
-    start_background_transcode,
-    get_track_preview,
-    get_audio_track_preview,
-    get_track_remux,
-    cut_file,
-    encode_file_id,
-    decode_file_id,
-    create_job,
-    get_job_dir,
-    load_job_metadata,
-    save_job_metadata,
-    list_jobs,
-    delete_job,
-    cleanup_old_jobs,
-    get_job_meta_lock,
-    start_background_audio_transcode,
-    get_audio_transcode_status,
-    wait_for_audio_transcode,
+from app.encoder.routes import (
+    register_error_handlers as register_encoder_error_handlers,
+)
+from app.encoder.routes import (
+    router as encoder_router,
+)
+from app.get_dirs import (
+    _get_all_dirs_cached,
+    _get_cutter_dirs_cached,
+    _get_music_dirs_cached,
+)
+from app.rename_episodes import rename_episodes
+from app.rename_music import (
+    LYRICS_ACTIONS,
+    get_first_tag_value,
+    load_audio_file,
+    rename_music,
+)
+from app.transcribe_lyrics import (
+    DEFAULT_DEMUCS_MODEL,
+    DEFAULT_WHISPER_MODEL,
+    VALID_DEMUCS_MODELS,
+    VALID_WHISPER_MODELS,
+    check_existing_lyrics,
+    check_transcriber_health,
+    get_file_lyrics_status,
+    get_music_files,
+    transcribe_file,
 )
 
 logging.basicConfig(
@@ -173,6 +187,38 @@ async def _cleanup_downloader_jobs():
             logger.exception("Error during download job cleanup")
 
 
+async def _cleanup_encoder_jobs(encoder_queue, encoder_store):
+    """Periodically purge expired retained originals and encoder job history.
+
+    Retentions run first: `run_retentions()` is what actually reclaims disk
+    (purging a retained original once its TTL has elapsed), and
+    `purge_expired()` deletes job rows -- including, as of the fix for the
+    retained-original-leak finding, any original a deleted row was still
+    pointing at. Running retentions first means a job whose original TTL and
+    job TTL happen to land in the same sweep gets the "purge on schedule"
+    behaviour rather than the "purge as a side effect of row deletion"
+    fallback.
+    """
+    from app.config import ENCODER_JOB_TTL
+
+    while True:
+        await asyncio.sleep(600)  # every 10 minutes
+        try:
+            encoder_queue.run_retentions()
+        except Exception:
+            logger.exception("Error during encoder retention purge")
+        try:
+            deleted_ids = encoder_store.purge_expired_ids(ENCODER_JOB_TTL)
+            if deleted_ids:
+                from app.encoder import routes as encoder_routes
+
+                events = encoder_routes.get_events()
+                for job_id in deleted_ids:
+                    events.publish({"type": "deleted", "job_id": job_id})
+        except Exception:
+            logger.exception("Error during encoder job cleanup")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan with startup and shutdown events."""
@@ -245,6 +291,90 @@ async def lifespan(app: FastAPI):
             downloader_started = True
             downloader_cleanup_task = asyncio.create_task(_cleanup_downloader_jobs())
 
+    # Start the encoder's queue and watcher only if the encoder feature is
+    # enabled. The panel and routes stay dark without it (see the
+    # conditional include_router below); this starts the background work
+    # that backs those routes.
+    encoder_runtime = None
+    encoder_queue = None
+    encoder_cleanup_task = None
+    if "encoder" in ENABLED_FEATURES_SET:
+        from app.encoder import routes as encoder_routes
+        from app.encoder.runtime import EncoderRuntime
+        from app.encoder.swap import sweep_orphans
+
+        try:
+            encoder_store = encoder_routes.get_store()
+            encoder_queue = encoder_routes.get_queue()
+            # Sweep before recovering: a crash mid-encode leaves partials no
+            # live job owns, and they are invisible to the user because the
+            # name is dotted.
+            #
+            # `.hbenc-<id>` filenames carry the *encoder service's* job id
+            # (swap.py's OUTPUT_PREFIX docstring), stored on each row as
+            # `remote_job_id` -- not `j.id`, which is this renamer's own
+            # local uuid4. The two namespaces never intersect, so passing
+            # `j.id` here would make every live partial look orphaned and
+            # delete it on every restart, wiping out in-progress GPU work.
+            encoder_runtime = EncoderRuntime(
+                encoder_store,
+                encoder_queue,
+                default_paths=ENCODER_WATCH_PATHS,
+                settle_seconds=ENCODER_SETTLE_SECONDS,
+                valid_extensions=VALID_VIDEO_EXT,
+                validate_paths=encoder_routes._validate_watch_paths,
+            )
+            active = {
+                j.remote_job_id for j in encoder_store.list_jobs() if j.remote_job_id
+            }
+            for watch_path in encoder_runtime.watch_paths:
+                sweep_orphans(watch_path, active)
+            encoder_queue.start()
+            encoder_queue.recover()
+            encoder_runtime.start()
+            encoder_routes.register_runtime(encoder_runtime)
+            # Mirrors the downloader's cleanup task: without it, nothing ever
+            # calls run_retentions() or purge_expired() in production, so
+            # ENCODER_ORIGINAL_TTL and ENCODER_JOB_TTL are documented but
+            # inert -- retained originals and job history accumulate
+            # unbounded.
+            encoder_cleanup_task = asyncio.create_task(
+                _cleanup_encoder_jobs(encoder_queue, encoder_store)
+            )
+        except Exception as exc:
+            # This whole block runs before `try: yield` below, so a failure
+            # here (a bad ENCODER_DB path, a permissions error in
+            # sweep_orphans) would otherwise abort the lifespan generator
+            # before the `finally` that stops the queue/watcher is ever
+            # entered -- leaking the dispatch worker thread `encoder_queue
+            # .start()` may have already spawned. Mirrors the downloader's
+            # containment immediately above: log it, tear down whatever
+            # partially started, and let the rest of the app come up
+            # normally rather than take every feature down with it.
+            logger.exception("Encoder failed to start; the feature will be unavailable")
+            if encoder_runtime is not None:
+                try:
+                    encoder_runtime.stop()
+                except Exception:
+                    logger.exception(
+                        "Encoder watcher cleanup after a failed start failed"
+                    )
+                encoder_runtime = None
+            if encoder_queue is not None:
+                try:
+                    encoder_queue.stop()
+                except Exception:
+                    logger.exception(
+                        "Encoder queue cleanup after a failed start failed"
+                    )
+                encoder_queue = None
+            # Discard the module singletons and make get_store()/get_queue()
+            # fail loud from here on. Without this, a route handler calling
+            # get_queue() would just lazily rebuild a fresh (never-started)
+            # queue -- approve() would then report "queued" for a job that
+            # is, silently and permanently, never going to be dispatched.
+            encoder_routes.mark_startup_failed(str(exc))
+
     try:
         yield
     finally:
@@ -256,6 +386,19 @@ async def lifespan(app: FastAPI):
             downloader_cleanup_task.cancel()
         if downloader_started:
             shutdown_downloader()
+        if "encoder" in ENABLED_FEATURES_SET:
+            if encoder_cleanup_task is not None:
+                encoder_cleanup_task.cancel()
+            if encoder_runtime is not None:
+                try:
+                    encoder_runtime.stop()
+                except Exception:
+                    logger.exception("Encoder runtime cleanup failed during shutdown")
+            if encoder_queue is not None:
+                try:
+                    encoder_queue.stop()
+                except Exception:
+                    logger.exception("Encoder queue cleanup failed during shutdown")
         _stop_observers()
 
 
@@ -274,6 +417,10 @@ app = FastAPI(lifespan=lifespan)
 # routes do not exist at all, which is stronger than a per-route feature check.
 if "download" in ENABLED_FEATURES_SET:
     app.include_router(downloader_router)
+
+if "encoder" in ENABLED_FEATURES_SET:
+    app.include_router(encoder_router)
+    register_encoder_error_handlers(app)
 
 _AUTH_EXEMPT_EXACT = {"/health", "/openapi.json"}
 _AUTH_EXEMPT_PREFIXES = ("/auth/", "/docs", "/redoc")
@@ -744,7 +891,7 @@ def start_transcription(
             def progress_cb(msg):
                 msg_queue.put(("progress", msg))
 
-            logs, error = transcribe_file(
+            _logs, error = transcribe_file(
                 filepath=filepath,
                 transcriber_url=TRANSCRIBER_URL,
                 output_format=effective_format,
@@ -1333,7 +1480,9 @@ async def cutter_upload(request: Request):
 
     try:
         bytes_written = 0
-        with open(dest, "wb") as f:
+        with open(  # noqa: ASYNC230 - streamed upload is bounded per chunk
+            dest, "wb"
+        ) as f:
             async for chunk in request.stream():
                 if not chunk:
                     continue
@@ -1348,7 +1497,9 @@ async def cutter_upload(request: Request):
     except HTTPException:
         delete_job(job_id)
         raise
-    except Exception as e:
+    except (
+        Exception  # noqa: BLE001 - convert all upload failures to one API envelope
+    ) as e:
         delete_job(job_id)
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
 
@@ -1642,8 +1793,8 @@ def cutter_cut(
     try:
         audio_tracks_parsed = json.loads(audio_tracks_json)
         if not isinstance(audio_tracks_parsed, list):
-            raise ValueError("audio_tracks must be a JSON array")
-    except (json.JSONDecodeError, ValueError) as exc:
+            raise TypeError("audio_tracks must be a JSON array")
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"Invalid audio_tracks: {exc}")
 
     valid_modes = {"passthru", "reencode", "remove"}

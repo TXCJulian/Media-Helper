@@ -2,13 +2,13 @@ import os
 from functools import lru_cache
 
 from app.config import (
-    BASE_PATHS,
     BASE_PATH_LABELS,
-    TVSHOW_FOLDER_NAME,
+    BASE_PATHS,
     MUSIC_FOLDER_NAME,
-    VALID_VIDEO_EXT,
-    VALID_MUSIC_EXT,
+    TVSHOW_FOLDER_NAME,
     VALID_CUTTER_EXT,
+    VALID_MUSIC_EXT,
+    VALID_VIDEO_EXT,
 )
 
 # Reverse map: full path -> label
