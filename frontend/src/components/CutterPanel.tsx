@@ -200,7 +200,7 @@ export default function CutterPanel({
 
   // ── Fetch directories with optional search filter ──────────
   const fetchDirs = useCallback(
-    async (searchText: string) => {
+    async (searchText: string, preserveSelection = false) => {
       const requestId = ++directoryRequest.current
       setIsLoadingDirs(true)
       onError('')
@@ -211,6 +211,7 @@ export default function CutterPanel({
         const dirs = data.directories ?? []
         if (requestId !== directoryRequest.current) return
         setPersisted((prev) => {
+          if (preserveSelection) return { directories: dirs }
           const stillPresent = dirs.some(
             (d) => d.path === prev.form.directory && d.base === prev.form.base,
           )
@@ -235,7 +236,7 @@ export default function CutterPanel({
     [onError, setPersisted],
   )
 
-  useDirectoryAutoRefresh(() => fetchDirs(search))
+  useDirectoryAutoRefresh(() => fetchDirs(debouncedSearch, true))
 
   // Only fetch on mount if directories are empty (first visit)
   const initialFetchDone = useRef(directories.length > 0)

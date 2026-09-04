@@ -49,7 +49,7 @@ export default function EpisodePanel({
   const debouncedSeason = useDebounce(form.season, 500)
 
   const fetchDirs = useCallback(
-    async (series: string, season: number) => {
+    async (series: string, season: number, preserveSelection = false) => {
       const requestId = ++directoryRequest.current
       setIsLoadingDirs(true)
       onError('')
@@ -61,14 +61,16 @@ export default function EpisodePanel({
         const dirs = data.directories ?? []
         if (requestId !== directoryRequest.current) return
         setDirectories(dirs)
-        setForm((prev) => {
-          const stillPresent = dirs.some((d) => d.path === prev.directory && d.base === prev.base)
-          return {
-            ...prev,
-            directory: dirs.length > 0 ? (stillPresent ? prev.directory : dirs[0]!.path) : '',
-            base: dirs.length > 0 ? (stillPresent ? prev.base : dirs[0]!.base) : '',
-          }
-        })
+        if (!preserveSelection) {
+          setForm((prev) => {
+            const stillPresent = dirs.some((d) => d.path === prev.directory && d.base === prev.base)
+            return {
+              ...prev,
+              directory: dirs.length > 0 ? (stillPresent ? prev.directory : dirs[0]!.path) : '',
+              base: dirs.length > 0 ? (stillPresent ? prev.base : dirs[0]!.base) : '',
+            }
+          })
+        }
       } catch (err) {
         if (requestId === directoryRequest.current) {
           onError(`Error loading directories: ${err instanceof Error ? err.message : String(err)}`)
@@ -80,7 +82,7 @@ export default function EpisodePanel({
     [onError],
   )
 
-  useDirectoryAutoRefresh(() => fetchDirs(form.series, form.season))
+  useDirectoryAutoRefresh(() => fetchDirs(debouncedSeries, debouncedSeason, true))
 
   useEffect(() => {
     void fetchDirs(debouncedSeries, debouncedSeason)

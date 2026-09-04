@@ -47,7 +47,7 @@ export default function MusicPanel({
   const debouncedAlbum = useDebounce(form.album, 500)
 
   const fetchDirs = useCallback(
-    async (artist: string, album: string) => {
+    async (artist: string, album: string, preserveSelection = false) => {
       const requestId = ++directoryRequest.current
       setIsLoadingDirs(true)
       onError('')
@@ -59,14 +59,16 @@ export default function MusicPanel({
         const dirs = data.directories ?? []
         if (requestId !== directoryRequest.current) return
         setDirectories(dirs)
-        setForm((prev) => {
-          const stillPresent = dirs.some((d) => d.path === prev.directory && d.base === prev.base)
-          return {
-            ...prev,
-            directory: dirs.length > 0 ? (stillPresent ? prev.directory : dirs[0]!.path) : '',
-            base: dirs.length > 0 ? (stillPresent ? prev.base : dirs[0]!.base) : '',
-          }
-        })
+        if (!preserveSelection) {
+          setForm((prev) => {
+            const stillPresent = dirs.some((d) => d.path === prev.directory && d.base === prev.base)
+            return {
+              ...prev,
+              directory: dirs.length > 0 ? (stillPresent ? prev.directory : dirs[0]!.path) : '',
+              base: dirs.length > 0 ? (stillPresent ? prev.base : dirs[0]!.base) : '',
+            }
+          })
+        }
       } catch (err) {
         if (requestId === directoryRequest.current) {
           onError(`Error loading directories: ${err instanceof Error ? err.message : String(err)}`)
@@ -78,7 +80,7 @@ export default function MusicPanel({
     [onError],
   )
 
-  useDirectoryAutoRefresh(() => fetchDirs(form.artist, form.album))
+  useDirectoryAutoRefresh(() => fetchDirs(debouncedArtist, debouncedAlbum, true))
 
   useEffect(() => {
     void fetchDirs(debouncedArtist, debouncedAlbum)

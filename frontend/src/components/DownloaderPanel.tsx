@@ -140,31 +140,36 @@ export default function DownloaderPanel({
    * once the search is cleared, the current selection — including "none" —
    * is left alone.
    */
-  const refreshDirectories = useCallback(async (searchText?: string, clearCache = false) => {
-    const requestId = ++directoryRequest.current
-    setIsRefreshingDirs(true)
-    try {
-      if (clearCache) await postRefresh()
-      const dirs = (await fetchDownloadDirectories(searchText)).directories
-      if (requestId !== directoryRequest.current) return
-      setDirectories(dirs)
-      if (searchText) {
-        setForm((prev) => {
-          const stillPresent = dirs.some((d) => d.path === prev.output_dir && d.base === prev.base)
-          if (stillPresent) return prev
-          return {
-            ...prev,
-            output_dir: dirs.length > 0 ? dirs[0]!.path : '',
-            base: dirs.length > 0 ? dirs[0]!.base : '',
-          }
-        })
+  const refreshDirectories = useCallback(
+    async (searchText?: string, clearCache = false, preserveSelection = false) => {
+      const requestId = ++directoryRequest.current
+      setIsRefreshingDirs(true)
+      try {
+        if (clearCache) await postRefresh()
+        const dirs = (await fetchDownloadDirectories(searchText)).directories
+        if (requestId !== directoryRequest.current) return
+        setDirectories(dirs)
+        if (searchText && !preserveSelection) {
+          setForm((prev) => {
+            const stillPresent = dirs.some(
+              (d) => d.path === prev.output_dir && d.base === prev.base,
+            )
+            if (stillPresent) return prev
+            return {
+              ...prev,
+              output_dir: dirs.length > 0 ? dirs[0]!.path : '',
+              base: dirs.length > 0 ? dirs[0]!.base : '',
+            }
+          })
+        }
+      } finally {
+        if (requestId === directoryRequest.current) setIsRefreshingDirs(false)
       }
-    } finally {
-      if (requestId === directoryRequest.current) setIsRefreshingDirs(false)
-    }
-  }, [])
+    },
+    [],
+  )
 
-  useDirectoryAutoRefresh(() => refreshDirectories(search))
+  useDirectoryAutoRefresh(() => refreshDirectories(debouncedSearch, false, true))
 
   useEffect(() => {
     void refreshStatus().catch(() => {})
