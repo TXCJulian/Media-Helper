@@ -57,3 +57,19 @@ it('clears the backend cache before manually reloading downloader directories', 
 
   await waitFor(() => expect(order).toEqual(['clear', 'fetch']))
 })
+
+it('reports a manual refresh failure without fetching or leaving the control loading', async () => {
+  const onError = vi.fn()
+  vi.clearAllMocks()
+  vi.mocked(api.postRefresh).mockRejectedValueOnce(new Error('cache clear failed'))
+  vi.mocked(api.fetchDownloadDirectories).mockResolvedValue({ directories: [] })
+
+  render(createElement(DownloaderPanel, { onError, onBack: vi.fn(), error: '' }))
+  await waitFor(() => expect(api.fetchDownloadDirectories).toHaveBeenCalledTimes(1))
+
+  fireEvent.click(screen.getByTitle('Refresh'))
+
+  await waitFor(() => expect(onError).toHaveBeenCalledWith('cache clear failed'))
+  expect(api.fetchDownloadDirectories).toHaveBeenCalledTimes(1)
+  expect((screen.getByTitle('Refresh') as HTMLButtonElement).disabled).toBe(false)
+})
