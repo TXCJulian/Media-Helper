@@ -116,12 +116,6 @@ export async function fetchConfig(): Promise<{ features: string[]; base_paths: s
   return fetchJson('/config')
 }
 
-export async function fetchMediaDirectories(
-  search?: string,
-): Promise<import('@/types').DirectoriesResponse> {
-  return fetchJson('/directories/media', search ? { search } : undefined)
-}
-
 export async function fetchDownloadDirectories(
   search?: string,
 ): Promise<import('@/types').DirectoriesResponse> {

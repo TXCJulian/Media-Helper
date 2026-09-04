@@ -11,13 +11,11 @@ vi.mock('@/lib/sse', () => ({
 const {
   fetchJson,
   fetchDownloadDirectories,
-  fetchMediaDirectories,
   fetchPreviewStatus,
   postCookies,
   postForm,
   postRefresh,
-} =
-  await import('@/lib/api')
+} = await import('@/lib/api')
 
 function jsonResponse(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -94,18 +92,6 @@ describe('directory APIs', () => {
       new Response('', { status: 500, statusText: 'Internal Server Error' }),
     )
     await expect(postRefresh()).rejects.toThrow()
-  })
-
-  it('fetches media directories from the shared media endpoint', async () => {
-    mockFetch.mockResolvedValueOnce(
-      jsonResponse({ directories: [{ path: 'Movies', base: 'media' }] }),
-    )
-
-    const result = await fetchMediaDirectories()
-
-    expect(result.directories).toEqual([{ path: 'Movies', base: 'media' }])
-    const calledUrl = mockFetch.mock.calls[0]![0] as URL
-    expect(calledUrl.toString()).toContain('/directories/media')
   })
 
   it('fetches unfiltered downloader destinations from the download endpoint', async () => {

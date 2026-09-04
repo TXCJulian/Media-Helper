@@ -126,13 +126,6 @@ def require_feature(name: str):
         raise HTTPException(status_code=404, detail=f"Feature '{name}' is not enabled")
 
 
-def require_any_feature(*names: str):
-    """Raise 404 if none of the named features are enabled."""
-    if not any(name in ENABLED_FEATURES_SET for name in names):
-        joined = ", ".join(names)
-        raise HTTPException(status_code=404, detail=f"Requires one of: {joined}")
-
-
 def validate_path(base: str, user_input: str) -> str:
     """Validate that resolved path stays within base directory."""
     resolved = os.path.realpath(os.path.join(base, user_input))
@@ -142,27 +135,28 @@ def validate_path(base: str, user_input: str) -> str:
     return resolved
 
 
+def _clear_directory_caches() -> None:
+    for cache in (
+        _get_all_dirs_cached,
+        _get_music_dirs_cached,
+        _get_cutter_dirs_cached,
+        _get_download_dirs_cached,
+    ):
+        cache.cache_clear()
+
+
 class DirChangeHandler(FileSystemEventHandler):
     def on_created(self, event):
         if event.is_directory:
-            _get_all_dirs_cached.cache_clear()
-            _get_music_dirs_cached.cache_clear()
-            _get_cutter_dirs_cached.cache_clear()
-            _get_download_dirs_cached.cache_clear()
+            _clear_directory_caches()
 
     def on_deleted(self, event):
         if event.is_directory:
-            _get_all_dirs_cached.cache_clear()
-            _get_music_dirs_cached.cache_clear()
-            _get_cutter_dirs_cached.cache_clear()
-            _get_download_dirs_cached.cache_clear()
+            _clear_directory_caches()
 
     def on_moved(self, event):
         if event.is_directory:
-            _get_all_dirs_cached.cache_clear()
-            _get_music_dirs_cached.cache_clear()
-            _get_cutter_dirs_cached.cache_clear()
-            _get_download_dirs_cached.cache_clear()
+            _clear_directory_caches()
 
 
 # Global observer instances
@@ -580,10 +574,7 @@ def list_music_directories(
 
 @app.post("/directories/refresh")
 def refresh_directories():
-    _get_all_dirs_cached.cache_clear()
-    _get_music_dirs_cached.cache_clear()
-    _get_cutter_dirs_cached.cache_clear()
-    _get_download_dirs_cached.cache_clear()
+    _clear_directory_caches()
     logger.info("Directory cache refreshed manually.")
     return {"status": "ok"}
 
