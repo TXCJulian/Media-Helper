@@ -11,8 +11,9 @@ import {
   deleteCookies,
   deleteDownloadJob,
   fetchDownloaderStatus,
-  fetchMediaDirectories,
+  fetchDownloadDirectories,
   postCookies,
+  postRefresh,
   startDownloadJob,
 } from '@/lib/api'
 import type { DirectoryEntry, DownloadForm, DownloaderStatus } from '@/types'
@@ -137,10 +138,11 @@ export default function DownloaderPanel({
    * once the search is cleared, the current selection — including "none" —
    * is left alone.
    */
-  const refreshDirectories = useCallback(async (searchText?: string) => {
+  const refreshDirectories = useCallback(async (searchText?: string, clearCache = false) => {
     setIsRefreshingDirs(true)
     try {
-      const dirs = (await fetchMediaDirectories(searchText)).directories
+      if (clearCache) await postRefresh()
+      const dirs = (await fetchDownloadDirectories(searchText)).directories
       setDirectories(dirs)
       if (searchText) {
         setForm((prev) => {
@@ -245,7 +247,11 @@ export default function DownloaderPanel({
           form={form}
           onChange={patchForm}
           directories={directories}
-          onRefreshDirectories={() => void refreshDirectories(search)}
+          onRefreshDirectories={() =>
+            void refreshDirectories(search, true).catch((err) =>
+              onError(err instanceof Error ? err.message : 'Failed to refresh directories'),
+            )
+          }
           isRefreshingDirectories={isRefreshingDirs}
           showBaseLabel={showBaseLabel}
           search={search}

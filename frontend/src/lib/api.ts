@@ -122,6 +122,12 @@ export async function fetchMediaDirectories(
   return fetchJson('/directories/media', search ? { search } : undefined)
 }
 
+export async function fetchDownloadDirectories(
+  search?: string,
+): Promise<import('@/types').DirectoriesResponse> {
+  return fetchJson('/directories/download', search ? { search } : undefined)
+}
+
 export function uploadFile(
   file: File,
   onProgress?: (pct: number) => void,
