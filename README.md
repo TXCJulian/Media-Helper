@@ -760,7 +760,7 @@ environment:
   - UMASK=002
 ```
 
-For a shared-group NAS with setgid media directories, `PGID=2000` and `UMASK=002` produce group-writable `0664` files and `0775` directories. The parent directory's setgid bit preserves group ownership.
+For a shared-group NAS with setgid media directories, newly created entries produce group-writable `0664` files and `0775` directories when applications request the conventional `0666`/`0777` modes with `PGID=2000` and `UMASK=002`. The parent directory's setgid bit preserves group ownership. Umask does not override explicitly requested modes or change existing files and directories.
 
 ### Umlauts displayed incorrectly
 
