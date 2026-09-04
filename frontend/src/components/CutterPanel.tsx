@@ -32,6 +32,7 @@ import {
   getBrowserCompatibilityReport,
 } from '@/lib/mediaCompatibility'
 import { useDebounce } from '@/hooks/useDebounce'
+import { useDirectoryAutoRefresh } from '@/hooks/useDirectoryAutoRefresh'
 import type {
   CutterForm,
   CutterFileInfo,
@@ -228,6 +229,10 @@ export default function CutterPanel({
     },
     [onError, setPersisted],
   )
+
+  useDirectoryAutoRefresh(() => {
+    void fetchDirs(search)
+  })
 
   // Only fetch on mount if directories are empty (first visit)
   const initialFetchDone = useRef(directories.length > 0)

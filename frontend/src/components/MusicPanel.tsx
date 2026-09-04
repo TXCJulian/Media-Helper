@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchJson, postForm, postRefresh } from '@/lib/api'
 import { useDebounce } from '@/hooks/useDebounce'
+import { useDirectoryAutoRefresh } from '@/hooks/useDirectoryAutoRefresh'
 import type { DirectoriesResponse, DirectoryEntry, MusicForm, RenameResponse } from '@/types'
 import PanelLayout from '@/components/PanelLayout'
 import LogPanel from '@/components/LogPanel'
@@ -71,6 +72,10 @@ export default function MusicPanel({
     },
     [onError],
   )
+
+  useDirectoryAutoRefresh(() => {
+    void fetchDirs(form.artist, form.album)
+  })
 
   useEffect(() => {
     void fetchDirs(debouncedArtist, debouncedAlbum)

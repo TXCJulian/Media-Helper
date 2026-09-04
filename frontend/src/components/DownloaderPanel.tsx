@@ -4,6 +4,7 @@ import DownloadJobCard from './downloader/DownloadJobCard'
 import DownloadOptions from './downloader/DownloadOptions'
 import FormSection from './ui/FormSection'
 import { useDebounce } from '@/hooks/useDebounce'
+import { useDirectoryAutoRefresh } from '@/hooks/useDirectoryAutoRefresh'
 import { useDownloadStream } from '@/hooks/useDownloadStream'
 import {
   cancelDownloadJob,
@@ -159,6 +160,10 @@ export default function DownloaderPanel({
       setIsRefreshingDirs(false)
     }
   }, [])
+
+  useDirectoryAutoRefresh(() => {
+    void refreshDirectories(search)
+  })
 
   useEffect(() => {
     void refreshStatus().catch(() => {})

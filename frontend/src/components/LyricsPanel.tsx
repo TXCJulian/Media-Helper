@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchJson, fetchTranscriberHealth, fetchMusicFiles, postRefresh } from '@/lib/api'
 import { connectSSE } from '@/lib/sse'
 import { useDebounce } from '@/hooks/useDebounce'
+import { useDirectoryAutoRefresh } from '@/hooks/useDirectoryAutoRefresh'
 import type {
   DirectoriesResponse,
   DirectoryEntry,
@@ -126,6 +127,10 @@ export default function LyricsPanel({
     },
     [onError],
   )
+
+  useDirectoryAutoRefresh(() => {
+    void fetchDirs(form.artist, form.album)
+  })
 
   useEffect(() => {
     void fetchDirs(debouncedArtist, debouncedAlbum)

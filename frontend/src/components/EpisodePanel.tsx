@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchJson, postForm, postRefresh } from '@/lib/api'
 import { useDebounce } from '@/hooks/useDebounce'
+import { useDirectoryAutoRefresh } from '@/hooks/useDirectoryAutoRefresh'
 import type { DirectoriesResponse, DirectoryEntry, EpisodeForm, RenameResponse } from '@/types'
 import PanelLayout from '@/components/PanelLayout'
 import LogPanel from '@/components/LogPanel'
@@ -73,6 +74,10 @@ export default function EpisodePanel({
     },
     [onError],
   )
+
+  useDirectoryAutoRefresh(() => {
+    void fetchDirs(form.series, form.season)
+  })
 
   useEffect(() => {
     void fetchDirs(debouncedSeries, debouncedSeason)
