@@ -327,6 +327,7 @@ docker compose --profile gpu up --build #Clone transcriber repo first
 | `SECRET_KEY` | Session signing key (optional - auto-generated and persisted if unset) | auto-generated |
 | `PUID` | User ID the container process runs as | `1000` |
 | `PGID` | Group ID the container process runs as | `1000` |
+| `UMASK` | File/directory creation mask applied before the backend starts | `022` |
 
 The `encoder` feature requires the separate `HandBrake_Video-Encoder` service to be deployed and reachable at `ENCODER_URL`. Both this renamer and the encoder service must mount the media library at identical in-container paths, since the renamer sends the encoder in-container source paths and never transfers file contents itself.
 
@@ -754,9 +755,12 @@ id -g   # e.g. 1001
 
 ```yaml
 environment:
-  - PUID=1001
-  - PGID=1001
+  - PUID=1000
+  - PGID=2000
+  - UMASK=002
 ```
+
+For a shared-group NAS with setgid media directories, `PGID=2000` and `UMASK=002` produce group-writable `0664` files and `0775` directories. The parent directory's setgid bit preserves group ownership.
 
 ### Umlauts displayed incorrectly
 
