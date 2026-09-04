@@ -149,6 +149,7 @@ More companion services following this pattern may be added as GPU-heavy feature
 - Retains the original file for a configurable TTL after a successful encode before purging it (`ENCODER_ORIGINAL_TTL`)
 - Live job cards via SSE with per-job approve, re-evaluate, cancel, and delete actions; a collapsible history section for completed/failed/cancelled/skipped jobs
 - Watch-folder list is persisted in the encoder's own database and survives container restarts and environment-variable changes
+- The Auto Encoder directory picker performs a fresh directory walk on each request and is not subject to the 15-second directory picker cache
 - GPU health indicator showing connected encoder vendor (NVENC/QSV/VCE/CPU)
 - **Requires the separate [HandBrake_Video-Encoder](https://github.com/TXCJulian/HandBrake_Video-Encoder) service, reachable at `ENCODER_URL`**
 
@@ -395,6 +396,10 @@ The application expects the following structure in your media directory:
 ```
 
 > **Note:** The Episode Renamer and Music Renamer only scan their respective subdirectories (`TV Shows/`, `Music/`). The Media Cutter scans the entire `BASE_PATHS` so it can access files in any subdirectory (Movies, TV Shows, Music, etc.).
+>
+> Directory results are cached for at most 15 seconds. Local filesystem events clear the cache immediately, while the TTL covers remote NFS changes that do not emit local watchdog events. The active panel reloads its list every 30 seconds, and its refresh button clears all directory caches immediately.
+>
+> The Downloader uses `/directories/download` and lists every non-`.trickplay` directory under `BASE_PATHS`, including empty directories and directories without recognized media files. Cutter discovery remains restricted to `VALID_CUTTER_EXT`.
 
 ## API Endpoints
 
@@ -404,13 +409,15 @@ The application expects the following structure in your media directory:
 | ------ | -------- | ----------- |
 | `GET` | `/config` | Returns enabled features |
 | `GET` | `/health` | Backend health check |
+| `GET` | `/directories/media` | List cutter directories containing files in `VALID_CUTTER_EXT` (query: `search`) |
+| `GET` | `/directories/download` | List all downloader destination directories, without extension filtering (query: `search`) |
+| `POST` | `/directories/refresh` | Immediately clear every directory cache |
 
 ### TV Shows Endpoints
 
 | Method | Endpoint | Description |
 | ------ | -------- | ----------- |
 | `GET` | `/directories/tvshows` | List TV show directories (query: `series`, `season`) |
-| `POST` | `/directories/refresh` | Force refresh directory cache |
 | `POST` | `/rename/episodes` | Rename episodes (form: `directory`, `series`, `season`, `language`, `dry_run`, `assign_seq`, `threshold`) |
 
 ### Music Endpoints
