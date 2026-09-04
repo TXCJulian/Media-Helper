@@ -91,6 +91,7 @@ from app.encoder.routes import (
 from app.get_dirs import (
     _get_all_dirs_cached,
     _get_cutter_dirs_cached,
+    _get_download_dirs_cached,
     _get_music_dirs_cached,
 )
 from app.rename_episodes import rename_episodes
@@ -147,18 +148,21 @@ class DirChangeHandler(FileSystemEventHandler):
             _get_all_dirs_cached.cache_clear()
             _get_music_dirs_cached.cache_clear()
             _get_cutter_dirs_cached.cache_clear()
+            _get_download_dirs_cached.cache_clear()
 
     def on_deleted(self, event):
         if event.is_directory:
             _get_all_dirs_cached.cache_clear()
             _get_music_dirs_cached.cache_clear()
             _get_cutter_dirs_cached.cache_clear()
+            _get_download_dirs_cached.cache_clear()
 
     def on_moved(self, event):
         if event.is_directory:
             _get_all_dirs_cached.cache_clear()
             _get_music_dirs_cached.cache_clear()
             _get_cutter_dirs_cached.cache_clear()
+            _get_download_dirs_cached.cache_clear()
 
 
 # Global observer instances
@@ -579,6 +583,7 @@ def refresh_directories():
     _get_all_dirs_cached.cache_clear()
     _get_music_dirs_cached.cache_clear()
     _get_cutter_dirs_cached.cache_clear()
+    _get_download_dirs_cached.cache_clear()
     logger.info("Directory cache refreshed manually.")
     return {"status": "ok"}
 
@@ -587,13 +592,28 @@ def refresh_directories():
 def list_media_directories(
     search: str | None = Query(None, description="Text filter", max_length=200),
 ):
-    require_any_feature("cutter", "download")
+    require_feature("cutter")
     all_dirs = _get_cutter_dirs_cached()
 
     filtered = all_dirs
     if search:
         search_lc = search.lower()
         filtered = [d for d in filtered if search_lc in d["path"].lower()]
+
+    return {"directories": filtered}
+
+
+@app.get("/directories/download")
+def list_download_directories(
+    search: str | None = Query(None, description="Text filter", max_length=200),
+):
+    require_feature("download")
+    all_dirs = _get_download_dirs_cached()
+
+    filtered = all_dirs
+    if search:
+        search_lc = search.lower()
+        filtered = [d for d in all_dirs if search_lc in d["path"].lower()]
 
     return {"directories": filtered}
 
