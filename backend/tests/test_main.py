@@ -27,6 +27,31 @@ class TestConfigEndpoint:
 
 
 class TestDirectoryEndpoints:
+    @pytest.mark.parametrize("event_method", ["on_created", "on_deleted", "on_moved"])
+    def test_directory_events_clear_every_cache(self, event_method, monkeypatch):
+        import app.main as main_mod
+
+        cleared: list[str] = []
+
+        class Cache:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def cache_clear(self) -> None:
+                cleared.append(self.name)
+
+        class DirectoryEvent:
+            is_directory = True
+
+        monkeypatch.setattr(main_mod, "_get_all_dirs_cached", Cache("tv"))
+        monkeypatch.setattr(main_mod, "_get_music_dirs_cached", Cache("music"))
+        monkeypatch.setattr(main_mod, "_get_cutter_dirs_cached", Cache("cutter"))
+        monkeypatch.setattr(main_mod, "_get_download_dirs_cached", Cache("download"))
+
+        getattr(main_mod.DirChangeHandler(), event_method)(DirectoryEvent())
+
+        assert cleared == ["tv", "music", "cutter", "download"]
+
     def test_list_tvshows_empty(self, client):
         resp = client.get("/directories/tvshows")
         assert resp.status_code == 200
@@ -149,6 +174,24 @@ class TestDirectoryEndpoints:
         monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"download"})
 
         assert client.get("/directories/media").status_code == 404
+
+    def test_cutter_directory_endpoint_uses_cutter_cache_and_filters(self, client, monkeypatch):
+        import app.main as main_mod
+
+        monkeypatch.setattr(main_mod, "ENABLED_FEATURES_SET", {"cutter"})
+        monkeypatch.setattr(
+            main_mod,
+            "_get_cutter_dirs_cached",
+            lambda: [
+                {"path": "Movies", "base": "media"},
+                {"path": "Music", "base": "media"},
+            ],
+        )
+
+        response = client.get("/directories/media", params={"search": "movie"})
+
+        assert response.status_code == 200
+        assert response.json()["directories"] == [{"path": "Movies", "base": "media"}]
 
 
 class TestInputValidation:
