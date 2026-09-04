@@ -97,6 +97,7 @@ export default function DownloaderPanel({
   const [form, setForm] = useState<DownloadForm>(() => ({ url: '', ...loadSettings() }))
   const [search, setSearch] = useState('')
   const [historyOpen, setHistoryOpen] = useState(false)
+  const directoryRequest = useRef(0)
 
   const urls = useMemo(() => parseUrls(form.url), [form.url])
   const debouncedSearch = useDebounce(search, 500)
@@ -140,10 +141,12 @@ export default function DownloaderPanel({
    * is left alone.
    */
   const refreshDirectories = useCallback(async (searchText?: string, clearCache = false) => {
+    const requestId = ++directoryRequest.current
     setIsRefreshingDirs(true)
     try {
       if (clearCache) await postRefresh()
       const dirs = (await fetchDownloadDirectories(searchText)).directories
+      if (requestId !== directoryRequest.current) return
       setDirectories(dirs)
       if (searchText) {
         setForm((prev) => {
@@ -157,13 +160,11 @@ export default function DownloaderPanel({
         })
       }
     } finally {
-      setIsRefreshingDirs(false)
+      if (requestId === directoryRequest.current) setIsRefreshingDirs(false)
     }
   }, [])
 
-  useDirectoryAutoRefresh(() => {
-    void refreshDirectories(search)
-  })
+  useDirectoryAutoRefresh(() => refreshDirectories(search))
 
   useEffect(() => {
     void refreshStatus().catch(() => {})

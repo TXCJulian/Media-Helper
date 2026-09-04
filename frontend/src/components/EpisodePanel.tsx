@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchJson, postForm, postRefresh } from '@/lib/api'
 import { useDebounce } from '@/hooks/useDebounce'
 import { useDirectoryAutoRefresh } from '@/hooks/useDirectoryAutoRefresh'
@@ -43,12 +43,14 @@ export default function EpisodePanel({
   const [isLoadingDirs, setIsLoadingDirs] = useState(false)
   const [isRenaming, setIsRenaming] = useState(false)
   const [touched, setTouched] = useState(false)
+  const directoryRequest = useRef(0)
 
   const debouncedSeries = useDebounce(form.series, 500)
   const debouncedSeason = useDebounce(form.season, 500)
 
   const fetchDirs = useCallback(
     async (series: string, season: number) => {
+      const requestId = ++directoryRequest.current
       setIsLoadingDirs(true)
       onError('')
       try {
@@ -57,6 +59,7 @@ export default function EpisodePanel({
         if (season) params.season = String(season)
         const data = await fetchJson<DirectoriesResponse>('/directories/tvshows', params)
         const dirs = data.directories ?? []
+        if (requestId !== directoryRequest.current) return
         setDirectories(dirs)
         setForm((prev) => {
           const stillPresent = dirs.some((d) => d.path === prev.directory && d.base === prev.base)
@@ -67,17 +70,17 @@ export default function EpisodePanel({
           }
         })
       } catch (err) {
-        onError(`Error loading directories: ${err instanceof Error ? err.message : String(err)}`)
+        if (requestId === directoryRequest.current) {
+          onError(`Error loading directories: ${err instanceof Error ? err.message : String(err)}`)
+        }
       } finally {
-        setIsLoadingDirs(false)
+        if (requestId === directoryRequest.current) setIsLoadingDirs(false)
       }
     },
     [onError],
   )
 
-  useDirectoryAutoRefresh(() => {
-    void fetchDirs(form.series, form.season)
-  })
+  useDirectoryAutoRefresh(() => fetchDirs(form.series, form.season))
 
   useEffect(() => {
     void fetchDirs(debouncedSeries, debouncedSeason)

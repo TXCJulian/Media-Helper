@@ -79,6 +79,7 @@ export default function LyricsPanel({
   const [musicFiles, setMusicFiles] = useState<MusicFileInfo[]>([])
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set())
   const [isLoadingFiles, setIsLoadingFiles] = useState(false)
+  const directoryRequest = useRef(0)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const abortSSERef = useRef<(() => void) | null>(null)
 
@@ -102,6 +103,7 @@ export default function LyricsPanel({
 
   const fetchDirs = useCallback(
     async (artist: string, album: string) => {
+      const requestId = ++directoryRequest.current
       setIsLoadingDirs(true)
       onError('')
       try {
@@ -110,6 +112,7 @@ export default function LyricsPanel({
         if (album) params.album = album
         const data = await fetchJson<DirectoriesResponse>('/directories/music', params)
         const dirs = data.directories ?? []
+        if (requestId !== directoryRequest.current) return
         setDirectories(dirs)
         setForm((prev) => {
           const stillPresent = dirs.some((d) => d.path === prev.directory && d.base === prev.base)
@@ -120,17 +123,17 @@ export default function LyricsPanel({
           }
         })
       } catch (err) {
-        onError(`Error loading directories: ${err instanceof Error ? err.message : String(err)}`)
+        if (requestId === directoryRequest.current) {
+          onError(`Error loading directories: ${err instanceof Error ? err.message : String(err)}`)
+        }
       } finally {
-        setIsLoadingDirs(false)
+        if (requestId === directoryRequest.current) setIsLoadingDirs(false)
       }
     },
     [onError],
   )
 
-  useDirectoryAutoRefresh(() => {
-    void fetchDirs(form.artist, form.album)
-  })
+  useDirectoryAutoRefresh(() => fetchDirs(form.artist, form.album))
 
   useEffect(() => {
     void fetchDirs(debouncedArtist, debouncedAlbum)
