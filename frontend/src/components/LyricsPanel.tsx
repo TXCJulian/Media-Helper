@@ -302,6 +302,9 @@ export default function LyricsPanel({
       `Doesn't fit in the available VRAM${health?.vram_total_mb ? ` (${(health.vram_total_mb / 1024).toFixed(1)} GB)` : ''}.`,
     ]),
   )
+  const modelFit = health?.whisper_model_fit
+  const noFittingWhisperModel =
+    modelFit != null && WHISPER_MODELS.every((model) => modelFit[model.value] === false)
   const isServiceOk = health?.status === 'ok'
   const busy = isLoadingDirs || isTranscribing
 
@@ -591,9 +594,15 @@ export default function LyricsPanel({
           </div>
         </FormSection>
 
+        {noFittingWhisperModel && (
+          <p className="mb-3 text-[0.75rem] text-[var(--error)]" role="alert">
+            No available Whisper model fits this GPU.
+          </p>
+        )}
+
         <button
           type="submit"
-          disabled={busy || !isServiceOk || selectedFiles.size === 0}
+          disabled={busy || !isServiceOk || selectedFiles.size === 0 || noFittingWhisperModel}
           className="btn-submit btn-rose"
         >
           {isTranscribing ? <span className="spinner-md" /> : 'Transcribe'}

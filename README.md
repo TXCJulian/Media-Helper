@@ -397,7 +397,7 @@ The application expects the following structure in your media directory:
 
 > **Note:** The Episode Renamer and Music Renamer only scan their respective subdirectories (`TV Shows/`, `Music/`). The Media Cutter scans the entire `BASE_PATHS` so it can access files in any subdirectory (Movies, TV Shows, Music, etc.).
 >
-> Directory results are cached for at most 15 seconds. Local filesystem events clear the cache immediately, while the TTL covers remote NFS changes that do not emit local watchdog events. The active panel reloads its list every 30 seconds, and its refresh button clears all directory caches immediately.
+> Directory results are cached for at most 15 seconds. Local directory create, delete, and move events clear the cache immediately. File-only changes and remote NFS changes that do not emit local watchdog events may remain cached until the TTL expires. The active panel reloads its list every 30 seconds, and its refresh button clears all directory caches immediately.
 >
 > The Downloader uses `/directories/download` and lists every non-`.trickplay` directory under `BASE_PATHS`, including empty directories and directories without recognized media files. Cutter discovery remains restricted to `VALID_CUTTER_EXT`.
 

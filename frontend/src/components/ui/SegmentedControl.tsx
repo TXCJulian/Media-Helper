@@ -39,7 +39,7 @@ export default function SegmentedControl({
     >
       {options.map((opt) => {
         const isActive = value === opt.value
-        const isUnavailable = !isActive && unavailable?.has(opt.value)
+        const isUnavailable = unavailable?.has(opt.value)
         const isIncompat = !isActive && !isUnavailable && incompatible?.has(opt.value)
         return (
           <button
@@ -51,10 +51,10 @@ export default function SegmentedControl({
             title={isUnavailable ? unavailable?.get(opt.value) : undefined}
             onClick={() => onChange(opt.value)}
             className={`cursor-pointer rounded-lg border-none px-4 py-[0.45rem] font-[Geist,sans-serif] text-[0.78rem] font-medium transition-all duration-250 ${
-              isActive
-                ? activeClasses[color]
-                : isUnavailable
-                  ? 'cursor-not-allowed bg-transparent text-[var(--text-tertiary)] opacity-40'
+              isUnavailable
+                ? `${isActive ? activeClasses[color] : 'bg-transparent text-[var(--text-tertiary)]'} cursor-not-allowed opacity-40`
+                : isActive
+                  ? activeClasses[color]
                   : isIncompat
                     ? 'bg-transparent text-[var(--text-tertiary)] opacity-50 line-through hover:opacity-70'
                     : 'bg-transparent text-[var(--text-tertiary)] hover:bg-[rgba(255,255,255,0.025)] hover:text-[var(--text-secondary)]'
