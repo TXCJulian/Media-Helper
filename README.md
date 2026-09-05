@@ -192,7 +192,7 @@ More companion services following this pattern may be added as GPU-heavy feature
 - Multi-stage Docker builds
 - Nginx reverse proxy
 - Bridge network for service communication
-- Optional: NVIDIA or Intel Arc GPU service for lyrics transcription (AMD ROCm builds too but is untested; CPU fallback also available)
+- Optional: NVIDIA or Intel Arc GPU service for lyrics transcription (AMD ROCm builds too but is untested; older NVIDIA Maxwell/Pascal/Volta cards are supported via the transcriber's `nvidia-legacy` backend; CPU fallback also available)
 - Cutter backend container uses Jellyfin FFmpeg build on amd64 for broader HW encoder availability
 
 ### Request Flow
@@ -241,7 +241,7 @@ Browser                    Frontend Container               Backend Container
 - **Media directory** with read/write permissions
 - **Node** 22.22.2+, 24.15+, or 26+ (only for local frontend development; the Docker build is unaffected)
 - **Optional**: Hardware-acceleration compatible APU/GPU (for ffmpeg in cutter section)
-- **Optional**: NVIDIA GPU + CUDA drivers, or Intel Arc GPU + oneAPI/Level Zero drivers (for lyrics transcription; see [Whisper_Lyric-Transcriber](https://github.com/TXCJulian/Whisper_Lyric-Transcriber)'s README for per-GPU requirements)
+- **Optional**: NVIDIA GPU + CUDA drivers (including older Maxwell/Pascal/Volta cards via the `nvidia-legacy` backend), or Intel Arc GPU + oneAPI/Level Zero drivers (for lyrics transcription; see [Whisper_Lyric-Transcriber](https://github.com/TXCJulian/Whisper_Lyric-Transcriber)'s README for per-GPU requirements)
 
 ## Installation
 

@@ -3,6 +3,7 @@ import { fetchJson, fetchTranscriberHealth, fetchMusicFiles, postRefresh } from 
 import { connectSSE } from '@/lib/sse'
 import { useDebounce } from '@/hooks/useDebounce'
 import { useDirectoryAutoRefresh } from '@/hooks/useDirectoryAutoRefresh'
+import { unfitModels, bestFittingModel } from '@/lib/modelFit'
 import type {
   DirectoriesResponse,
   DirectoryEntry,
@@ -100,6 +101,17 @@ export default function LyricsPanel({
   useEffect(() => {
     checkHealth()
   }, [checkHealth])
+
+  // Auto-downgrade the selected Whisper model if it no longer fits in the
+  // available VRAM (fresh health check, or a different GPU than before) --
+  // there's no other field to fix this, so there's nothing to dim-and-leave
+  // clickable like the codec/container pairs elsewhere in the app.
+  useEffect(() => {
+    const fixed = bestFittingModel(form.whisper_model, WHISPER_MODELS, health?.whisper_model_fit)
+    if (fixed !== form.whisper_model) {
+      setForm((prev) => ({ ...prev, whisper_model: fixed }))
+    }
+  }, [health, form.whisper_model])
 
   const fetchDirs = useCallback(
     async (artist: string, album: string, preserveSelection = false) => {
@@ -284,6 +296,12 @@ export default function LyricsPanel({
   const update = <K extends keyof LyricsForm>(key: K, value: LyricsForm[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }))
 
+  const unfitWhisperModels = new Map(
+    [...unfitModels(health?.whisper_model_fit)].map((name) => [
+      name,
+      `Doesn't fit in the available VRAM${health?.vram_total_mb ? ` (${(health.vram_total_mb / 1024).toFixed(1)} GB)` : ''}.`,
+    ]),
+  )
   const isServiceOk = health?.status === 'ok'
   const busy = isLoadingDirs || isTranscribing
 
@@ -482,6 +500,7 @@ export default function LyricsPanel({
                     value={form.whisper_model}
                     onChange={(v) => update('whisper_model', v)}
                     disabled={busy}
+                    unavailable={unfitWhisperModels}
                     color="rose"
                   />
                   <p className="mt-[0.35rem] text-[0.68rem] leading-snug text-[var(--text-tertiary)]">
@@ -499,8 +518,8 @@ export default function LyricsPanel({
                     color="rose"
                   />
                   <p className="mt-[0.35rem] text-[0.68rem] leading-snug text-[var(--text-tertiary)]">
-                    Fine-tuned gives the cleanest vocal isolation at similar VRAM cost, but runs
-                    slower. Low VRAM trades some quality for a lighter footprint.
+                    Htdemucs_ft can give cleaner vocal isolation at similar VRAM cost, but runs
+                    slower. Htdemucs is the best alround choice.
                   </p>
                 </div>
 
