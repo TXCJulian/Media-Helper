@@ -90,7 +90,8 @@ jobs:
     needs:
       - backend-test
       - frontend-test
-    if: github.event_name != 'pull_request'
+    # Dependabot branch pushes get no Docker Hub secrets and must not overwrite beta images.
+    if: github.event_name != 'pull_request' && github.actor != 'dependabot[bot]'
     permissions:
       contents: read
       packages: write

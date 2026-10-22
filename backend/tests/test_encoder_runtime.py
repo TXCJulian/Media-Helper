@@ -354,7 +354,11 @@ def test_runtime_stop_joins_the_active_bulk_reprocess(runtime_env, monkeypatch):
 
     monkeypatch.setattr(encoder_queue, "reprocess_path", slow_reprocess)
     runtime.start_reprocess_all()
-    assert started.get(timeout=2) == str(root / "first.mkv")
+    # os.walk yields entries in filesystem order, which is not sorted on ext4.
+    assert started.get(timeout=2) in {
+        str(root / "first.mkv"),
+        str(root / "second.mkv"),
+    }
 
     try:
         runtime.stop()
