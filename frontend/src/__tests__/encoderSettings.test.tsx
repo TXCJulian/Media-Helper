@@ -98,6 +98,9 @@ function renderSettings(overrides: Partial<React.ComponentProps<typeof EncoderSe
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // clearAllMocks keeps implementations, so restore the empty picker data per test.
+  vi.mocked(api.fetchEncoderDirectories).mockResolvedValue({ directories: [] })
+  vi.mocked(api.fetchEncoderFiles).mockResolvedValue({ files: [] })
   vi.mocked(api.saveEncoderConfig).mockResolvedValue({ watch_paths: [] })
   vi.mocked(api.saveEncoderRules).mockResolvedValue({ saved: 0 })
   vi.mocked(api.reprocessEncoderFile).mockResolvedValue({

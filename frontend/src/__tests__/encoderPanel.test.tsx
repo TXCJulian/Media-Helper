@@ -90,6 +90,8 @@ function responseFor(url: string, jobs: EncoderJob[] = []): Response {
     return jsonResponse({ rules: [], fallback: 'skip' })
   }
   if (url.includes('/encoder/jobs')) return jsonResponse(jobs)
+  // Opening the Watch Folders or Rules section loads directories after a 180ms debounce.
+  if (url.includes('/encoder/directories')) return jsonResponse({ directories: [] })
   throw new Error(`Unexpected request: ${url}`)
 }
 
